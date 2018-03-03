@@ -20,29 +20,32 @@ def PlotAnnualPerformance(ticker:str='^SPX'):
 		plot.PlotDataFrame(yearlyChange, title='Yearly Percentage Change', adjustScale=False)
 		print('Average annual change from ', prices.historyStartDate, ' to ', prices.historyEndDate, ': ', yearlyChange.mean().values * 100, '%')
 		
-def DownloadAndGraphStocks(tickerList:list, simpleMode:bool=False):
-	today = datetime.datetime.now().date()
+def PlotPrediction(ticker:str='^SPX', predictionMethod:int=0, daysToGraph:int=60, daysForward:int=5, learnhingEpochs:int=500):
+	print('Plotting predictions for ' + ticker)
+	prices = PricingData(ticker)
+	if prices.LoadHistory(True):
+		prices.NormalizePrices()
+		prices.PredictPrices(predictionMethod, daysForward, learnhingEpochs)
+		prices.NormalizePrices()
+		prices.GraphData(None, daysToGraph, ticker + ' ' + str(daysToGraph) + 'days', True, True, str(daysToGraph) + 'days')
+		prices.SaveStatsToFile(True)
+
+def DownloadAndGraphStocks(tickerList:list):
 	for ticker in tickerList:
 		prices = PricingData(ticker)
 		print('Loading ' + ticker)
 		if prices.LoadHistory(True):
-			if simpleMode:
-				prices.TrimToDateRange('2/20/2017', '2/20/2018')
-				plot = PlotHelper()
-				plot.PlotDataFrame(prices.GetPriceHistory(['Open','High','Low','Close']), 'Sample', 'Date', 'Price', 'sciencefair/sample' ) 
-			else:
-				print('Calcualting stats ' + ticker)
-				prices.CalculateStats()
-				prices.SaveStatsToFile()
-				prices.PredictPrices()
-				psnap = prices.GetCurrentPriceSnapshot()
-				titleStatistics =' 5/15 dev: ' + str(round(psnap.fiveDayDeviation*100, 2)) + '/' + str(round(psnap.fifteenDayDeviation*100, 2)) + '% ' + str(psnap.low) + '/' + str(psnap.nextDayTarget) + '/' + str(psnap.high)
-				print('Graphing ' + ticker)	
-				prices.GraphData(today + datetime.timedelta(days=-60), today, ticker + ' 60d ' + titleStatistics, True, True, '60d')
-				prices.GraphData(today + datetime.timedelta(days=-100), today, ticker + ' 100d ' + titleStatistics, True, True, '100d')
-				prices.GraphData(today + datetime.timedelta(days=-365), today, ticker + ' 1Year', False, True, '1Year')
-				prices.GraphData(today + datetime.timedelta(days=-730), today, ticker + ' 2Year', False, True,  '2Year')
-				prices.GraphData(today + datetime.timedelta(days=-3650),today, ticker + ' 10Year', False, True, '10Year')
+			print('Calcualting stats ' + ticker)
+			prices.NormalizePrices()
+			prices.CalculateStats()
+			prices.PredictPrices(2, 15)
+			prices.NormalizePrices()
+			prices.SaveStatsToFile(True)
+			psnap = prices.GetCurrentPriceSnapshot()
+			titleStatistics =' 5/15 dev: ' + str(round(psnap.fiveDayDeviation*100, 2)) + '/' + str(round(psnap.fifteenDayDeviation*100, 2)) + '% ' + str(psnap.low) + '/' + str(psnap.nextDayTarget) + '/' + str(psnap.high) + ' ' + str(psnap.snapshotDate)[:10]
+			print('Graphing ' + ticker + ' ' + str(psnap.snapshotDate)[:10])
+			for days in [90,180,365,2190,4380]:
+				prices.GraphData(None, days, ticker + '_days' + str(days) + ' ' + titleStatistics, (days < 1000), True, str(days).rjust(4, '0') + 'd', trimHistoricalPredictions=False)
 
 def CalculatePriceCorrelation(tickerList:list):
 	datafileName = 'data/_priceCorrelations.csv'
@@ -71,7 +74,6 @@ def CalculatePriceCorrelation(tickerList:list):
 	#return result
 
 def OpportunityFinder(tickerList:list):
-	today = datetime.datetime.now().date()
 	outputFolder = 'data/dailypicks/'
 	summaryFile = '_summary.txt'
 	overBoughtList = []
@@ -87,15 +89,15 @@ def OpportunityFinder(tickerList:list):
 		if prices.LoadHistory(True):
 			prices.CalculateStats()
 			psnap = prices.GetCurrentPriceSnapshot()
-			titleStatistics =' 5/15 dev: ' + str(round(psnap.fiveDayDeviation*100, 2)) + '/' + str(round(psnap.fifteenDayDeviation*100, 2)) + '% ' + str(psnap.low) + '/' + str(psnap.nextDayTarget) + '/' + str(psnap.high)
+			titleStatistics =' 5/15 dev: ' + str(round(psnap.fiveDayDeviation*100, 2)) + '/' + str(round(psnap.fifteenDayDeviation*100, 2)) + '% ' + str(psnap.low) + '/' + str(psnap.nextDayTarget) + '/' + str(psnap.high) + str(snapshotDate)
 			if psnap.low > psnap.channelHigh: 
 				overBoughtList.append(ticker)
 			if psnap.high < psnap.channelLow: 
 				oversoldList.append(ticker)
-				prices.GraphData(today + datetime.timedelta(days=-60), today, ticker + ' 60d ' + titleStatistics, False, True, '60d', outputFolder)
+				prices.GraphData(None, 60, ticker + ' 60d ' + titleStatistics, False, True, '60d', outputFolder)
 			if psnap.fiveDayDeviation > .0275: 
 				highDeviationList.append(ticker)
-				prices.GraphData(today + datetime.timedelta(days=-60), today, ticker + ' 60d ' + titleStatistics, False, True, '60d', outputFolder)
+				prices.GraphData(None, 60, ticker + ' 60d ' + titleStatistics, False, True, '60d', outputFolder)
 	print('Over bought:')
 	print(overBoughtList)
 	print('Over sold:')
@@ -115,5 +117,6 @@ def OpportunityFinder(tickerList:list):
 #CalculatePriceCorrelation(DogsOfDOW)
 #PlotAnnualPerformance('TSLA')
 #PlotAnnualPerformance('^SPX')
+#OpportunityFinder(SPTop70)
+#PlotPrediction('^SPX', 1, 120, 15)
 DownloadAndGraphStocks(SPTop70)
-OpportunityFinder(SPTop70)
