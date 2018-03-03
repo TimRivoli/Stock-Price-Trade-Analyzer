@@ -62,8 +62,8 @@ def TraintickerRaw(ticker:str = '^SPX', UseLSTM:bool=True, prediction_target_day
 			if usePercentages: modelDescription += '_percentages'
 			SourceFieldList = ['High','Low','Open','Close']
 			model.LoadData(prices.GetPriceHistory(), window_size=window_size, prediction_target_days=prediction_target_days, UseLSTM=UseLSTM, SourceFieldList=SourceFieldList, batch_size=32, train_test_split=.93)
-			model.TrainCNN(epochs=epochs)
-			#model.PredictCNN(epochs=epochs, learning_rate=2e-5)
+			model.TrainCNN(epochs=epochs, learning_rate=2e-5)
+			#model.PredictCNN(epochs=epochs)
 		if usePercentages: 
 			predDF = model.GetTrainingResults(True, True)
 			predDF.fillna(method='bfill', inplace=True)	
