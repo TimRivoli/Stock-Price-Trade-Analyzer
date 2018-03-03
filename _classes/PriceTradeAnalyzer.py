@@ -1,5 +1,6 @@
-useWebProxyServer = True	#If you need a web proxy to browse the web
-nonGUIEnvironment = True	#hosted environments often have no GUI so matplotlib won't be outputting to display
+useWebProxyServer = False	#If you need a web proxy to browse the web
+nonGUIEnvironment = False	#hosted environments often have no GUI so matplotlib won't be outputting to display
+
 import time, datetime, random, os, ssl
 import numpy as np
 import pandas as pd
@@ -82,8 +83,8 @@ def PlotScalerDateAdjust(minDate:datetime, maxDate:datetime, ax):
 	#ax.xaxis.set_minor_formatter(daysFmt)
 	ax.set_xlim(minDate, maxDate)
 
-def PlotDataFrame(df:pd.DataFrame, title:str, xlabel:str, ylabel:str, adjustScale:bool=True, fileName:str = ''):
-	if df.shape[0] > 10:
+def PlotDataFrame(df:pd.DataFrame, title:str, xlabel:str, ylabel:str, adjustScale:bool=True, fileName:str = '', dpi:int = 600):
+	if df.shape[0] >= 4:
 		PlotInitDefaults()
 		ax=df.plot(title=title, linewidth=.75)
 		ax.set_xlabel(xlabel)
@@ -97,47 +98,50 @@ def PlotDataFrame(df:pd.DataFrame, title:str, xlabel:str, ylabel:str, adjustScal
 			PlotScalerDateAdjust(minDate, maxDate, ax)
 		if not fileName =='':
 			if not fileName[-4] == '.': fileName+= '.png'
-			plt.savefig(fileName, dpi=600)			
+			plt.savefig(fileName, dpi=dpi)			
 		else:
 			fig = plt.figure(1)
 			fig.canvas.set_window_title(title)
 			plt.show()
 		plt.close('all')
 
+currentProxyServer = None
 def GetProxiedOpener():
 	testURL = 'https://stooq.com'
-	proxyList = ['209.18.53.103','96.67.118.233','104.131.94.221','50.79.133.187','162.243.33.71','38.104.143.170','50.79.130.114','50.201.51.216','52.91.160.110']
-	userName, password, proxyPort = 'Bill', 'test', '8080'
+	proxyList =['173.192.128.238:9999','161.202.226.194:25','173.192.21.89:8080','208.69.113.165:80','161.202.226.194:8123','173.192.21.89:8080','173.192.128.238:8123','45.6.216.66:8080','173.192.128.238:9999','192.210.170.200:1080','47.75.0.253:8081','74.207.254.183:80','173.249.15.107:3128','71.191.75.67:3128','47.88.20.189:80','168.128.29.75:80','52.43.233.218:80']
+	userName, password = 'Bill', 'test'
 	context = ssl._create_unverified_context()
 	handler = webRequest.HTTPSHandler(context=context)
-	i = 0
+	i = -1
 	functioning = False
+	global currentProxyServer
 	while not functioning and i < len(proxyList):
-		proxy = webRequest.ProxyHandler({'https': r'http://' + userName + ':' + password + '@' + proxyList[i] + ':' + proxyPort})
+		if i >=0 or currentProxyServer==None: currentProxyServer = proxyList[i]
+		proxy = webRequest.ProxyHandler({'https': r'http://' + userName + ':' + password + '@' + currentProxyServer})
 		auth = webRequest.HTTPBasicAuthHandler()
 		opener = webRequest.build_opener(proxy, auth, handler) 
 		opener.addheaders = [('User-agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_4) AppleWebKit/603.1.30 (KHTML, like Gecko) Version/10.1 Safari/603.1.30')]
 		try:
 			conn = opener.open(testURL)
-			print('Proxy ' + proxyList[i] + ' is functioning')
+			print('Proxy ' + currentProxyServer + ' is functioning')
 			functioning = True
 		except:
-			print('Proxy ' + proxyList[i] + ' is not responding')
+			print('Proxy ' + currentProxyServer + ' is not responding')
 		i+=1
 	return opener
 
 #-------------------------------------------- Classes -----------------------------------------------
 class PlotHelper:
-	def PlotDataFrame(self, df:pd.DataFrame, title:str='', xlabel:str='', ylabel:str='', adjustScale:bool=True, fileName:str = ''): PlotDataFrame(df, title, xlabel, ylabel, adjustScale, fileName)
+	def PlotDataFrame(self, df:pd.DataFrame, title:str='', xlabel:str='', ylabel:str='', adjustScale:bool=True, fileName:str = '', dpi:int=600): PlotDataFrame(df, title, xlabel, ylabel, adjustScale, fileName, dpi)
 
-	def PlotDataFrameDateRange(self, df:pd.DataFrame, endDate:datetime=None, historyDays:int=90, title:str='', xlabel:str='', ylabel:str='', fileName:str = ''):
+	def PlotDataFrameDateRange(self, df:pd.DataFrame, endDate:datetime=None, historyDays:int=90, title:str='', xlabel:str='', ylabel:str='', fileName:str = '', dpi:int=600):
 		if df.shape[0] > 10: 
-			if endDate==None: endDate=df.index[-1] 	#The latest date in the datafrom assuming ascending order				
+			if endDate==None: endDate=df.index[-1] 	#The latest date in the dataframe assuming ascending order				
 			endDate = DateFormatDatabase(endDate)
-			startDate = endDate - datetime.timedelta(days=historyDays)
+			startDate = endDate - BDay(historyDays)
 			df = df[df.index >= startDate]
 			df = df[df.index <= endDate]
-			PlotDataFrame(df, title, xlabel, ylabel, True, fileName)
+			PlotDataFrame(df, title, xlabel, ylabel, True, fileName, dpi)
 	
 class PriceSnapshot:
 	high=0
@@ -220,6 +224,7 @@ class PricingData:
 		if self.stockTicker.upper() =='^SPX': url = "https://stooq.com/q/d/l/?i=d&s=" + self.stockTicker 
 		filePath = self._dataFolderhistoricalPrices + self.stockTicker + '.csv'
 		d = datetime.datetime.now()
+		s1 = ''
 		EndDate = d.strftime(GetMyDateFormat())
 		if daysToGoBack>0:
 			d=d+datetime.timedelta(days=-daysToGoBack)
@@ -227,16 +232,19 @@ class PricingData:
 			Interval = "&d1=" + StartDate +"&d2=" + EndDate
 			url = url + Interval
 			if CreateFolder(self._dataFolderCurrentPrices): filePath = self._dataFolderCurrentPrices + '/'+ self.stockTicker + '.csv'
-		if useWebProxyServer:
-			opener = GetProxiedOpener()
-			opener.addheaders = [('User-agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_4) AppleWebKit/603.1.30 (KHTML, like Gecko) Version/10.1 Safari/603.1.30')]
-			openUrl = opener.open(url)
-		else:
-			openUrl = webRequest.urlopen(url) 
-		r = openUrl.read()
-		openUrl.close()
-		s1=r.decode()
-		s1 = s1.replace(chr(13),'')
+		try:
+			if useWebProxyServer:
+				opener = GetProxiedOpener()
+				opener.addheaders = [('User-agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_4) AppleWebKit/603.1.30 (KHTML, like Gecko) Version/10.1 Safari/603.1.30')]
+				openUrl = opener.open(url)
+			else:
+				openUrl = webRequest.urlopen(url) 
+			r = openUrl.read()
+			openUrl.close()
+			s1=r.decode()
+			s1 = s1.replace(chr(13),'')
+		except:
+			print('Web connection error.')
 		if len(s1) < 1024:
 			print('No data found online for ticker ' + self.stockTicker)
 		else:
@@ -335,11 +343,11 @@ class PricingData:
 		if not self.pricesLoaded: self.LoadHistory()
 		twodav = self.historicalPrices['Average'].rolling(window=2, center=False).mean()
 		self.historicalPrices['2DayAv'] = twodav
-		self.historicalPrices['shortEMA'] =  self.historicalPrices['Average'].ewm(com=3,min_periods=0,freq='D',adjust=True,ignore_na=False).mean()
+		self.historicalPrices['shortEMA'] =  self.historicalPrices['Average'].ewm(com=3,min_periods=0,freq='B',adjust=True,ignore_na=False).mean()
 		self.historicalPrices['shortEMASlope'] = (self.historicalPrices['shortEMA']/self.historicalPrices['shortEMA'].shift(1))-1
-		self.historicalPrices['longEMA'] = self.historicalPrices['Average'].ewm(com=9,min_periods=0,freq='D',adjust=True,ignore_na=False).mean()
+		self.historicalPrices['longEMA'] = self.historicalPrices['Average'].ewm(com=9,min_periods=0,freq='B',adjust=True,ignore_na=False).mean()
 		self.historicalPrices['longEMASlope'] = (self.historicalPrices['longEMA']/self.historicalPrices['longEMA'].shift(1))-1
-		self.historicalPrices['45dEMA'] = self.historicalPrices['Average'].ewm(com=22,min_periods=0,freq='D',adjust=True,ignore_na=False).mean()
+		self.historicalPrices['45dEMA'] = self.historicalPrices['Average'].ewm(com=22,min_periods=0,freq='B',adjust=True,ignore_na=False).mean()
 		self.historicalPrices['45dEMASlope'] = (self.historicalPrices['45dEMA']/self.historicalPrices['45dEMA'].shift(1))-1
 		self.historicalPrices['1DayDeviation'] = (self.historicalPrices['High'] - self.historicalPrices['Low'])/self.historicalPrices['Low']
 		self.historicalPrices['5DavDeviation'] = self.historicalPrices['1DayDeviation'].rolling(window=5, center=False).mean()
@@ -371,73 +379,90 @@ class PricingData:
 		self.pricePredictions = pd.DataFrame()	#Clear any previous data
 		if not self.statsLoaded: self.CalculateStats()
 		if method < 3:
+			minActionableSlope = 0.001
 			if method==0:	#Same as previous day
 				self.pricePredictions = pd.DataFrame()
 				self.pricePredictions['estLow'] =  self.historicalPrices['Low'].shift(1)
 				self.pricePredictions['estHigh'] = self.historicalPrices['High'].shift(1)
 			elif method==1:	#Slope plus momentum with some consideration for trend.
-				minActionableSlope = '0.001'
-				bucket = self.historicalPrices.copy()  #++,+-,-+,==
+					#++,+-,-+,==
+				bucket = self.historicalPrices.copy()
 				bucket['estLow']  = bucket['Average'].shift(1) * (1-bucket['15DavDeviation']/2) + (abs(bucket['1DayApc'].shift(1)))
 				bucket['estHigh'] = bucket['Average'].shift(1) * (1+bucket['15DavDeviation']/2) + (abs(bucket['1DayApc'].shift(1)))
-				bucket = bucket.query('longEMASlope >= -' + minActionableSlope + ' or shortEMASlope >= -' + minActionableSlope) #must filter after rolling calcuations
+				bucket = bucket.query('longEMASlope >= -' + str(minActionableSlope) + ' or shortEMASlope >= -' + str(minActionableSlope)) #must filter after rolling calcuations
 				bucket = bucket[['estLow','estHigh']]
 				self.pricePredictions = bucket
-				bucket = self.historicalPrices.copy() #-- downward trend
+					#-- downward trend
+				bucket = self.historicalPrices.copy()
 				bucket['estLow'] = bucket['Low'].shift(1).rolling(3).min() * .99
 				bucket['estHigh'] = bucket['High'].shift(1).rolling(3).min() 
-				bucket = bucket.query('not (longEMASlope >= -' + minActionableSlope + ' or shortEMASlope >= -' + minActionableSlope +')')
+				bucket = bucket.query('not (longEMASlope >= -' + str(minActionableSlope) + ' or shortEMASlope >= -' + str(minActionableSlope) +')')
 				bucket = bucket[['estLow','estHigh']]
 				self.pricePredictions = self.pricePredictions.append(bucket)
 				self.pricePredictions.sort_index(inplace=True)	
 			elif method==2:	#Slope plus momentum with full consideration for trend.
-				#buckets based on slopes, ++, --, +-, -+, ==
-				minActionableSlope = '0.001'
-				bucket = self.historicalPrices.copy() #++ Often over bought, strong momentum
+					#++ Often over bought, strong momentum
+				bucket = self.historicalPrices.copy() 
 				#bucket['estLow']  = bucket['Low'].shift(1).rolling(4).max()  * (1 + abs(bucket['shortEMASlope'].shift(1)))
 				#bucket['estHigh'] = bucket['High'].shift(1).rolling(4).max()  * (1 + abs(bucket['shortEMASlope'].shift(1)))
 				bucket['estLow']  = bucket['Low'].shift(1).rolling(4).max()  + (abs(bucket['1DayApc'].shift(1)))
 				bucket['estHigh'] = bucket['High'].shift(1).rolling(4).max() + (abs(bucket['1DayApc'].shift(1)))
-				bucket = bucket.query('longEMASlope >= ' + minActionableSlope + ' and shortEMASlope >= ' + minActionableSlope) #must filter after rolling calcuations
+				bucket = bucket.query('longEMASlope >= ' + str(minActionableSlope) + ' and shortEMASlope >= ' + str(minActionableSlope)) #must filter after rolling calcuations
 				bucket = bucket[['estLow','estHigh']]
 				self.pricePredictions = bucket
-
-				bucket = self.historicalPrices.copy() #+- correction or early down turn, loss of momentum
+					#+- correction or early down turn, loss of momentum
+				bucket = self.historicalPrices.copy()
 				bucket['estLow']  = bucket['Low'].shift(1).rolling(2).min() 
 				bucket['estHigh'] = bucket['High'].shift(1).rolling(3).max()  * (1.005 + abs(bucket['shortEMASlope'].shift(1)))
-				bucket = bucket.query('longEMASlope >= ' + minActionableSlope + ' and shortEMASlope < -' + minActionableSlope)
+				bucket = bucket.query('longEMASlope >= ' + str(minActionableSlope) + ' and shortEMASlope < -' + str(minActionableSlope))
 				bucket = bucket[['estLow','estHigh']]
 				self.pricePredictions = self.pricePredictions.append(bucket)
-
-				bucket = self.historicalPrices.copy() #-+ bounce or early recovery, loss of momentum
+					 #-+ bounce or early recovery, loss of momentum
+				bucket = self.historicalPrices.copy()
 				bucket['estLow']  = bucket['Low'].shift(1)
 				bucket['estHigh'] = bucket['High'].shift(1).rolling(3).max() * 1.02 
-				bucket = bucket.query('longEMASlope < -' + minActionableSlope + ' and shortEMASlope >= ' + minActionableSlope)
+				bucket = bucket.query('longEMASlope < -' + str(minActionableSlope) + ' and shortEMASlope >= ' + str(minActionableSlope))
 				bucket = bucket[['estLow','estHigh']]
+					#-- Often over sold
 				self.pricePredictions = self.pricePredictions.append(bucket)
-
-				bucket = self.historicalPrices.copy() #-- Often over sold
+				bucket = self.historicalPrices.copy() 
 				bucket['estLow'] = bucket['Low'].shift(1).rolling(3).min() * .99
 				bucket['estHigh'] = bucket['High'].shift(1).rolling(3).min() 
-				bucket = bucket.query('longEMASlope < -' + minActionableSlope + ' and shortEMASlope < -' + minActionableSlope)
+				bucket = bucket.query('longEMASlope < -' + str(minActionableSlope) + ' and shortEMASlope < -' + str(minActionableSlope))
 				bucket = bucket[['estLow','estHigh']]
 				self.pricePredictions = self.pricePredictions.append(bucket)
-
-				bucket = self.historicalPrices.copy() #== no significant slope
+					#== no significant slope
+				bucket = self.historicalPrices.copy() 
 				bucket['estLow']  = bucket['Low'].shift(1).rolling(4).mean()
 				bucket['estHigh'] = bucket['High'].shift(1).rolling(4).mean()
-				bucket = bucket.query(minActionableSlope + ' > longEMASlope >= -' + minActionableSlope + ' or ' + minActionableSlope + ' > shortEMASlope >= -' + minActionableSlope)
+				bucket = bucket.query(str(minActionableSlope) + ' > longEMASlope >= -' + str(minActionableSlope) + ' or ' + str(minActionableSlope) + ' > shortEMASlope >= -' + str(minActionableSlope))
 				bucket = bucket[['estLow','estHigh']]
 				self.pricePredictions = self.pricePredictions.append(bucket)
 				self.pricePredictions.sort_index(inplace=True)	
+
 			d = self.historicalPrices.index[-1] 
+			ls = self.historicalPrices['longEMASlope'][-1]
+			ss = self.historicalPrices['shortEMASlope'][-1]
 			deviation = self.historicalPrices['15DavDeviation'][-1]/2
 			momentum = self.historicalPrices['3DayMomentum'][-1]/2 
 			for i in range(0,daysIntoFuture): 	#Add new days to the end for crystal ball predictions
-				momentum = momentum * (100+random.randint(-3,4))/100
+				momentum = (momentum + ls)/2 * (100+random.randint(-3,4))/100
 				a = (self.pricePredictions['estLow'][-1] + self.pricePredictions['estHigh'][-1])/2
-				l = a * (1+momentum) + random.randint(round(-deviation*200),round(deviation*10))/100
-				h = a * (1+momentum) + random.randint(round(-deviation*10),round(deviation*200))/100
+				if ls >= minActionableSlope and ss >= minActionableSlope: #++
+					l = a * (1+momentum) + random.randint(round(-deviation*200),round(deviation*10))/100
+					h = a * (1+momentum) + random.randint(round(-deviation*10),round(deviation*200))/100
+				elif ls >= minActionableSlope and ss < -minActionableSlope: #+-
+					l = a * (1+momentum) + random.randint(round(-deviation*200),round(deviation*10))/100
+					h = a * (1+momentum) + random.randint(round(-deviation*10),round(deviation*400))/100
+				elif ls < -minActionableSlope and ss >= minActionableSlope: #-+
+					l = a * (1+momentum) + random.randint(round(-deviation*200),round(deviation*10))/100
+					h = a * (1+momentum) + random.randint(round(-deviation*10),round(deviation*400))/100
+				elif ls < -minActionableSlope and ss < -minActionableSlope: #--
+					l = a * (1+momentum) + random.randint(round(-deviation*200),round(deviation*10))/100
+					h = a * (1+momentum) + random.randint(round(-deviation*10),round(deviation*200))/100
+				else:	#==
+					l = a * (1+momentum) + random.randint(round(-deviation*200),round(deviation*10))/100
+					h = a * (1+momentum) + random.randint(round(-deviation*10),round(deviation*200))/100
 				self.pricePredictions.loc[d + BDay(i+1), 'estLow'] = l
 				self.pricePredictions.loc[d + BDay(i+1), 'estHigh'] = h								
 			self.pricePredictions['estAverage']	= (self.pricePredictions['estLow'] + self.pricePredictions['estHigh'])/2
@@ -539,17 +564,33 @@ class PricingData:
 	def GetPricePredictions(self):
 		return self.pricePredictions.copy()  #best to pass back copies instead of reference.
 
-	def GraphData(self, startDate:datetime, endDate:datetime, graphTitle:str='', includePredictions:bool=False, saveToFile:bool=False, fileNameSuffix:str='', saveToFolder:str=''):
+	def GraphData(self, endDate:datetime=None, daysToGraph:int=90, graphTitle:str='', includePredictions:bool=False, saveToFile:bool=False, fileNameSuffix:str='', saveToFolder:str='', dpi:int=600, trimHistoricalPredictions:bool = True):
 		PlotInitDefaults()
 		if graphTitle=='': 
 			graphTitle = self.stockTicker
 			if not fileNameSuffix =='': graphTitle = graphTitle + ' ' + fileNameSuffix
 		if includePredictions:
 			if not self.predictionsLoaded: self.PredictPrices()
-			x = self.historicalPrices.join(self.pricePredictions, how='outer')
-			ax=x.loc[startDate:endDate,['High','Low', 'channelHigh', 'channelLow', 'estHigh','estLow']].plot(title=graphTitle, linewidth=.75)
+			if endDate == None: endDate = self.pricePredictions.index.max()
+			endDate = DateFormatDatabase(endDate)
+			startDate = endDate - BDay(daysToGraph) 
+			fieldSet = ['High','Low', 'channelHigh', 'channelLow', 'estHigh','estLow']
+			if trimHistoricalPredictions: 
+				y = self.pricePredictions[self.pricePredictions.index >= self.historyEndDate]
+				x = self.historicalPrices.join(y, how='outer')
+			else: 
+				fieldSet = ['High','Low', 'estHigh','estLow']
+				x = self.historicalPrices.join(self.pricePredictions, how='outer')
+			if daysToGraph > 1800:	fieldSet = ['Average', 'estHigh','estLow']
+			ax=x.loc[startDate:endDate,fieldSet].plot(title=graphTitle, linewidth=.75)			
 		else:
-			ax=self.historicalPrices.loc[startDate:endDate,['High','Low', 'channelHigh', 'channelLow']].plot(title=graphTitle, linewidth=.75)
+			if endDate == None: endDate = self.historyEndDate
+			endDate = DateFormatDatabase(endDate)
+			startDate = endDate - BDay(daysToGraph) 
+			if daysToGraph > 1800:
+				ax=self.historicalPrices.loc[startDate:endDate,['Average']].plot(title=graphTitle, linewidth=.75)
+			else:
+				ax=self.historicalPrices.loc[startDate:endDate,['High','Low', 'channelHigh', 'channelLow']].plot(title=graphTitle, linewidth=.75)
 		ax.set_xlabel('Date')
 		ax.set_ylabel('Price')
 		ax.tick_params(axis='x', rotation=70)
@@ -560,7 +601,7 @@ class PricingData:
 			if not fileNameSuffix =='': fileNameSuffix = '_' + fileNameSuffix
 			if saveToFolder=='': saveToFolder = self._dataFolderCharts
 			if not saveToFolder.endswith('/'): saveToFolder = saveToFolder + '/'
-			if CreateFolder(saveToFolder): 	plt.savefig(saveToFolder + self.stockTicker + fileNameSuffix + '.png', dpi=600)			
+			if CreateFolder(saveToFolder): 	plt.savefig(saveToFolder + self.stockTicker + fileNameSuffix + '.png', dpi=dpi)			
 		else:
 			plt.show()
 		plt.close('all')
@@ -1073,7 +1114,7 @@ class TradingModel:
 		return r
 
 	def CancelAllOrders(self): self.portfolio.CancelAllOrders(self.currentDate)
-	def CloseModel(self, plotResults:bool=True, saveHistoryToFile:bool=True, folderName:str='data/trademodel/'):	
+	def CloseModel(self, plotResults:bool=True, saveHistoryToFile:bool=True, folderName:str='data/trademodel/', dpi:int=600):	
 		_cashValue, assetValue = self.portfolio.GetValue()
 		if assetValue > 0:
 			self.SellAllPositions()
@@ -1086,7 +1127,7 @@ class TradingModel:
 		print('Cash: ' + str(round(_cashValue)) + ' asset: ' + str(round(assetValue)) + ' total: ' + str(round(_cashValue + assetValue)))
 		print('Net change: ' + str(round(_cashValue + assetValue - self.startingValue)))
 		if plotResults: 
-			self.PlotTradeHistoryAgainstHistoricalPrices(self.portfolio.tradeHistory, self.priceHistory[0].GetPriceHistory(), self.modelName)
+			self.PlotTradeHistoryAgainstHistoricalPrices(self.portfolio.tradeHistory, self.priceHistory[0].GetPriceHistory(), self.modelName, dpi)
 		return _cashValue
 		
 	def FundsAvailable(self): return self.portfolio.FundsAvailable()
