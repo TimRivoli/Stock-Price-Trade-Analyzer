@@ -279,10 +279,10 @@ class StockPredictionNN(object): #aka CrystalBall
 		if not filename[-4] =='.': filename += '.csv'
 		r.to_csv(self._dataFolderPredictionResults + filename)
 
-	def PredictionResultsPlot(self, filename:str='', includeTrainingTargets:bool = False, includeAccuracy:bool = False):
+	def PredictionResultsPlot(self, filename:str='', includeTrainingTargets:bool = False, includeAccuracy:bool = False, daysToPlot:int=0):
 		r = self.GetTrainingResults(includeTrainingTargets, includeAccuracy)
-		r.plot()
-		plt.legend()
+		if daysToPlot==0: daysToPlot = len(self.X_test)
+		r.iloc[-daysToPlot:].plot()
 		if not filename=='': 
 			if not filename[-4] =='.': filename += '.png'
 			plt.savefig(self._dataFolderPredictionResults + filename, dpi=600)			
