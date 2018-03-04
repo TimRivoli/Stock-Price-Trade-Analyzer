@@ -471,7 +471,7 @@ class PricingData:
 			SourceFieldList = None
 			#SourceFieldList = ['Low','High','Open','Close']
 			model.LoadData(self.historicalPrices.copy(), window_size=1, prediction_target_days=daysIntoFuture, UseLSTM=True, SourceFieldList=SourceFieldList, batch_size=10, train_test_split=.93)
-			model.TrainLSTM(epochs=NNTrainingEpochs, learning_rate=0.001, dropout_rate=0.8, gradient_clip_margin=4)
+			model.TrainLSTM(epochs=NNTrainingEpochs, learning_rate=2e-5, dropout_rate=0.8, gradient_clip_margin=4)
 			self.pricePredictions = model.GetTrainingResults(False, False)
 			print(self.pricePredictions)
 			self.pricePredictions = self.pricePredictions.rename(columns={'Average':'estAverage'})
