@@ -34,7 +34,7 @@ def TestPredictionModels(ticker:str='^SPX', numberOfLearningPasses:int = 500):
 			predDF.to_csv(dataFolder + modelDescription + '.csv')
 			plot.PlotDataFrame(predDF[['estAverage','Average']], modelDescription, 'Date', 'Price', True, dataFolder + modelDescription) 
 
-def TraintickerRaw(ticker:str = '^SPX', UseLSTM:bool=True, prediction_target_days:int = 5, epochs:int = 500, usePercentages:bool=False):
+def TraintickerRaw(ticker:str = '^SPX', UseLSTM:bool=True, prediction_target_days:int = 5, epochs:int = 500, usePercentages:bool=False, learning_rate=2e-5):
 	plot = PlotHelper()
 	prices = PricingData(ticker)
 	print('Loading ' + ticker)
@@ -53,7 +53,7 @@ def TraintickerRaw(ticker:str = '^SPX', UseLSTM:bool=True, prediction_target_day
 			SourceFieldList = None
 			#Note: LSTM doesn't benefit from a window size of > 1 since it is inherent in the model it just add noise
 			model.LoadData(prices.GetPriceHistory(), window_size=window_size, prediction_target_days=prediction_target_days, UseLSTM=UseLSTM, SourceFieldList=SourceFieldList, batch_size=10, train_test_split=.93)
-			model.TrainLSTM(epochs=epochs, learning_rate=0.001, dropout_rate=0.8, gradient_clip_margin=4)
+			model.TrainLSTM(epochs=epochs, learning_rate=learning_rate, dropout_rate=0.8, gradient_clip_margin=4)
 			#model.PredictLSTM(epochs=epochs)
 		else: #CNN
 			window_size = 16 * prediction_target_days
@@ -62,7 +62,7 @@ def TraintickerRaw(ticker:str = '^SPX', UseLSTM:bool=True, prediction_target_day
 			if usePercentages: modelDescription += '_percentages'
 			SourceFieldList = ['High','Low','Open','Close']
 			model.LoadData(prices.GetPriceHistory(), window_size=window_size, prediction_target_days=prediction_target_days, UseLSTM=UseLSTM, SourceFieldList=SourceFieldList, batch_size=32, train_test_split=.93)
-			model.TrainCNN(epochs=epochs, learning_rate=2e-5)
+			model.TrainCNN(epochs=epochs, learning_rate=learning_rate)
 			#model.PredictCNN(epochs=epochs)
 		if usePercentages: 
 			predDF = model.GetTrainingResults(True, True)
