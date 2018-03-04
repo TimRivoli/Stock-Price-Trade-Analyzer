@@ -187,7 +187,7 @@ class StockPredictionNN(object): #aka CrystalBall
 				self.predictionDF.iloc[i, ii] = YH[0,0,ii]
 		print('Training session closed')
 
-	def TrainLSTM(self, epochs=100, learning_rate=0.001, dropout_rate=0.8, gradient_clip_margin=4):
+	def TrainLSTM(self, epochs=100, learning_rate=2e-5, dropout_rate=0.8, gradient_clip_margin=4):
 		#creates the model, trains it for the given number of epochs	
 		hidden_layer_size=512 #512
 		number_of_layers=1 #1
@@ -229,7 +229,7 @@ class StockPredictionNN(object): #aka CrystalBall
 		saver.save(session, self._dataFolderTensorFlowModels + self.modelName)
 		self.PredictLSTM(epochs=epochs, learning_rate=learning_rate, dropout_rate=dropout_rate, gradient_clip_margin=gradient_clip_margin, session=session)
 
-	def PredictLSTM(self, epochs=100, learning_rate=0.001, dropout_rate=0.8, gradient_clip_margin=4, session = None):
+	def PredictLSTM(self, epochs=100, learning_rate=2e-5, dropout_rate=0.8, gradient_clip_margin=4, session = None):
 		if session == None:
 			hidden_layer_size=512 #512
 			number_of_layers=1 #1
