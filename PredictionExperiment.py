@@ -99,7 +99,7 @@ def PredictPrices(prices:PricingData, predictionMethod:int=0, daysForward:int = 
 			window_size = 1
 			modelDescription = prices.stockTicker + '_LSTM' + '_epochs' + str(numberOfLearningPasses) + '_histwin' + str(window_size) + '_daysforward' + str(daysForward) 
 			learningModule.LoadData(prices.GetPriceHistory(), window_size=window_size, prediction_target_days=daysForward, UseLSTM=True, SourceFieldList=SourceFieldList, batch_size=10, train_test_split=.93)
-			learningModule.TrainLSTM(epochs=numberOfLearningPasses, learning_rate=0.001, dropout_rate=0.8, gradient_clip_margin=4)
+			learningModule.TrainLSTM(epochs=numberOfLearningPasses, learning_rate=2e-5, dropout_rate=0.8, gradient_clip_margin=4)
 		elif predictionMethod ==2: 	#CNN Learning
 			print('Running CNN model predicting ' + str(daysForward) + ' days...')
 			window_size = 16 * daysForward
