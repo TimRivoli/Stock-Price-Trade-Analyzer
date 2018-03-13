@@ -24,6 +24,7 @@ class StockPredictionNN(object): #aka CrystalBall
 	_dataFolderPredictionResults = 'data/prediction/'
 
 	def __init__(self, dataFolderRoot:str=''):
+		tf.reset_default_graph()
 		if not dataFolderRoot =='':
 			if CreateFolder(dataFolderRoot):
 				if not dataFolderRoot[-1] =='/': dataFolderRoot += '/'
@@ -146,8 +147,8 @@ class StockPredictionNN(object): #aka CrystalBall
 		print('y_train size: {}'.format(self.y_train.shape))
 		print('\n')
 
-	def TrainCNN(self, epochs=100, learning_rate=2e-5, saveResults:bool = True):
-		#creates the model, trains it for the given number of epochs
+	def TrainCNN(self, epochs=500, learning_rate=2e-5):
+		#creates the model, trains it for the given number of epochs, saves it
 		print('Training CNN...')
 		#2 1-D conv layers with relu followed by 1-d conv output layer
 		networkArchitecture = [('C1d', [8, self.number_of_features, self.number_of_features * 2], 4), ('AF', 'relu'), 
@@ -156,43 +157,59 @@ class StockPredictionNN(object): #aka CrystalBall
 		cnnr = ANNR(self.X_train[0].shape, networkArchitecture, batchSize=self.batch_size, learnRate = learning_rate, maxIter = epochs, reg = 1e-5, tol = 1e-5, verbose = True)
 		cnnr.fit(self.X_train, self.y_train)
 
-		#print('Saving model...')
-		#saver = tf.train.Saver()
-		#saver.save(cnnr.GetSes(), self._dataFolderTensorFlowModels + self.modelName)
-		#builder = tf.saved_model.builder.SavedModelBuilder(self._dataFolderTensorFlowModels  + self.modelName)
-		#builder.add_meta_graph_and_variables(cnnr.GetSes(), [tf.saved_model.tag_constants.TRAINING], signature_def_map=None, assets_collection=None)
-		#builder.save()  	
-		self.PredictCNN(epochs, learning_rate, cnnr)
+		f = self._dataFolderTensorFlowModels + self.modelName +'.meta'
+		if epochs > 5 or not os.path.isfile(f) or True:
+			print('Saving model...')
+			saver = tf.train.Saver()
+			saver.save(cnnr.GetSes(), self._dataFolderTensorFlowModels + self.modelName)
+			print('Logits: ', cnnr.O[-1])
+			print('Inputs: ', cnnr.X)
+			#print('All TF: ', tf.trainable_variables)			
+		self.PredictCNN(cnnr)
+		cnnr.Reset()
 	
-	def PredictCNN(self, epochs=100, learning_rate=2e-5, cnnr:ANNR = None):
-		#The accuracy of this is zero
-		if cnnr ==None:
-			print('Restoring model...')
-			networkArchitecture = [('C1d', [8, self.number_of_features, self.number_of_features * 2], 4), ('AF', 'relu'), 
-				  ('C1d', [8, self.number_of_features * 2, self.number_of_features * 2], 2), ('AF', 'relu'), 
-				  ('C1d', [8, self.number_of_features * 2, self.number_of_features], 2)]
-			cnnr = ANNR(self.X_train[0].shape, networkArchitecture, batchSize=self.batch_size, learnRate = learning_rate, maxIter = epochs, reg = 1e-5, tol = 1e-5, verbose = True)
-			saver = tf.train.import_meta_graph(self._dataFolderTensorFlowModels + self.modelName +'.meta')
-			saver.restore(cnnr.GetSes(), self._dataFolderTensorFlowModels + self.modelName)
-			#tf.saved_model.loader.load(cnnr.GetSes(), [tf.saved_model.tag_constants.TRAINING], self._dataFolderTensorFlowModels + self.modelName)
+	def PredictCNN(self, cnnr=None):
+		session = None
+		if cnnr == None:
+			f = self._dataFolderTensorFlowModels + self.modelName +'.meta'
+			if os.path.isfile(f):
+				print('Restoring model...')
+				session =  tf.Session()
+				saver = tf.train.import_meta_graph(self._dataFolderTensorFlowModels + self.modelName +'.meta')
+				saver.restore(session, self._dataFolderTensorFlowModels + self.modelName)
+				graph = tf.get_default_graph()
+				#weights = graph.get_tensor_by_name('output_layer_weights:0')
+				#bias = graph.get_tensor_by_name('output_layer_bias:0')
+				inputs = graph.get_tensor_by_name('tfann/Placeholder:0')
+				#print(inputs)
+				logits = graph.get_tensor_by_name('tfann/BiasAdd_2:0')
+				#print(logits)
+		else:
+			inputs = cnnr.X
+			logits = cnnr.O[-1]
+			session = cnnr.GetSes()
 		
-		print('Predicting...')
-		X = numpy.array(self.X)
-		numberOfPredictions = len(X) 
-		assert(len(X)==len(self.predictionDF))
-		for i in range(0,numberOfPredictions):	
-			P = X[[i]]	
-			YH = cnnr.predict(P)
-			for ii in range(self.predictionDF.shape[1]):
-				self.predictionDF.iloc[i, ii] = YH[0,0,ii]
-		print('Training session closed')
-
+		if not session == None:
+			print('Predicting...')
+			X = numpy.array(self.X)
+			numberOfPredictions = len(X) 
+			assert(len(X)==len(self.predictionDF))
+			for i in range(0,numberOfPredictions):	
+				P = X[[i]]	
+				YH = session.run(logits, {inputs:P})
+				for ii in range(self.predictionDF.shape[1]):
+					self.predictionDF.iloc[i, ii] = YH[0,0,ii]
+			print('Training session closed')
+		else: 
+			print('Unable to locate existing TensorFlow model')
+			self.TrainCNN()
+		
 	def TrainLSTM(self, epochs=100, learning_rate=2e-5, dropout_rate=0.8, gradient_clip_margin=4):
-		#creates the model, trains it for the given number of epochs	
+		#creates the model, trains it for the given number of epochs, saves it	
 		hidden_layer_size=512 #512
 		number_of_layers=1 #1
 		dropout=True
-		tf.reset_default_graph()
+		#tf.reset_default_graph()
 		self.inputs = tf.placeholder(tf.float32, [self.batch_size, self.window_size, self.number_of_features], name='input_data')
 		self.targets = tf.placeholder(tf.float32, [self.batch_size, self.number_of_classes], name='targets')
 		cell, init_state = self.LSTM_cell(hidden_layer_size, self.batch_size, number_of_layers, dropout, dropout_rate)
@@ -225,39 +242,42 @@ class StockPredictionNN(object): #aka CrystalBall
 			if (i % 10) == 0:
 				print('Epoch {}/{}'.format(i, epochs), ' Current loss: {}'.format(numpy.mean(epoch_loss)))
 
-		saver = tf.train.Saver()
-		saver.save(session, self._dataFolderTensorFlowModels + self.modelName)
-		self.PredictLSTM(epochs=epochs, learning_rate=learning_rate, dropout_rate=dropout_rate, gradient_clip_margin=gradient_clip_margin, session=session)
+		f = self._dataFolderTensorFlowModels + self.modelName +'.meta'
+		if epochs > 5 or not os.path.isfile(f):
+			print('Saving model...')
+			saver = tf.train.Saver()
+			saver.save(session, self._dataFolderTensorFlowModels + self.modelName)
+		self.PredictLSTM(session=session)
 
-	def PredictLSTM(self, epochs=100, learning_rate=2e-5, dropout_rate=0.8, gradient_clip_margin=4, session = None):
+	def PredictLSTM(self, session = None):
 		if session == None:
-			hidden_layer_size=512 #512
-			number_of_layers=1 #1
-			dropout=True
-			tf.reset_default_graph()
-			self.inputs = tf.placeholder(tf.float32, [self.batch_size, self.window_size, self.number_of_features], name='input_data')
-			self.targets = tf.placeholder(tf.float32, [self.batch_size, self.number_of_classes], name='targets')
-			cell, init_state = self.LSTM_cell(hidden_layer_size, self.batch_size, number_of_layers, dropout, dropout_rate)
-			outputs, states = tf.nn.dynamic_rnn(cell, self.inputs, initial_state=init_state)
-			self.logits = self.LSTM_output_layer(outputs, hidden_layer_size, self.number_of_classes)
-			self.loss, self.opt = self.LSTM_opt_loss(self.logits, self.targets, learning_rate, gradient_clip_margin)
-			print('LSTM Cell: ', hidden_layer_size, ' hidden layers of ', hidden_layer_size, ' size, ', number_of_layers, ' layers')
-			print('Restoring model...')
-			session =  tf.Session()
-			session.run(tf.global_variables_initializer())
-			saver = tf.train.import_meta_graph(self._dataFolderTensorFlowModels + self.modelName +'.meta')
-			saver.restore(session, self._dataFolderTensorFlowModels + self.modelName)
-			
-		print('Predicting ...')
-		i = 0
-		while i + self.batch_size <= len(self.X_test):   
-			o = session.run([self.logits], feed_dict={self.inputs:self.X_test[i:i+self.batch_size]})
-			for iii in range(self.batch_size):
-				rowIndex = self.predictionDF.index[[self.X_train.shape[0] + i + iii]] #+ self.window_sizefirst window_size values are not in training data
-				self.predictionDF.loc[rowIndex,'Average'] = o[0][iii]
-			i += self.batch_size
-		session.close()
-		print('Training session closed')
+			f = self._dataFolderTensorFlowModels + self.modelName +'.meta'
+			if os.path.isfile(f):
+				print('Restoring model...')
+				session =  tf.Session()
+				saver = tf.train.import_meta_graph(self._dataFolderTensorFlowModels + self.modelName +'.meta')
+				saver.restore(session, self._dataFolderTensorFlowModels + self.modelName)
+				graph = tf.get_default_graph()
+				weights = graph.get_tensor_by_name('output_layer_weights:0')
+				bias = graph.get_tensor_by_name('output_layer_bias:0')
+				self.inputs = graph.get_tensor_by_name('input_data:0')
+				#print(self.inputs)
+				self.logits = graph.get_tensor_by_name('add:0')
+				#print(self.logits)
+		if not session == None:
+			print('Predicting ...')
+			i = 0
+			while i + self.batch_size <= len(self.X_test):   
+				o = session.run([self.logits], feed_dict={self.inputs:self.X_test[i:i+self.batch_size]})
+				for iii in range(self.batch_size):
+					rowIndex = self.predictionDF.index[[self.X_train.shape[0] + i + iii]] #+ self.window_sizefirst window_size values are not in training data
+					self.predictionDF.loc[rowIndex,'Average'] = o[0][iii]
+				i += self.batch_size
+			session.close()
+			print('Training session closed')
+		else:
+			print('Unable to locate existing TensorFlow model')
+			self.TrainLSTM()
 
 	def GetTrainingResults(self, includeTrainingTargets:bool = False, includeAccuracy:bool = False):
 		if includeTrainingTargets:
@@ -283,25 +303,10 @@ class StockPredictionNN(object): #aka CrystalBall
 		r = self.GetTrainingResults(includeTrainingTargets, includeAccuracy)
 		if daysToPlot==0: daysToPlot = len(self.X_test)
 		r.iloc[-daysToPlot:].plot()
+		plt.legend()
 		if not filename=='': 
 			if not filename[-4] =='.': filename += '.png'
 			plt.savefig(self._dataFolderPredictionResults + filename, dpi=600)			
 		else:
 			plt.show()
 		plt.close('all')
-
-	def RestoreModel(self, modelName:str): 
-		try:
-			saver = tf.train.Saver()
-			saver.restore(self.GetSes(), p + n)
-		except Exception as e:
-			print('Error restoring: ' + p + n)
-			return False
-		return True
-
-	def SaveModel(self, modelName:str):
-		saver = tf.train.Saver()
-		saver.save(self.GetSes(), p)
-		return False	
-
-
