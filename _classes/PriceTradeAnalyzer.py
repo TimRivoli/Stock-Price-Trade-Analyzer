@@ -106,9 +106,9 @@ def PlotDataFrame(df:pd.DataFrame, title:str, xlabel:str, ylabel:str, adjustScal
 		plt.close('all')
 
 currentProxyServer = None
+proxyList =['173.192.21.89:80','209.50.53.22:3128','47.206.51.67:8080','47.75.0.253:8081','47.52.222.165:80','159.203.155.37:3128','173.192.128.238:9999','161.202.226.194:25','173.192.21.89:8080','208.69.113.165:80','161.202.226.194:8123','173.192.21.89:8080','173.192.128.238:8123','45.6.216.66:80']
 def GetProxiedOpener():
 	testURL = 'https://stooq.com'
-	proxyList =['173.192.128.238:9999','161.202.226.194:25','173.192.21.89:8080','208.69.113.165:80','161.202.226.194:8123','173.192.21.89:8080','173.192.128.238:8123','45.6.216.66:8080','173.192.128.238:9999','192.210.170.200:1080','47.75.0.253:8081','74.207.254.183:80','173.249.15.107:3128','71.191.75.67:3128','47.88.20.189:80','168.128.29.75:80','52.43.233.218:80']
 	userName, password = 'Bill', 'test'
 	context = ssl._create_unverified_context()
 	handler = webRequest.HTTPSHandler(context=context)
@@ -247,6 +247,13 @@ class PricingData:
 			print('Web connection error.')
 		if len(s1) < 1024:
 			print('No data found online for ticker ' + self.stockTicker)
+			if useWebProxyServer:
+				global currentProxyServer
+				global proxyList
+				if not currentProxyServer==None and len(proxyList) > 3: 
+					print('Removing proxy: ', currentProxyServer)
+					proxyList.remove(currentProxyServer)
+					currentProxyServer = None
 		else:
 			print('Downloaded new data for ticker ' + self.stockTicker)
 			f = open(filePath,'w')
@@ -564,11 +571,8 @@ class PricingData:
 	def GetPricePredictions(self):
 		return self.pricePredictions.copy()  #best to pass back copies instead of reference.
 
-	def GraphData(self, endDate:datetime=None, daysToGraph:int=90, graphTitle:str='', includePredictions:bool=False, saveToFile:bool=False, fileNameSuffix:str='', saveToFolder:str='', dpi:int=600, trimHistoricalPredictions:bool = True):
+	def GraphData(self, endDate:datetime=None, daysToGraph:int=90, graphTitle:str=None, includePredictions:bool=False, saveToFile:bool=False, fileNameSuffix:str=None, saveToFolder:str='', dpi:int=600, trimHistoricalPredictions:bool = True):
 		PlotInitDefaults()
-		if graphTitle=='': 
-			graphTitle = self.stockTicker
-			if not fileNameSuffix =='': graphTitle = graphTitle + ' ' + fileNameSuffix
 		if includePredictions:
 			if not self.predictionsLoaded: self.PredictPrices()
 			if endDate == None: endDate = self.pricePredictions.index.max()
@@ -582,15 +586,16 @@ class PricingData:
 				fieldSet = ['High','Low', 'estHigh','estLow']
 				x = self.historicalPrices.join(self.pricePredictions, how='outer')
 			if daysToGraph > 1800:	fieldSet = ['Average', 'estHigh','estLow']
-			ax=x.loc[startDate:endDate,fieldSet].plot(title=graphTitle, linewidth=.75)			
 		else:
 			if endDate == None: endDate = self.historyEndDate
 			endDate = DateFormatDatabase(endDate)
 			startDate = endDate - BDay(daysToGraph) 
-			if daysToGraph > 1800:
-				ax=self.historicalPrices.loc[startDate:endDate,['Average']].plot(title=graphTitle, linewidth=.75)
-			else:
-				ax=self.historicalPrices.loc[startDate:endDate,['High','Low', 'channelHigh', 'channelLow']].plot(title=graphTitle, linewidth=.75)
+			fieldSet = ['High','Low', 'channelHigh', 'channelLow']
+			if daysToGraph > 1800: fieldSet = ['Average']
+			x = self.historicalPrices
+		if fileNameSuffix == None: fileNameSuffix = str(endDate)[:10] + '_' + str(daysToGraph) + 'days'
+		if graphTitle==None: graphTitle = self.stockTicker + ' ' + fileNameSuffix 
+		ax=x.loc[startDate:endDate,fieldSet].plot(title=graphTitle, linewidth=.75)			
 		ax.set_xlabel('Date')
 		ax.set_ylabel('Price')
 		ax.tick_params(axis='x', rotation=70)
