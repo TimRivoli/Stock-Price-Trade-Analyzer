@@ -1,6 +1,6 @@
 
 
-This is a Python 3.0 project for analyzing stock prices and methods of stock trading using native Python tools and Google TensorFlow machine learning. It has two main class modules PriceTradeAnalyzer and SeriesPrediction described below.
+This is a Python 3.0 project for analyzing stock prices and methods of stock trading. It uses native Python tools and Google TensorFlow machine learning. It has two main class modules PriceTradeAnalyzer and SeriesPrediction described below.
 
 Module: PriceTradeAnalyzer
 Class PricingData
