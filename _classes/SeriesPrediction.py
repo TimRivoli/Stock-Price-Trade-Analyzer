@@ -54,14 +54,14 @@ class SeriesPredictionNN(object):
 			assert(False)
 		self.window_size = window_size	
 		X = [] #create dimension for window of past days, 0 position is most recent
-		i = self.sourceDF.shape[0]-1	#start at the last element, move back to first element beyond the window
-		while i >= window_size:
-			v = self.sourceDF.iloc[i-window_size:i].values
+		i = window_size
+		while i < self.sourceDF.shape[0] +1 :
+			v = self.sourceDF[i-window_size:i].values
 			v = v[::-1] #flip it so that 0 is most recent
-			X.insert(0,v)
-			i -= 1
+			X.append(v)
+			i += 1
 		self.X = X
-		self.sourceDF.drop(self.sourceDF.index[:self.window_size], inplace=True) #Forget anything that occurs before the history window.  Data is not part of the training source or target
+		self.sourceDF.drop(self.sourceDF.index[:self.window_size-1], inplace=True) #Forget anything that occurs before the history window.  Data is not part of the training source or target
 		print('Features in source dataset: {}'.format(self.feature_count))
 		print('Days in the source features data set: {}'.format(self.daysInDataSet))
 		print('Window size: ', self.window_size)
@@ -102,7 +102,7 @@ class SeriesPredictionNN(object):
 		assert(self.predictionDF.shape[0] == self.targetDF.shape[0] and self.predictionDF.shape[0] == self.sourceDF.shape[0])	#This is key to aligning the results since train data has not dates we use rows
 		self.modelName = self.baseModelName + '_win' + str(self.window_size) + '_days' + str(prediction_target_days) + '_feat' + str(self.feature_count) + '_class' + str(self.number_of_classes)
 		self.targetDataLoaded = True
-
+		
 	def MakeBatches(self, batch_size=32, train_test_split=.90):
 		if not (self.sourceDataLoaded):
 			print('Source data needs to be loaded before batching.')
@@ -113,17 +113,12 @@ class SeriesPredictionNN(object):
 		self.batch_size = batch_size
 		print('Batching data...')
 		daysOfData=len(self.X)
-		self.train_start_offset = daysOfData % batch_size
-		train_test_cuttoff = round((daysOfData // batch_size) * train_test_split) * batch_size + batch_size + self.train_start_offset
+		train_start_offset = daysOfData % batch_size
+		train_test_cuttoff = round((daysOfData // batch_size) * train_test_split) * batch_size + batch_size + train_start_offset
 		self.X_train  = numpy.array(self.X[:train_test_cuttoff]) #to train_test_cuttoff
+		self.y_train = numpy.array(self.y[:train_test_cuttoff])  #to train_test_cuttoff
 		self.X_test = numpy.array(self.X[train_test_cuttoff:])   #after train_test_cuttoff
-		if self.UseLSTM:
-			self.y_train = numpy.array(self.y[:train_test_cuttoff])  #to train_test_cuttoff
-			self.y_test = numpy.array(self.y[train_test_cuttoff:])   #after train_test_cuttoff, this is never used
-		else:
-			self.y_train = numpy.array(self.y[:train_test_cuttoff])  #to train_test_cuttoff
-			self.y_test = numpy.array(self.y[train_test_cuttoff:])   #after train_test_cuttoff, this is never used
-		print('train_start_offset: ', self.train_start_offset)
+		self.y_test = numpy.array(self.y[train_test_cuttoff:])   #after train_test_cuttoff, this is never used
 		print('train_test_cuttoff: ', train_test_cuttoff)
 		print('(Days, Window size, Features)')
 		print('X_train size: {}'.format(self.X_train.shape)) 
@@ -203,7 +198,7 @@ class SeriesPredictionNN(object):
 				predictions = self.model.predict_classes(d)	
 			else:
 				predictions = self.model.predict(d)	
-			start_index = len(self.predictionDF) - len(predictions) #getting this number correct is key to aligning predictions with the correct date
+			start_index = len(self.predictionDF) - len(predictions) #getting this number correct is key to aligning predictions with the correct date, predicting to end date of predictionDF so, number of predictions minus the end
 			for i in range(len(predictions)):
 				self._RecordPredictedValue(start_index + i, predictions[i])
 			print('Predictions complete.')
