@@ -12,8 +12,10 @@ You can see this code in action on my site: https://timrivoli.com/stockcharts/. 
 
 Classes Portfolio and TradingModel are used to test emulations of trading strategies.  EvaluateTradeModels.py shows examples of how to the TradingModel class to create and test trading strategies.  The models will use actual historical prices from PricingData. You specify the stocks you want to work with, the time frame you want to test against, and the logic you want to use for buying and selling.  Example strategies are included for BuyAndHold, Seasonal investing, and two different Trending approaches.  The resulting daily value and trade history are dataframes which are graphed and saved to .csv and .png files so you can view the performance details later.  ExtendedDurationTest allows you to test the performance of any model over various time frames and durations.  CompareModels allows you to compare the performance of any two models over a given time period.  It would be great to create a re-enforcement learning module using Deep Q or Policy Gradient.  I'm also thinking of making a stock trading game and using the code to run it against historical time periods.  It could be a good educational tool.  I know it has been for me!
 
+Class ForcastModel has been added to forecast the effect of a series of potential actions on a TradingModel.  I'm using this to create a "best actions" sequence for supervised machine learning in another project.  Given a market state and a sequence of actions (or every possible action) which one produces the best result after X days.  This can then be used to train a robotic trainer with supervised learning.
+
 Module: SeriesPrediction
-Class StockPredictionNN uses LSTM (Long Short Term Memory) and CNN (Convolutional Neural Network) learning functions to predict future prices.  These use Google TensorFlow 1.5.0. The LSTM functions were adapted from Luka Anicin's https://github.com/lucko515/tesla-stocks-prediction.  The CNN functions were adapted from https://nicholastsmith.wordpress.com/ currency estimator and use his TFANN class wrapper for the TensorFlow implementation.
+Class StockPredictionNN uses LSTM (Long Short Term Memory) and CNN (Convolutional Neural Network) learning functions to predict future prices.  These use Google TensorFlow 1.5.0. The LSTM and CNN models have been updated to use Keras which greatly simplifies the code.  I've added an option to enableTensorFlow=True/False in PriceTradeAnalyzer.py so you have the option to not load the machine learning modules.
 
 TrainPrices.py shows samples of using the StockPredictionNN class to train and test PricingData using LSTM and CNN machine learning techniques.  
 
@@ -32,13 +34,13 @@ pip install numpy
 pip install pandas
 pip install matplotlib
 pip install tensorflow
-pip install TFANN
+pip install keras
 
 AWS install requirements with:
 python3 -m pip install numpy --upgrade
 python3 -m pip install pandas --upgrade
 python3 -m pip install tensorflow --upgrade
-python3 -m pip install TFANN --upgrade
+python3 -m pip install keras --upgrade
 
 Note about using an AWS instance:  There is no GUI so I've added a switch to enable the Agg non-interactive back-end for matplotlib.  Also, it can be difficult to access web sites from within AWS as some sites block hosted IP ranges and python response headers, so I've added a web-proxy option to get around this.  We should bear in mind that the reason sites put these blocks in place is to avoid abuse of their services, so please be kind and don't abuse free services.
 
