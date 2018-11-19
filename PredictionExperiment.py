@@ -109,7 +109,7 @@ def PredictPrices(prices:PricingData, predictionMethod:int=0, daysForward:int = 
 		learningModule.LoadTarget(targetDF=None, prediction_target_days=daysForward)
 		learningModule.MakeBatches(batch_size=32, train_test_split=.93)
 		learningModule.Train(epochs=numberOfLearningPasses)
-		model.Predict(True)
+		learningModule.Predict(True)
 		predDF = learningModule.GetTrainingResults(True, True)
 	averageDeviation = predDF['PercentageDeviation'].tail(round(predDF.shape[0]/4)).mean() #Average of the last 25% to account for training.
 	print('Average deviation: ', averageDeviation * 100, '%')
