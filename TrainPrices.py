@@ -33,8 +33,10 @@ def TestPredictionModels(ticker:str='^SPX', numberOfLearningPasses:int = 500):
 			print('Average deviation: ', averageDeviation * 100, '%')
 			predDF.to_csv(dataFolder + modelDescription + '.csv')
 			plot.PlotDataFrame(predDF[['estAverage','Average']], modelDescription, 'Date', 'Price', True, dataFolder + modelDescription) 
+			plot.PlotDataFrameDateRange(predDF[['Average','Average_Predicted']], None, 160, modelDescription + '_last160ays', 'Date', 'Price', dataFolder + modelDescription + '_last160Days') 
+			plot.PlotDataFrameDateRange(predDF[['Average','Average_Predicted']], None, 500, modelDescription + '_last500Days', 'Date', 'Price', dataFolder + modelDescription + '_last500Days') 
 
-def TraintickerRaw(ticker:str = '^SPX', UseLSTM:bool=True, prediction_target_days:int = 5, epochs:int = 500, usePercentages:bool=False, learning_rate=2e-5):
+def TrainTickerRaw(ticker:str = '^SPX', UseLSTM:bool=True, prediction_target_days:int = 5, epochs:int = 500, usePercentages:bool=False, learning_rate=2e-5):
 	plot = PlotHelper()
 	prices = PricingData(ticker)
 	print('Loading ' + ticker)
@@ -44,26 +46,36 @@ def TraintickerRaw(ticker:str = '^SPX', UseLSTM:bool=True, prediction_target_day
 			prices.ConvertToPercentages()
 		else:
 			prices.NormalizePrices()
-		model = StockPredictionNN()
+		model = StockPredictionNN(modelName=ticker, UseLSTM=UseLSTM)
 		if UseLSTM:
-			window_size = 1
+			window_size = 10
 			modelDescription = ticker + '_LSTM'
 			modelDescription += '_epochs' + str(epochs) + '_histwin' + str(window_size) + '_daysforward' + str(prediction_target_days) 
 			if usePercentages: modelDescription += '_percentages'
 			SourceFieldList = None
-			#Note: LSTM doesn't benefit from a window size of > 1 since it is inherent in the model it just add noise
-			model.LoadData(prices.GetPriceHistory(), window_size=window_size, prediction_target_days=prediction_target_days, UseLSTM=UseLSTM, SourceFieldList=SourceFieldList, batch_size=10, train_test_split=.93)
-			model.TrainLSTM(epochs=epochs, learning_rate=learning_rate, dropout_rate=0.8, gradient_clip_margin=4)
-			#model.PredictLSTM(epochs=epochs)
+			model.LoadSource(sourceDF=prices.GetPriceHistory(), SourceFieldList=SourceFieldList, window_size=window_size)
+			model.LoadTarget(targetDF=None, prediction_target_days=prediction_target_days)
+			model.MakeBatches(batch_size=32, train_test_split=.93) 
+			model.Train(epochs=epochs)
+			model.Predict(True)
+			model.Save()
+			model.DisplayModel()
+			#model.DisplayDataSample()
+			#model.DisplayModel()
 		else: #CNN
 			window_size = 16 * prediction_target_days
 			modelDescription = ticker + '_CNN'
 			modelDescription += '_epochs' + str(epochs) + '_histwin' + str(window_size) + '_daysforward' + str(prediction_target_days) 
 			if usePercentages: modelDescription += '_percentages'
 			SourceFieldList = ['High','Low','Open','Close']
-			model.LoadData(prices.GetPriceHistory(), window_size=window_size, prediction_target_days=prediction_target_days, UseLSTM=UseLSTM, SourceFieldList=SourceFieldList, batch_size=32, train_test_split=.93)
-			model.TrainCNN(epochs=epochs, learning_rate=learning_rate)
-			#model.PredictCNN(epochs=epochs)
+			#SourceFieldList = None
+			model.LoadSource(sourceDF=prices.GetPriceHistory(), SourceFieldList=SourceFieldList, window_size=window_size)
+			model.LoadTarget(targetDF=None, prediction_target_days=prediction_target_days)
+			model.MakeBatches(batch_size=32, train_test_split=.93)
+			model.Train(epochs=epochs)
+			model.Predict(True)
+			model.Save()
+			model.DisplayModel()
 		if usePercentages: 
 			predDF = model.GetTrainingResults(True, True)
 			predDF.fillna(method='bfill', inplace=True)	
@@ -76,21 +88,33 @@ def TraintickerRaw(ticker:str = '^SPX', UseLSTM:bool=True, prediction_target_day
 			predDF.to_csv(dataFolder + modelDescription +'.csv')
 			plot.PlotDataFrame(predDF[['Average','Average_Predicted']], modelDescription, 'Date', 'Price', True, dataFolder + modelDescription) 
 			plot.PlotDataFrameDateRange(predDF[['Average','Average_Predicted']], None, 160, modelDescription + '_last160ays', 'Date', 'Price', dataFolder + modelDescription + '_last160Days') 
+			plot.PlotDataFrameDateRange(predDF[['Average','Average_Predicted']], None, 500, modelDescription + '_last500Days', 'Date', 'Price', dataFolder + modelDescription + '_last500Days') 
 		else:
 			model.PredictionResultsSave(modelDescription, True, True)
 			model.PredictionResultsPlot(modelDescription, True, False)
 		
-#TraintickerRaw('^SPX', UseLSTM=False, prediction_target_days = 30, epochs = 50)
-#TraintickerRaw('^SPX', UseLSTM=True, prediction_target_days = 10, epochs = 750)
-#TraintickerRaw('^SPX', UseLSTM=False, prediction_target_days = 10, epochs = 750)
-#TraintickerRaw('^SPX', UseLSTM=True, prediction_target_days = 16, epochs = 750)
-#TraintickerRaw('^SPX', UseLSTM=False, prediction_target_days = 16, epochs = 750)
-#TraintickerRaw('^SPX', UseLSTM=True, prediction_target_days = 30, epochs = 750)
-#TraintickerRaw('^SPX', UseLSTM=False, prediction_target_days = 30, epochs = 750)
-#TraintickerRaw('^SPX', UseLSTM=True, prediction_target_days = 5, epochs = 1000, usePercentages=True)
-#TraintickerRaw('^SPX', UseLSTM=True, prediction_target_days = 5, epochs = 1000, usePercentages=False)
-#TraintickerRaw('^SPX', UseLSTM=False, prediction_target_days = 5, epochs = 1000, usePercentages=True)
-#TraintickerRaw('^SPX', UseLSTM=False, prediction_target_days = 5, epochs = 1000, usePercentages=False)
-TraintickerRaw('TSLA', UseLSTM=True, prediction_target_days = 5, epochs = 500)
-TraintickerRaw('TSLA', UseLSTM=False, prediction_target_days = 5, epochs = 500)
-#TestPredictionModels('TSLA', 5)
+if __name__ == '__main__':
+	#TrainTickerRaw('^SPX', UseLSTM=True, prediction_target_days = 5, epochs = 750)
+	#TrainTickerRaw('^SPX', UseLSTM=True, prediction_target_days = 10, epochs = 750)
+	#TrainTickerRaw('^SPX', UseLSTM=True, prediction_target_days = 20, epochs = 750)
+	#TrainTickerRaw('^SPX', UseLSTM=True, prediction_target_days = 30, epochs = 750)
+	#TrainTickerRaw('TSLA', UseLSTM=True, prediction_target_days = 30, epochs = 750)
+	#TrainTickerRaw('^SPX', UseLSTM=False, prediction_target_days = 5, epochs = 750)
+	#TrainTickerRaw('^SPX', UseLSTM=False, prediction_target_days = 10, epochs = 750)
+	#TrainTickerRaw('^SPX', UseLSTM=False, prediction_target_days = 20, epochs = 750)
+	#TrainTickerRaw('^SPX', UseLSTM=False, prediction_target_days = 30, epochs = 750)
+	#TrainTickerRaw('TSLA', UseLSTM=False, prediction_target_days = 5, epochs = 5)
+	#TestPredictionModels('TSLA', 5)
+	#TrainTickerRaw('^SPX', UseLSTM=True, prediction_target_days = 6, epochs = 3)
+	#TrainTickerRaw('^SPX', UseLSTM=True, prediction_target_days = 6, epochs = 30)
+	#TrainTickerRaw('^SPX', UseLSTM=True, prediction_target_days = 20, epochs = 30)
+	#TrainTickerRaw('^SPX', UseLSTM=False, prediction_target_days = 3, epochs = 30)
+	#TrainTickerRaw('^SPX', UseLSTM=True, prediction_target_days = 5, epochs = 500)
+	#TrainTickerRaw('^SPX', UseLSTM=True, prediction_target_days = 10, epochs = 500)
+	#TrainTickerRaw('^SPX', UseLSTM=True, prediction_target_days = 20, epochs = 300)
+	#TrainTickerRaw('^SPX', UseLSTM=False, prediction_target_days = 5, epochs = 500)
+	#TrainTickerRaw('^SPX', UseLSTM=False, prediction_target_days = 10, epochs = 500)
+	TrainTickerRaw('^SPX', UseLSTM=True, prediction_target_days = 20, epochs = 300)
+	#TrainTickerRaw('^SPX', UseLSTM=False, prediction_target_days = 11, epochs = 300)
+	#TrainTickerRaw('^SPX', UseLSTM=True, prediction_target_days = 21, epochs = 300)
+	#TrainTickerRaw('^SPX', UseLSTM=False, prediction_target_days = 21, epochs = 300)

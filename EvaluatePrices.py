@@ -5,6 +5,7 @@ AShortList=['^SPX','AAPL','GOOGL','F','CVX','XOM','MRK','FCX','NEM','BA']
 SPTop70=['^SPX','AAPL','MSFT','AMZN','FB','BRK-B','JPM','JNJ','XOM','GOOG','GOOGL','BAC','WFC','CVX','UNH','HD','INTC','PFE','T','V','PG','VZ','CSCO','C','CMCSA','ABBV','BA','KO','DWDP','PEP','PM','MRK','DIS','WMT','ORCL','MA','MMM','NVDA','IBM','AMGN','MCD','GE','MO','NFLX','HON','MDT','GILD','TXN','ABT','UNP','SLB','BMY','UTX','AVGO','ACN','QCOM','ADBE','CAT','GS','PYPL','PCLN','USB','UPS','LOW','NKE','TMO','LMT','COST','CVS','LLY','CELG']
 DogsOfDOW=['VZ','IBM','XOM','PFE','CVX','PG','MRK','KO','GE','CSCO']
 SPTop70MinusDogs=['^SPX','AAPL','MSFT','AMZN','FB','BRK-B','JPM','JNJ','XOM','GOOG','GOOGL','BAC','WFC','CVX','UNH','HD','INTC','PFE','T','V','PG','VZ','CSCO','C','CMCSA','ABBV','BA','KO','DWDP','PEP','MRK','DIS','WMT','ORCL','MA','MMM','NVDA','IBM','AMGN','MCD','MO','NFLX','HON','MDT','GILD','TXN','ABT','UNP','SLB','BMY','UTX','AVGO','ACN','QCOM','ADBE','CAT','GS','PYPL','PCLN','USB','UPS','LOW','NKE','TMO','LMT','COST','CVS','LLY','CELG']
+IndexList=['^SPX','^DJI', '^NDQ']
 
 def PlotAnnualPerformance(ticker:str='^SPX'):
 	print('Annual performance rate for ' + ticker)
@@ -40,12 +41,18 @@ def DownloadAndGraphStocks(tickerList:list):
 			prices.CalculateStats()
 			prices.PredictPrices(2, 15)
 			prices.NormalizePrices()
-			prices.SaveStatsToFile(True)
+			#prices.SaveStatsToFile(True)
 			psnap = prices.GetCurrentPriceSnapshot()
-			titleStatistics =' 5/15 dev: ' + str(round(psnap.fiveDayDeviation*100, 2)) + '/' + str(round(psnap.fifteenDayDeviation*100, 2)) + '% ' + str(psnap.low) + '/' + str(psnap.nextDayTarget) + '/' + str(psnap.high) + ' ' + str(psnap.snapshotDate)[:10]
-			print('Graphing ' + ticker + ' ' + str(psnap.snapshotDate)[:10])
+			titleStatistics =' 5/15 dev: ' + str(round(psnap.fiveDayDeviation*100, 2)) + '/' + str(round(psnap.fifteenDayDeviation*100, 2)) + '% ' + str(psnap.low) + '/' + str(psnap.nextDayTarget) + '/' + str(psnap.high) + ' ' + str(psnap.snapShotDate)[:10]
+			print('Graphing ' + ticker + ' ' + str(psnap.snapShotDate)[:10])
 			for days in [90,180,365,2190,4380]:
 				prices.GraphData(None, days, ticker + '_days' + str(days) + ' ' + titleStatistics, (days < 1000), True, str(days).rjust(4, '0') + 'd', trimHistoricalPredictions=False)
+
+def GraphTimePeriod(ticker:str, endDate:datetime, days:int):
+	prices = PricingData(ticker)
+	print('Loading ' + ticker)
+	if prices.LoadHistory(True):
+		prices.GraphData(endDate, days, None , False, True, None)
 
 def CalculatePriceCorrelation(tickerList:list):
 	datafileName = 'data/_priceCorrelations.csv'
@@ -89,7 +96,7 @@ def OpportunityFinder(tickerList:list):
 		if prices.LoadHistory(True):
 			prices.CalculateStats()
 			psnap = prices.GetCurrentPriceSnapshot()
-			titleStatistics =' 5/15 dev: ' + str(round(psnap.fiveDayDeviation*100, 2)) + '/' + str(round(psnap.fifteenDayDeviation*100, 2)) + '% ' + str(psnap.low) + '/' + str(psnap.nextDayTarget) + '/' + str(psnap.high) + str(snapshotDate)
+			titleStatistics =' 5/15 dev: ' + str(round(psnap.fiveDayDeviation*100, 2)) + '/' + str(round(psnap.fifteenDayDeviation*100, 2)) + '% ' + str(psnap.low) + '/' + str(psnap.nextDayTarget) + '/' + str(psnap.high) + str(psnap.snapShotDate)
 			if psnap.low > psnap.channelHigh: 
 				overBoughtList.append(ticker)
 			if psnap.high < psnap.channelLow: 
@@ -113,10 +120,16 @@ def OpportunityFinder(tickerList:list):
 	for t in highDeviationList: f.write(t + '\n')
 	f.close()
 	
-#CalculatePriceCorrelation(SPTop70)
-#CalculatePriceCorrelation(DogsOfDOW)
-#PlotAnnualPerformance('TSLA')
-#PlotAnnualPerformance('^SPX')
-#OpportunityFinder(SPTop70)
-#PlotPrediction('^SPX', 1, 120, 15)
-DownloadAndGraphStocks(SPTop70)
+if __name__ == '__main__':
+	#CalculatePriceCorrelation(SPTop70)
+	#CalculatePriceCorrelation(DogsOfDOW)
+	#PlotAnnualPerformance('TSLA')
+	#PlotAnnualPerformance('^SPX')
+	PlotPrediction('^SPX', 1, 120, 15)
+	OpportunityFinder(SPTop70)
+	DownloadAndGraphStocks(IndexList)
+	#DownloadAndGraphStocks(SPTop70)
+	#DownloadAndGraphStocks(DogsOfDOW)
+	#for i in range(30,40,2):	GraphTimePeriod('^SPX', '1/3/19' + str(i), 600)
+	#PlotPrediction('^SPX', predictionMethod=3, daysToGraph=60, daysForward=6, learnhingEpochs=10) #LSTM
+	#PlotPrediction('^SPX', predictionMethod=4, daysToGraph=60, daysForward=5, learnhingEpochs=10) #CNN
