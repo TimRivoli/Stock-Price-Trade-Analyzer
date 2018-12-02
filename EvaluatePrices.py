@@ -120,16 +120,16 @@ def OpportunityFinder(tickerList:list):
 	for t in highDeviationList: f.write(t + '\n')
 	f.close()
 	
-if __name__ == '__main__':
+if __name__ == '__main__': #Choose your adventure.
 	#CalculatePriceCorrelation(SPTop70)
 	#CalculatePriceCorrelation(DogsOfDOW)
 	#PlotAnnualPerformance('TSLA')
-	#PlotAnnualPerformance('^SPX')
-	PlotPrediction('^SPX', 1, 120, 15)
-	OpportunityFinder(SPTop70)
-	DownloadAndGraphStocks(IndexList)
+	PlotAnnualPerformance('^SPX')
+	#PlotPrediction('^SPX', 1, 120, 15)
+	#OpportunityFinder(SPTop70)
+	#DownloadAndGraphStocks(IndexList)
 	#DownloadAndGraphStocks(SPTop70)
 	#DownloadAndGraphStocks(DogsOfDOW)
 	#for i in range(30,40,2):	GraphTimePeriod('^SPX', '1/3/19' + str(i), 600)
-	#PlotPrediction('^SPX', predictionMethod=3, daysToGraph=60, daysForward=6, learnhingEpochs=10) #LSTM
-	#PlotPrediction('^SPX', predictionMethod=4, daysToGraph=60, daysForward=5, learnhingEpochs=10) #CNN
+	#PlotPrediction('^SPX', predictionMethod=3, daysToGraph=60, daysForward=5, learnhingEpochs=750) #LSTM
+	#PlotPrediction('^SPX', predictionMethod=4, daysToGraph=60, daysForward=5, learnhingEpochs=750) #CNN

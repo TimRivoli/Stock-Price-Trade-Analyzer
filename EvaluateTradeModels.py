@@ -222,11 +222,11 @@ def RunTradingModelSwingTrend(tm: TradingModel, ticker:str):
 		
 
 if __name__ == '__main__':
-	RunModel('BuyAndHold', RunTradingModelBuyHold, '^Spx','1/1/2000', 15, 50000, verbose=False)
-	RunModel('BuyAndHold', RunTradingModelBuyHold, 'MRK','1/2/2008', 5, 50000, verbose=False)
-	ExtendedDurationTest('BuyHold', RunTradingModelBuyHold,'^SPX')
-	RunModel('Trending', RunTradingModelTrending, 'GOOGL','1/2/2008', 5, 50000, verbose=False)
-	CompareModels('BuyHold',RunTradingModelBuyHold,'Trending', RunTradingModelTrending, 'Googl','1/1/2000',15)
+	RunModel('BuyAndHold', RunTradingModelBuyHold, '^Spx','1/1/2009', 8, 30000, verbose=False)
+	#RunModel('BuyAndHold', RunTradingModelBuyHold, 'MRK','1/2/2008', 5, 50000, verbose=False)
+	#ExtendedDurationTest('BuyHold', RunTradingModelBuyHold,'^SPX')
+	#RunModel('Trending', RunTradingModelTrending, 'GOOGL','1/2/2008', 5, 50000, verbose=False)
+	#CompareModels('BuyHold',RunTradingModelBuyHold,'Trending', RunTradingModelTrending, 'Googl','1/1/2000',15)
 	#RunModel('Trending', RunTradingModelTrending, '^Spx','1/2/2008', 5, 50000, verbose=False)
 	#RunModel('Trending', RunTradingModelTrending, '^Spx','1/1/1990', 27, 50000, verbose=False)
 	#RunModel('SwingTrend', RunTradingModelSwingTrend, '^Spx','1/1/1990', 27, 50000, verbose=False)
