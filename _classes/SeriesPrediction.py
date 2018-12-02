@@ -165,14 +165,14 @@ class SeriesPredictionNN(object):
 		if dropout: model.add(keras.layers.Dropout(dropout_rate))
 		print('(optimizer, loss, activation) {', optimizer,',', loss_function, ',', output_activation, '}')
 		model.add(keras.layers.Dense(self.number_of_classes, activation=output_activation))
-		#if optimizer == 'adam' :
-		#	opt_function = keras.optimizers.Adam(lr=learning_rate, beta_1=0.9, beta_2=0.999, epsilon=None, decay=0.0, amsgrad=False)
-		#	model.compile(optimizer=opt_function, loss=loss_function, metrics=metrics)
-		#else:
-		model.compile(optimizer=optimizer, loss=loss_function, metrics=metrics)
+		if optimizer == 'adam' :
+			opt_function = keras.optimizers.Adam(lr=learning_rate, amsgrad=False)
+			model.compile(optimizer=opt_function, loss=loss_function, metrics=metrics)
+		else:
+			model.compile(optimizer=optimizer, loss=loss_function, metrics=metrics)
 		self.model = model
 
-	def BuildModel(self, layer_count:int=1, hidden_layer_size:int=512):
+	def BuildModel(self, layer_count:int=1, hidden_layer_size:int=512, dropout:bool=True, dropout_rate:float=0.01, optimizer:str= 'adam', learning_rate:float=2e-5, metrics:list=['accuracy']):
 		if not (self.sourceDataLoaded):
 			print('Source data needs to be loaded before building model.')
 			assert(False)
@@ -180,9 +180,9 @@ class SeriesPredictionNN(object):
 		if self.batchesCreated:
 			keras.backend.clear_session()
 			if self.UseLSTM:
-				self._BuildLSTMModel(layer_count=layer_count, hidden_layer_size=hidden_layer_size, dropout=True, dropout_rate=0.01, optimizer = 'adam', learning_rate=2e-5, metrics=['accuracy'])
+				self._BuildLSTMModel(layer_count=layer_count, hidden_layer_size=hidden_layer_size, dropout=dropout, dropout_rate=dropout_rate, optimizer=optimizer, learning_rate=learning_rate, metrics=metrics)
 			else:
-				self._BuildCNNModel(layer_count=layer_count, hidden_layer_size=hidden_layer_size, dropout=True, dropout_rate=0.02, optimizer = 'adam', learning_rate=2e-5, metrics=['accuracy'])
+				self._BuildCNNModel(layer_count=layer_count, hidden_layer_size=hidden_layer_size, dropout=dropout, dropout_rate=dropout_rate, optimizer=optimizer, learning_rate=learning_rate, metrics=metrics)
 		
 #  ----------------------------------------------------  Training / Prediction / Utility -----------------------------------------------------------------
 	def Train(self, epochs=100):
