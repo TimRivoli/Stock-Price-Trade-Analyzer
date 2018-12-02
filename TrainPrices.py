@@ -7,24 +7,14 @@ def TestPredictionModels(ticker:str='^SPX', numberOfLearningPasses:int = 500):
 	#Simple procedure to test different prediction methods 4,20,60 days in the future
 	plot = PlotHelper()
 	prices = PricingData(ticker)
+	prices.LoadHistory(True)
+	prices.TrimToDateRange('1/1/2000', '3/1/2018')
 	print('Loading ' + ticker)
 	for daysForward in [4,20,60]: 
 		for predictionMethod in range(0,5):
-			usePercentages = False
-			normalizePrices = False
-			#if predictionMethod ==3 or predictionMethod ==4:  usePercentages = True
 			modelDescription = ticker + '_method' + str(predictionMethod) + '_epochs' + str(numberOfLearningPasses) + '_daysforward' + str(daysForward) 
-			if usePercentages: 
-				modelDescription += '_percentages'
-				prices.ConvertToPercentages()
-			elif normalizePrices:
-				prices.NormalizePrices()
 			print('Predicting ' + str(daysForward) + ' days using method ' + modelDescription)
 			prices.PredictPrices(predictionMethod, daysForward, numberOfLearningPasses)
-			if usePercentages: 	#Convert back
-				prices.ConvertToPercentages()
-			elif normalizePrices:
-				prices.NormalizePrices()
 			predDF = prices.pricePredictions.copy()
 			predDF = predDF.join(prices.GetPriceHistory())
 			predDF['PercentageDeviation'] = abs((predDF['Average']-predDF['estAverage'])/predDF['Average'])
@@ -34,7 +24,7 @@ def TestPredictionModels(ticker:str='^SPX', numberOfLearningPasses:int = 500):
 			plot.PlotDataFrame(predDF[['estAverage','Average']], modelDescription, 'Date', 'Price', True, dataFolder + modelDescription) 
 			plot.PlotDataFrameDateRange(predDF[['Average','estAverage']], None, 160, modelDescription + '_last160ays', 'Date', 'Price', dataFolder + modelDescription + '_last160Days') 
 			plot.PlotDataFrameDateRange(predDF[['Average','estAverage']], None, 500, modelDescription + '_last500Days', 'Date', 'Price', dataFolder + modelDescription + '_last500Days') 
-
+			
 def TrainTickerRaw(ticker:str = '^SPX', UseLSTM:bool=True, prediction_target_days:int = 5, epochs:int = 500, usePercentages:bool=False, hidden_layer_size:int=512, dropout:bool=True, dropout_rate:float=0.01, learning_rate:float=2e-5):
 	plot = PlotHelper()
 	prices = PricingData(ticker)
@@ -96,7 +86,8 @@ def TrainTickerRaw(ticker:str = '^SPX', UseLSTM:bool=True, prediction_target_day
 			model.PredictionResultsPlot(modelDescription, True, False)
 		
 if __name__ == '__main__':
-	TrainTickerRaw('^SPX', UseLSTM=True, prediction_target_days = 1, epochs = 500)
-	TrainTickerRaw('^SPX', UseLSTM=True, prediction_target_days = 5, epochs = 500)
-	TrainTickerRaw('^SPX', UseLSTM=False, prediction_target_days = 5, epochs = 500)
-	TestPredictionModels('TSLA', 500)
+	#TrainTickerRaw('^SPX', UseLSTM=True, prediction_target_days = 1, epochs = 500)
+	#TrainTickerRaw('^SPX', UseLSTM=True, prediction_target_days = 5, epochs = 500)
+	#TrainTickerRaw('^SPX', UseLSTM=False, prediction_target_days = 5, epochs = 500)
+	#TestPredictionModels('TSLA', 500)
+	TestPredictionModels('^SPX', 500)
