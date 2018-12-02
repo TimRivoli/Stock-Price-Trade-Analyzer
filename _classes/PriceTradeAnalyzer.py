@@ -321,15 +321,15 @@ class PricingData:
 		
 	def NormalizePrices(self):
 		#(x-min(x))/(max(x)-min(x))
+		x = self.historicalPrices
 		if not self.pricesNormalized:
-			low = self.historicalPrices['Low'].min(axis=0) - .000001 #To prevent div zero calculation errors.
-			high = self.historicalPrices['High'].max(axis=0)
+			low = x['Low'].min(axis=0) - .000001 #To prevent div zero calculation errors.
+			high = x['High'].max(axis=0)
 			diff = high-low
-			self.historicalPrices['Open'] = (self.historicalPrices['Open']-low)/diff
-			self.historicalPrices['Close'] = (self.historicalPrices['Close']-low)/diff
-			self.historicalPrices['High'] = (self.historicalPrices['High']-low)/diff
-			self.historicalPrices['Low'] = (self.historicalPrices['Low']-low)/diff
-			self.historicalPrices['Average'] = self.historicalPrices.loc[:,BaseFieldList].mean(axis=1) #select those rows, calculate the mean value
+			x['Open'] = (x['Open']-low)/diff
+			x['Close'] = (x['Close']-low)/diff
+			x['High'] = (x['High']-low)/diff
+			x['Low'] = (x['Low']-low)/diff
 			if self.predictionsLoaded:
 				self.pricePredictions['estLow'] = (self.pricePredictions['estLow']-low)/diff
 				self.pricePredictions['estAverage'] = (self.pricePredictions['estAverage']-low)/diff
@@ -339,24 +339,30 @@ class PricingData:
 			self.PreNormalizationDiff = diff
 			self.pricesNormalized = True
 			print('Prices have been normalized.')
-			print(self.historicalPrices[:1])
 		else:
 			low = self.PreNormalizationLow
 			high = self.PreNormalizationHigh 
 			diff = self.PreNormalizationDiff
-			self.historicalPrices['Open'] = (self.historicalPrices['Open'] * diff) + low
-			self.historicalPrices['Close'] = (self.historicalPrices['Close'] * diff) + low
-			self.historicalPrices['High'] = (self.historicalPrices['High'] * diff) + low
-			self.historicalPrices['Low'] = (self.historicalPrices['Low'] * diff) + low
-			self.historicalPrices['Average'] = self.historicalPrices.loc[:,BaseFieldList].mean(axis=1) #select those rows, calculate the mean value
+			x['Open'] = (x['Open'] * diff) + low
+			x['Close'] = (x['Close'] * diff) + low
+			x['High'] = (x['High'] * diff) + low
+			x['Low'] = (x['Low'] * diff) + low
 			if self.predictionsLoaded:
 				self.pricePredictions['estLow'] = (self.pricePredictions['estLow'] * diff) + low
 				self.pricePredictions['estAverage'] = (self.pricePredictions['estAverage'] * diff) + low
 				self.pricePredictions['estHigh'] = (self.pricePredictions['estHigh'] * diff) + low
 			self.pricesNormalized = False
 			print('Prices have been un-normalized.')
-			print(self.historicalPrices[:1])
+		x['Average'] = (x['Open'] + x['Close'] + x['High'] + x['Low'])/4
+		#x['Average'] = x.loc[:,BaseFieldList].mean(axis=1, skipna=True) #Wow, this doesn't work.
+		if (x['Average'] < x['Low']).any() or (x['Average'] > x['High']).any(): 
+			print('WTF?, averages not computed correctly.')
+			print(x)
+			print(x.loc[:,BaseFieldList].mean(axis=1))
+			assert(False)
+		self.historicalPrices = x
 		if self.statsLoaded: self.CalculateStats()
+		print(self.historicalPrices[:1])
 
 	def CalculateStats(self):
 		if not self.pricesLoaded: self.LoadHistory()
@@ -496,7 +502,7 @@ class PricingData:
 			#FieldList = BaseFieldList
 			model.LoadSource(sourceDF=self.historicalPrices, FieldList=FieldList, window_size=1)
 			model.LoadTarget(targetDF=None, prediction_target_days=daysIntoFuture)
-			model.MakeBatches(batch_size=32, train_test_split=.93)
+			model.MakeBatches(batch_size=64, train_test_split=.93)
 			model.BuildModel(layer_count=1)
 			model.Train(epochs=NNTrainingEpochs)
 			model.Predict(True)
@@ -516,7 +522,7 @@ class PricingData:
 			FieldList = BaseFieldList
 			model.LoadSource(sourceDF=self.historicalPrices, FieldList=FieldList, window_size=daysIntoFuture*16)
 			model.LoadTarget(targetDF=None, prediction_target_days=daysIntoFuture)
-			model.MakeBatches(batch_size=32, train_test_split=.93)
+			model.MakeBatches(batch_size=64, train_test_split=.93)
 			model.BuildModel(layer_count=1)
 			model.Train(epochs=NNTrainingEpochs)
 			model.Predict(True)
