@@ -35,7 +35,7 @@ def TestPredictionModels(ticker:str='^SPX', numberOfLearningPasses:int = 500):
 			plot.PlotDataFrameDateRange(predDF[['Average','estAverage']], None, 160, modelDescription + '_last160ays', 'Date', 'Price', dataFolder + modelDescription + '_last160Days') 
 			plot.PlotDataFrameDateRange(predDF[['Average','estAverage']], None, 500, modelDescription + '_last500Days', 'Date', 'Price', dataFolder + modelDescription + '_last500Days') 
 
-def TrainTickerRaw(ticker:str = '^SPX', UseLSTM:bool=True, prediction_target_days:int = 5, epochs:int = 500, usePercentages:bool=False, learning_rate=2e-5):
+def TrainTickerRaw(ticker:str = '^SPX', UseLSTM:bool=True, prediction_target_days:int = 5, epochs:int = 500, usePercentages:bool=False, hidden_layer_size:int=512, dropout:bool=True, dropout_rate:float=0.01, learning_rate:float=2e-5):
 	plot = PlotHelper()
 	prices = PricingData(ticker)
 	print('Loading ' + ticker)
@@ -55,8 +55,8 @@ def TrainTickerRaw(ticker:str = '^SPX', UseLSTM:bool=True, prediction_target_day
 			FieldList = ['Average']
 			model.LoadSource(sourceDF=prices.GetPriceHistory(), FieldList=FieldList, window_size=window_size)
 			model.LoadTarget(targetDF=None, prediction_target_days=prediction_target_days)
-			model.MakeBatches(batch_size=32, train_test_split=.93) 
-			model.BuildModel(layer_count=1)
+			model.MakeBatches(batch_size=128, train_test_split=.93) 
+			model.BuildModel(layer_count=1, hidden_layer_size=hidden_layer_size, dropout=dropout, dropout_rate=dropout_rate, learning_rate=learning_rate)
 			model.DisplayModel()
 			model.Train(epochs=epochs)
 			model.Predict(True)
@@ -71,8 +71,8 @@ def TrainTickerRaw(ticker:str = '^SPX', UseLSTM:bool=True, prediction_target_day
 			FieldList = ['High','Low','Open','Close']
 			model.LoadSource(sourceDF=prices.GetPriceHistory(), FieldList=FieldList, window_size=window_size)
 			model.LoadTarget(targetDF=None, prediction_target_days=prediction_target_days)
-			model.MakeBatches(batch_size=32, train_test_split=.93)
-			model.BuildModel(layer_count=1)
+			model.MakeBatches(batch_size=64, train_test_split=.93)
+			model.BuildModel(layer_count=1, hidden_layer_size=hidden_layer_size, dropout=dropout, dropout_rate=dropout_rate, learning_rate=learning_rate)
 			model.DisplayModel()
 			model.Train(epochs=epochs)
 			model.Predict(True)
@@ -96,7 +96,7 @@ def TrainTickerRaw(ticker:str = '^SPX', UseLSTM:bool=True, prediction_target_day
 			model.PredictionResultsPlot(modelDescription, True, False)
 		
 if __name__ == '__main__':
-	#TrainTickerRaw('^SPX', UseLSTM=True, prediction_target_days = 1, epochs = 500)
-	#TrainTickerRaw('^SPX', UseLSTM=True, prediction_target_days = 5, epochs = 500)
-	#TrainTickerRaw('^SPX', UseLSTM=False, prediction_target_days = 5, epochs = 500)
+	TrainTickerRaw('^SPX', UseLSTM=True, prediction_target_days = 1, epochs = 500)
+	TrainTickerRaw('^SPX', UseLSTM=True, prediction_target_days = 5, epochs = 500)
+	TrainTickerRaw('^SPX', UseLSTM=False, prediction_target_days = 5, epochs = 500)
 	TestPredictionModels('TSLA', 500)
