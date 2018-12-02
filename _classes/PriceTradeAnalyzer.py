@@ -1,17 +1,13 @@
 #These settings can be configured in a global config.ini in the program root directory under [Settings]
 useWebProxyServer = False	#If you need a web proxy to browse the web
 nonGUIEnvironment = False	#hosted environments often have no GUI so matplotlib won't be outputting to display
-enableTensorFlow = True	#option to not load these libraries to prevent overhead
 
 #pip install any of these if they are missing
 import time, datetime, random, os, ssl, matplotlib
 import numpy as np,  pandas as pd
 from pandas.tseries.offsets import BDay
 import urllib.request as webRequest
-
 from _classes.Utility import *
-if enableTensorFlow:
-	from _classes.SeriesPrediction import StockPredictionNN
 
 #pricingData and TradingModel are the two intended exportable classes
 #user input dates are expected to be in local format, after that they should be in database format
@@ -27,6 +23,7 @@ if useWebProxyServer:
 	x =  ReadConfigList('Settings', 'proxyList')
 	if not x == None: proxyList = x		
 
+BaseFieldList = ['Open','Close','High','Low']
 #-------------------------------------------- General Utilities -----------------------------------------------
 #datetime.datetime.fromtimestamp(dt).date()
 def GetMyDateFormat(): return '%m/%d/%Y'
@@ -167,6 +164,7 @@ class PriceSnapshot:
 	longEMASlope=0
 	channelHigh=0
 	channelLow=0
+	oneDayApc = 0
 	oneDayDeviation=0
 	fiveDayDeviation=0
 	fifteenDayDeviation=0
@@ -284,9 +282,9 @@ class PricingData:
 			self.pricesLoaded = False
 		else:
 			df = pd.read_csv(filePath, index_col=0, parse_dates=True, na_values=['nan'])
-			if dropVolume: df = df[['Open','Close','High','Low']]
+			if dropVolume: df = df[BaseFieldList]
 			self.historicalPrices = df
-			self.historicalPrices['Average'] = self.historicalPrices.loc[:,['Open','Close','High','Low']].mean(axis=1) #select those rows, calculate the mean value
+			self.historicalPrices['Average'] = self.historicalPrices.loc[:,BaseFieldList].mean(axis=1) #select those rows, calculate the mean value
 			self.historyStartDate = self.historicalPrices.index.min()
 			self.historyEndDate = self.historicalPrices.index.max()
 			self.pricesLoaded = True
@@ -310,27 +308,28 @@ class PricingData:
 				for i in range(1, self.pricePredictions.shape[0]):
 					self.pricePredictions.iloc[i] = (1 + self.pricePredictions.iloc[i]) * self.pricePredictions.iloc[i-1]
 			self.pricesInPercentages = False
+			print('Prices have been converted back from percentages.')
 		else:
 			self.CTPFactor = self.historicalPrices.iloc[0]
-			self.historicalPrices = self.historicalPrices[['Open','High','Low','Close','Average']].pct_change(1)
-			#for i in range(self.historicalPrices.shape[0]-1, 0, -1):
-			#	self.historicalPrices.iloc[i] = (self.historicalPrices.iloc[i] / self.historicalPrices.iloc[i-1])-1
+			self.historicalPrices = self.historicalPrices[['Open','Close','High','Low','Average']].pct_change(1)
+			self.historicalPrices[:1] = 0
 			if self.predictionsLoaded:
 				self.pricePredictions = self.pricePredictions.pct_change(1)
 			self.statsLoaded = False
 			self.pricesInPercentages = True
+			print('Prices have been converted to percentage change from previous day.')
 		
 	def NormalizePrices(self):
 		#(x-min(x))/(max(x)-min(x))
 		if not self.pricesNormalized:
-			low = self.historicalPrices['Low'].min(axis=0)
+			low = self.historicalPrices['Low'].min(axis=0) - .000001 #To prevent div zero calculation errors.
 			high = self.historicalPrices['High'].max(axis=0)
 			diff = high-low
 			self.historicalPrices['Open'] = (self.historicalPrices['Open']-low)/diff
 			self.historicalPrices['Close'] = (self.historicalPrices['Close']-low)/diff
 			self.historicalPrices['High'] = (self.historicalPrices['High']-low)/diff
 			self.historicalPrices['Low'] = (self.historicalPrices['Low']-low)/diff
-			self.historicalPrices['Average'] = self.historicalPrices.loc[:,['Open','Close','High','Low']].mean(axis=1) #select those rows, calculate the mean value
+			self.historicalPrices['Average'] = self.historicalPrices.loc[:,BaseFieldList].mean(axis=1) #select those rows, calculate the mean value
 			if self.predictionsLoaded:
 				self.pricePredictions['estLow'] = (self.pricePredictions['estLow']-low)/diff
 				self.pricePredictions['estAverage'] = (self.pricePredictions['estAverage']-low)/diff
@@ -339,8 +338,8 @@ class PricingData:
 			self.PreNormalizationHigh = high
 			self.PreNormalizationDiff = diff
 			self.pricesNormalized = True
-			if self.statsLoaded: self.CalculateStats()		
 			print('Prices have been normalized.')
+			print(self.historicalPrices[:1])
 		else:
 			low = self.PreNormalizationLow
 			high = self.PreNormalizationHigh 
@@ -349,23 +348,25 @@ class PricingData:
 			self.historicalPrices['Close'] = (self.historicalPrices['Close'] * diff) + low
 			self.historicalPrices['High'] = (self.historicalPrices['High'] * diff) + low
 			self.historicalPrices['Low'] = (self.historicalPrices['Low'] * diff) + low
-			self.historicalPrices['Average'] = self.historicalPrices.loc[:,['Open','Close','High','Low']].mean(axis=1) #select those rows, calculate the mean value
+			self.historicalPrices['Average'] = self.historicalPrices.loc[:,BaseFieldList].mean(axis=1) #select those rows, calculate the mean value
 			if self.predictionsLoaded:
 				self.pricePredictions['estLow'] = (self.pricePredictions['estLow'] * diff) + low
 				self.pricePredictions['estAverage'] = (self.pricePredictions['estAverage'] * diff) + low
 				self.pricePredictions['estHigh'] = (self.pricePredictions['estHigh'] * diff) + low
 			self.pricesNormalized = False
-			if self.statsLoaded: self.CalculateStats()
+			print('Prices have been un-normalized.')
+			print(self.historicalPrices[:1])
+		if self.statsLoaded: self.CalculateStats()
 
 	def CalculateStats(self):
 		if not self.pricesLoaded: self.LoadHistory()
 		twodav = self.historicalPrices['Average'].rolling(window=2, center=False).mean()
 		self.historicalPrices['2DayAv'] = twodav
-		self.historicalPrices['shortEMA'] =  self.historicalPrices['Average'].ewm(com=3,min_periods=0,freq='B',adjust=True,ignore_na=False).mean()
+		self.historicalPrices['shortEMA'] =  self.historicalPrices['Average'].ewm(com=3,min_periods=0,adjust=True,ignore_na=False).mean()
 		self.historicalPrices['shortEMASlope'] = (self.historicalPrices['shortEMA']/self.historicalPrices['shortEMA'].shift(1))-1
-		self.historicalPrices['longEMA'] = self.historicalPrices['Average'].ewm(com=9,min_periods=0,freq='B',adjust=True,ignore_na=False).mean()
+		self.historicalPrices['longEMA'] = self.historicalPrices['Average'].ewm(com=9,min_periods=0,adjust=True,ignore_na=False).mean()
 		self.historicalPrices['longEMASlope'] = (self.historicalPrices['longEMA']/self.historicalPrices['longEMA'].shift(1))-1
-		self.historicalPrices['45dEMA'] = self.historicalPrices['Average'].ewm(com=22,min_periods=0,freq='B',adjust=True,ignore_na=False).mean()
+		self.historicalPrices['45dEMA'] = self.historicalPrices['Average'].ewm(com=22,min_periods=0,adjust=True,ignore_na=False).mean()
 		self.historicalPrices['45dEMASlope'] = (self.historicalPrices['45dEMA']/self.historicalPrices['45dEMA'].shift(1))-1
 		self.historicalPrices['1DayDeviation'] = (self.historicalPrices['High'] - self.historicalPrices['Low'])/self.historicalPrices['Low']
 		self.historicalPrices['5DavDeviation'] = self.historicalPrices['1DayDeviation'].rolling(window=5, center=False).mean()
@@ -394,9 +395,10 @@ class PricingData:
 		
 	def PredictPrices(self, method:int=1, daysIntoFuture:int=1, NNTrainingEpochs:int=350):
 		#Predict current prices from previous days info
+		self.predictionsLoaded = False
 		self.pricePredictions = pd.DataFrame()	#Clear any previous data
 		if not self.statsLoaded: self.CalculateStats()
-		if method < 3 or not enableTensorFlow:
+		if method < 3:
 			minActionableSlope = 0.001
 			if method==0:	#Same as previous day
 				self.pricePredictions = pd.DataFrame()
@@ -418,7 +420,7 @@ class PricingData:
 				bucket = bucket[['estLow','estHigh']]
 				self.pricePredictions = self.pricePredictions.append(bucket)
 				self.pricePredictions.sort_index(inplace=True)	
-			elif method==2 or not enableTensorFlow:	#Slope plus momentum with full consideration for trend.
+			elif method==2:	#Slope plus momentum with full consideration for trend.
 					#++ Often over bought, strong momentum
 				bucket = self.historicalPrices.copy() 
 				#bucket['estLow']  = bucket['Low'].shift(1).rolling(4).max()  * (1 + abs(bucket['shortEMASlope'].shift(1)))
@@ -482,46 +484,50 @@ class PricingData:
 					h = a * (1+momentum) + random.randint(round(-deviation*10),round(deviation*200))/100
 				self.pricePredictions.loc[d + BDay(i+1), 'estLow'] = l
 				self.pricePredictions.loc[d + BDay(i+1), 'estHigh'] = h								
-		elif method==3 and enableTensorFlow:	#Use LSTM to predict prices
+			self.pricePredictions['estAverage']	= (self.pricePredictions['estLow'] + self.pricePredictions['estHigh'])/2
+		elif method==3:	#Use LSTM to predict prices
+			from _classes.SeriesPrediction import StockPredictionNN
 			temporarilyNormalize = False
 			if not self.pricesNormalized:
 				temporarilyNormalize = True
 				self.NormalizePrices()
-			model = StockPredictionNN(modelName=self.stockTicker, UseLSTM=True)
-			SourceFieldList = None
-			#SourceFieldList = ['Low','High','Open','Close']
-			model.LoadSource(sourceDF=self.historicalPrices, SourceFieldList=SourceFieldList, window_size=1)
+			model = StockPredictionNN(baseModelName=self.stockTicker, UseLSTM=True)
+			FieldList = None
+			#FieldList = BaseFieldList
+			model.LoadSource(sourceDF=self.historicalPrices, FieldList=FieldList, window_size=1)
 			model.LoadTarget(targetDF=None, prediction_target_days=daysIntoFuture)
-			model.MakeBatches(batch_size=10, train_test_split=.93)
+			model.MakeBatches(batch_size=32, train_test_split=.93)
+			model.BuildModel(layer_count=1)
 			model.Train(epochs=NNTrainingEpochs)
 			model.Predict(True)
 			self.pricePredictions = model.GetTrainingResults(False, False)
-			if temporarilyNormalize: self.NormalizePrices()
 			self.pricePredictions = self.pricePredictions.rename(columns={'Average':'estAverage'})
 			deviation = self.historicalPrices['15DavDeviation'][-1]/2
 			self.pricePredictions['estLow'] = self.pricePredictions['estAverage'] * (1 - deviation)
 			self.pricePredictions['estHigh'] = self.pricePredictions['estAverage'] * (1 + deviation)
-		elif method==4 and enableTensorFlow:	#Use CNN to predict prices
+			if temporarilyNormalize: self.NormalizePrices()
+		elif method==4:	#Use CNN to predict prices
+			from _classes.SeriesPrediction import StockPredictionNN
 			temporarilyNormalize = False
 			if not self.pricesNormalized:
 				temporarilyNormalize = True
 				self.NormalizePrices()
-			model = StockPredictionNN(modelName=self.stockTicker, UseLSTM=False)
-			SourceFieldList = ['Low','High','Open','Close']
-			model.LoadSource(sourceDF=self.historicalPrices, SourceFieldList=SourceFieldList, window_size=daysIntoFuture*16)
+			model = StockPredictionNN(baseModelName=self.stockTicker, UseLSTM=False)
+			FieldList = BaseFieldList
+			model.LoadSource(sourceDF=self.historicalPrices, FieldList=FieldList, window_size=daysIntoFuture*16)
 			model.LoadTarget(targetDF=None, prediction_target_days=daysIntoFuture)
 			model.MakeBatches(batch_size=32, train_test_split=.93)
+			model.BuildModel(layer_count=1)
 			model.Train(epochs=NNTrainingEpochs)
 			model.Predict(True)
 			self.pricePredictions = model.GetTrainingResults(False, False)
-			if temporarilyNormalize: self.NormalizePrices()
 			self.pricePredictions['estAverage'] = (self.pricePredictions['Low'] + self.pricePredictions['High'] + self.pricePredictions['Open'] + self.pricePredictions['Close'])/4
 			deviation = self.historicalPrices['15DavDeviation'][-1]/2
 			self.pricePredictions['estLow'] = self.pricePredictions['estAverage'] * (1 - deviation)
 			self.pricePredictions['estHigh'] = self.pricePredictions['estAverage'] * (1 + deviation)
 			self.pricePredictions = self.pricePredictions[['estLow','estAverage','estHigh']]
-		self.pricePredictions.fillna(method='bfill', inplace=True)
-		self.pricePredictions['estAverage']	= (self.pricePredictions['estLow'] + self.pricePredictions['estHigh'])/2
+			if temporarilyNormalize: self.NormalizePrices()
+		self.pricePredictions.fillna(0, inplace=True)
 		x = self.pricePredictions.join(self.historicalPrices)
 		x['PercentageDeviation'] = abs((x['Average']-x['estAverage'])/x['Average'])
 		self.predictionDeviation = x['PercentageDeviation'].tail(round(x.shape[0]/4)).mean() #Average of the last 25%, this is being kind as it includes some training data
@@ -557,7 +563,7 @@ class PricingData:
 		sn.ticker = self.stockTicker
 		sn.snapShotDate = forDate
 		try:
-			sn.high, sn.low, sn.open,sn.close,sn.oneDayAverage,sn.twoDayAverage,sn.shortEMA,sn.shortEMASlope,sn.longEMA,sn.longEMASlope,sn.channelHigh,sn.channelLow,sn.oneDayDeviation,sn.fiveDayDeviation,sn.fifteenDayDeviation =self.historicalPrices.loc[forDate,['High','Low','Open','Close','Average','2DayAv','shortEMA','shortEMASlope','longEMA','longEMASlope','channelHigh', 'channelLow','1DayDeviation','5DavDeviation','15DavDeviation']]
+			sn.high, sn.low, sn.open,sn.close,sn.oneDayAverage,sn.twoDayAverage,sn.shortEMA,sn.shortEMASlope,sn.longEMA,sn.longEMASlope,sn.channelHigh,sn.channelLow,sn.oneDayApc,sn.oneDayDeviation,sn.fiveDayDeviation,sn.fifteenDayDeviation =self.historicalPrices.loc[forDate,['High','Low','Open','Close','Average','2DayAv','shortEMA','shortEMASlope','longEMA','longEMASlope','channelHigh', 'channelLow','1DayApc','1DayDeviation','5DavDeviation','15DavDeviation']]
 			#1dTarget = IF(15dapc<0, Min(1dav, 1dav.step(1)),Max(1dav, 1dav.step(1)) *(1+15dapc)) old model from Excel
 			if sn.longEMASlope < 0:
 				if sn.shortEMASlope > 0:	#bounce or early recovery
@@ -578,17 +584,6 @@ class PricingData:
 				sn.estLow,sn.estHigh= self.pricePredictions.loc[tomorrow,['estLow','estHigh']]
 		except:
 			print('Unable to get price snapshot for ' + self.stockTicker + ' on ' + str(forDate))
-		sn.high = round(sn.high,2)
-		sn.low = round(sn.low, 2)
-		sn.open = round(sn.open, 2)
-		sn.close = round(sn.close, 2)
-		sn.oneDayAverage = round(sn.oneDayAverage, 2)
-		sn.twoDayAverage = round(sn.twoDayAverage, 2)
-		sn.channelHigh = round(sn.channelHigh, 2)
-		sn.channelLow = round(sn.channelLow, 2)
-		sn.nextDayTarget = round(sn.nextDayTarget, 2)
-		sn.estHigh = round(sn.estHigh, 2)
-		sn.estLow = round(sn.estLow, 2)
 		return sn
 
 	def GetCurrentPriceSnapshot(self): return self.GetPriceSnapshot(self.historyEndDate)
@@ -1093,6 +1088,7 @@ class TradingModel(Portfolio):
 	_dataFolderTradeModel = 'data/trademodel/'
 	Custom1 = None	#can be used to store custom values when using the model
 	Custom2 = None
+	_NormalizePrices = False
 
 	def __init__(self, modelName:str, startingTicker:str, startDate:datetime, durationInYears:int, totalFunds:int, traunchSize:int=1000,verbose:bool=False, trackHistory:bool=True):
 		#pricesAsPercentages:bool=False would be good but often results in Nan values
@@ -1178,6 +1174,11 @@ class TradingModel(Portfolio):
 
 	def ModelCompleted(self):	return(self.currentDate == self.modelEndDate)
 
+	def NormalizePrices(self):
+		self._NormalizePrices =  not self._NormalizePrices
+		for p in self.priceHistory:
+			if not p.pricesNormalized: p.NormalizePrices()
+		
 	def PlaceBuy(self, ticker:str, price:float, marketOrder:bool=False, expireAfterDays:bool=10, verbose:bool=False):
 		if not ticker in self._stockTickerList: self.AddStockTicker(ticker)
 		if ticker in self._stockTickerList:	super(TradingModel, self).PlaceBuy(ticker, price, self.currentDate, marketOrder, expireAfterDays, verbose)
