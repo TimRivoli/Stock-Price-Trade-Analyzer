@@ -519,7 +519,6 @@ class PricingData:
 			temporarilyNormalize = False
 			if not self.pricesNormalized:
 				temporarilyNormalize = True
-				self.predictionsLoaded = True
 				self.NormalizePrices()
 			model = StockPredictionNN(baseModelName=self.stockTicker, UseLSTM=False)
 			FieldList = BaseFieldList
@@ -535,7 +534,9 @@ class PricingData:
 			self.pricePredictions['estLow'] = self.pricePredictions['estAverage'] * (1 - deviation)
 			self.pricePredictions['estHigh'] = self.pricePredictions['estAverage'] * (1 + deviation)
 			self.pricePredictions = self.pricePredictions[['estLow','estAverage','estHigh']]
-			if temporarilyNormalize: self.NormalizePrices()
+			if temporarilyNormalize: 
+				self.predictionsLoaded = True
+				self.NormalizePrices()
 		self.pricePredictions.fillna(0, inplace=True)
 		x = self.pricePredictions.join(self.historicalPrices)
 		x['PercentageDeviation'] = abs((x['Average']-x['estAverage'])/x['Average'])
