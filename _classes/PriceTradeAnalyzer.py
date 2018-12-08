@@ -319,7 +319,7 @@ class PricingData:
 			self.pricesInPercentages = True
 			print('Prices have been converted to percentage change from previous day.')
 		
-	def NormalizePrices(self):
+	def NormalizePrices(self, verbose:bool=False):
 		#(x-min(x))/(max(x)-min(x))
 		x = self.historicalPrices
 		if not self.pricesNormalized:
@@ -362,7 +362,7 @@ class PricingData:
 			assert(False)
 		self.historicalPrices = x
 		if self.statsLoaded: self.CalculateStats()
-		print(self.historicalPrices[:1])
+		if verbose: print(self.historicalPrices[:1])
 
 	def CalculateStats(self):
 		if not self.pricesLoaded: self.LoadHistory()
@@ -503,7 +503,7 @@ class PricingData:
 			model.LoadSource(sourceDF=self.historicalPrices, FieldList=FieldList, window_size=1)
 			model.LoadTarget(targetDF=None, prediction_target_days=daysIntoFuture)
 			model.MakeBatches(batch_size=64, train_test_split=.93)
-			model.BuildModel(layer_count=1)
+			model.BuildModel()
 			model.Train(epochs=NNTrainingEpochs)
 			model.Predict(True)
 			self.pricePredictions = model.GetTrainingResults(False, False)
@@ -525,7 +525,7 @@ class PricingData:
 			model.LoadSource(sourceDF=self.historicalPrices, FieldList=FieldList, window_size=daysIntoFuture*16)
 			model.LoadTarget(targetDF=None, prediction_target_days=daysIntoFuture)
 			model.MakeBatches(batch_size=64, train_test_split=.93)
-			model.BuildModel(layer_count=1)
+			model.BuildModel()
 			model.Train(epochs=NNTrainingEpochs)
 			model.Predict(True)
 			self.pricePredictions = model.GetTrainingResults(False, False)
@@ -741,9 +741,10 @@ class Traunch: #interface for handling actions on a chunk of funds
 		return r
 
 	def PrintDetails(self):
-		if not self.ticker =='':
+		if not self.ticker =='' or True:
 			print("Stock: " + self.ticker)
 			print("units: " + str(self.units))
+			print("available: " + str(self.available))
 			print("purchased: " + str(self.purchased))
 			print("dateBuyOrderPlaced: " + str(self.dateBuyOrderPlaced))
 			print("dateBuyOrderFilled: " + str(self.dateBuyOrderFilled))
@@ -852,7 +853,7 @@ class Portfolio:
 			print('Accounting error: inaccurcy in funds committed to orders!')
 			r=True
 		if self.FundsAvailable() + self._traunchCount*self._commisionCost < 0: 
-			print('Accounting error: negative cash balance!', self._cash, self._fundsCommittedToOrders, self.FundsAvailable())
+			print('Accounting error: negative cash balance.  (Cash, CommittedFunds, AvailableFunds) ', self._cash, self._fundsCommittedToOrders, self.FundsAvailable())
 			r=True
 		return r
 
@@ -877,19 +878,19 @@ class Portfolio:
 		longPostition = 0
 		for t in self._traunches:
 			if t.available:
-				available=available+1
-			elif  t.dateBuyOrderPlaced==None and not t.purchased:
-				buyPending=buyPending+1
+				available +=1
+			elif  not t.purchased:
+				buyPending +=1
 			elif t.purchased and t.dateSellOrderPlaced==None:
-				longPostition=longPostition+1
+				longPostition +=1
 			elif t.dateBuyOrderPlaced:
-				sellPending=sellPending+1
+				sellPending +=1
 		return available, buyPending, sellPending, longPostition			
 
 	def PrintPositions(self):
 		i=0
 		for t in self._traunches:
-			if not t.ticker =='':
+			if not t.ticker =='' or True:
 				print('Set: ' + str(i))
 				t.PrintDetails()
 			i=i+1
@@ -900,14 +901,18 @@ class Portfolio:
 		a, b, s, l = self.PositionSummary()
 		return a
 
-	def ValidateFundsCommittedToOrders(self):
+	def ValidateFundsCommittedToOrders(self, FixIt:bool=False):
+		#Returns difference between recorded value and actual
 		x=0
 		for t in self._traunches:
 			if not t.available and not t.purchased: 
 				x = x + (t.units*t.buyOrderPrice) + self._commisionCost
 		if round(self._fundsCommittedToOrders, 5) == round(x,5): self._fundsCommittedToOrders=x
 		if not (self._fundsCommittedToOrders - x) ==0:
-			print('Committed funds variance actual/recorded', x, self._fundsCommittedToOrders)
+			if FixIt: 
+				self._fundsCommittedToOrders = x
+			else:
+				print('Committed funds variance actual/recorded', x, self._fundsCommittedToOrders)
 		return (self._fundsCommittedToOrders - x)
 
 	def Value(self):
@@ -929,18 +934,18 @@ class Portfolio:
 		r=False
 		oldestExistingOrder = None
 		FundsAvailable = self.FundsAvailable()
-		for t in self._traunches:
-			units = round(t.size/price)
-			cost = units*price  + self._commisionCost
-			if cost + self._commisionCost > FundsAvailable:
-				units = round((FundsAvailable - self._commisionCost)/price)		
-				cost = units*price + self._commisionCost
-			if units > 0:
-				if t.available and FundsAvailable > cost:	#Place new order
+		units = round(self._traunches[0].size/price)
+		cost = units*price  + self._commisionCost
+		if units == 0 or FundsAvailable < cost:
+			if verbose: print('Unable to purchase.  Price exceeds available funds')
+		else:	
+			for t in self._traunches: #Find available 
+				if t.available :	#Place new order
 					self._fundsCommittedToOrders = self._fundsCommittedToOrders + cost 
-					x = t.PlaceBuy(ticker=ticker, price=price, datePlaced=datePlaced, marketOrder=marketOrder, expireAfterDays=expireAfterDays, verbose=verbose)
-					if not x ==cost: #insufficient funds for full purchase
-						t.units = units			
+					x = self._commisionCost + t.PlaceBuy(ticker=ticker, price=price, datePlaced=datePlaced, marketOrder=marketOrder, expireAfterDays=expireAfterDays, verbose=verbose) 
+					if not x == cost: #insufficient funds for full purchase
+						print('Expected cost changed from', cost, 'to', x)
+						self._fundsCommittedToOrders = self._fundsCommittedToOrders - cost + x + self._commisionCost
 					r=True
 					break
 				elif not t.purchased and t.ticker == ticker:	#Might have to replace existing order
@@ -948,7 +953,7 @@ class Portfolio:
 						oldestExistingOrder=t.dateBuyOrderPlaced
 					else:
 						if oldestExistingOrder > t.dateBuyOrderPlaced: oldestExistingOrder=t.dateBuyOrderPlaced
-		if not r and units > 0 and False:	#Should we allow replacing existing order or require canceling existing first?  Going with require Cancel
+		if not r and units > 0 and False:	#We could allow replacing oldest existing order
 			if oldestExistingOrder == None:
 				if self.TraunchesAvailable() > 0:
 					if self._verbose: print(' Unable to buy ' + str(units) + ' of ' + ticker + ' with funds available: ' + str(FundsAvailable))
@@ -958,18 +963,13 @@ class Portfolio:
 				for t in self._traunches:
 					if not t.purchased and t.ticker == ticker and oldestExistingOrder==t.dateBuyOrderPlaced:
 						if self._verbose: print(' No traunch available... replacing order from ' + str(oldestExistingOrder))
-						units = round(t.size/price)
-						cost = units*price + self._commisionCost
 						oldCost = t.buyOrderPrice * t.units + self._commisionCost
 						if self._verbose: print(' Replacing Buy order for ' + ticker + ' from ' + str(t.buyOrderPrice) + ' to ' + str(price))
-						if cost + self._commisionCost > FundsAvailable:
-							units = round((FundsAvailable - self._commisionCost)/price)		
-							cost = units*price + self._commisionCost
 						t.units = units
 						t.buyOrderPrice = price
 						t.dateBuyOrderPlaced = datePlaced
 						t.marketOrder = marketOrder
-						self._fundsCommittedToOrders = self._fundsCommittedToOrders + cost - oldCost
+						self._fundsCommittedToOrders = self._fundsCommittedToOrders - oldCost + cost 
 						r=True
 						break		
 		return r
@@ -1065,6 +1065,7 @@ class Portfolio:
 			self._CheckPriceSequence(ticker, p3, close, dateChecked)
 		else:
 			self._CheckOrders(ticker, close, dateChecked)	#No open orders but still need to update last prices
+		self.ValidateFundsCommittedToOrders(True)
 		_cashValue, assetValue = self.Value()
 		self.dailyValue.loc[dateChecked]=[_cashValue,assetValue,_cashValue + assetValue] 
 
@@ -1085,7 +1086,7 @@ class Portfolio:
 			self.dailyValue.to_csv(filePath)
 		
 class TradingModel(Portfolio):
-	#Extneds Porfolio to trading environment for testing models
+	#Extends Portfolio to trading environment for testing models
 	modelName = None
 	modelStartDate  = None	
 	modelEndDate = None
@@ -1109,7 +1110,7 @@ class TradingModel(Portfolio):
 		CreateFolder(self._dataFolderTradeModel)
 		p = PricingData(startingTicker)
 		if p.LoadHistory(True): 
-			print('Loading ' + startingTicker)
+			if verbose: print('Loading ' + startingTicker)
 			p.CalculateStats()
 			p.TrimToDateRange(startDate, endDate)
 			self.priceHistory = [p]
@@ -1153,20 +1154,20 @@ class TradingModel(Portfolio):
 	def CancelAllOrders(self): super(TradingModel, self).CancelAllOrders(self.currentDate)
 	
 	def CloseModel(self, plotResults:bool=True, saveHistoryToFile:bool=True, folderName:str='data/trademodel/', dpi:int=600):	
-		_cashValue, assetValue = self.Value()
+		cashValue, assetValue = self.Value()
+		netChange = cashValue + assetValue - self.startingValue 		
 		if assetValue > 0:
 			self.SellAllPositions(self.currentDate, ticker='')
 			self.ProcessDay()
 		if saveHistoryToFile:
 			self.SaveDailyValueToFile(folderName)
 			self.SaveTradeHistoryToFile(folderName)
-		_cashValue, assetValue = self.Value()
 		print('Model ' + self.modelName + ' from ' + str(self.modelStartDate)[:10] + ' to ' + str(self.modelEndDate)[:10])
-		print('Cash: ' + str(round(_cashValue)) + ' asset: ' + str(round(assetValue)) + ' total: ' + str(round(_cashValue + assetValue)))
-		print('Net change: ' + str(round(_cashValue + assetValue - self.startingValue)))
+		print('Cash: ' + str(round(cashValue)) + ' asset: ' + str(round(assetValue)) + ' total: ' + str(round(cashValue + assetValue)))
+		print('Net change: ' + str(round(netChange)), str(round((netChange/self.startingValue) * 100, 2)) + '%')
 		if plotResults and self.trackHistory: 
 			self.PlotTradeHistoryAgainstHistoricalPrices(self.tradeHistory, self.priceHistory[0].GetPriceHistory(), self.modelName)
-		return _cashValue
+		return cashValue
 		
 	def GetCustomValues(self): return self.Custom1, self.Custom2
 	def GetDailyValue(self): return self.dailyValue #returns dataframe with daily value of portfolio
@@ -1273,7 +1274,7 @@ class ForcastModel():	#used to forecast the effect of a series of trade actions,
 		if self.startingValue != c + a:
 			print('Forcast model accounting error.  ', self.startingValue, c+a)
 			assert(False)
-	
+			
 	def GetResult(self):
 		dayCounter = len(self.tm.dailyValue)
 		while dayCounter < self.daysToForecast:  
@@ -1286,4 +1287,3 @@ class ForcastModel():	#used to forecast the effect of a series of trade actions,
 		#print(self.tm.dailyValue)
 		return endingValue - self.startingValue
 		
-#------------------------------------------- End Classes ----------------------------------------------		

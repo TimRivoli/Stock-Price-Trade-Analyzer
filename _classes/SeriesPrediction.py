@@ -94,7 +94,7 @@ class SeriesPredictionNN(object):
 			print('X shape: ', len(self.X))
 			print('y shape: ', len(self.y))
 			assert(False)
-		if not self.UseLSTM and not self.number_of_classes == self.feature_count:
+		if not self.UseLSTM and not self.number_of_classes == self.feature_count and not self.predictClasses:
 			print('CNN model requires feature count to equal class count.')
 			assert(False)	
 		if self.targetDF.shape[1] == 1:
@@ -138,10 +138,10 @@ class SeriesPredictionNN(object):
 		self.modelName = self.baseModelName + '_win' + str(window_size) + '_days' + str(prediction_target_days) + '_feat' + str(feature_count) + '_class' + str(number_of_classes)
 
 #  ----------------------------------------------------  Model Builds  -----------------------------------------------------------------
-	def _BuildCNNModel(self, layer_count:int, hidden_layer_size:int, dropout:bool, dropout_rate:float, optimizer:str, learning_rate:float, metrics:list):
+	def _BuildCNNModel(self, hidden_layer_size:int, dropout:bool, dropout_rate:float, optimizer:str, learning_rate:float, metrics:list):
 		model = keras.models.Sequential()
-		model.add(keras.layers.InputLayer(name='input', input_shape=(self.window_size, self.feature_count))) 
-		model.add(keras.layers.Conv1D(hidden_layer_size, int(self.window_size-15), activation='relu'))
+		#model.add(keras.layers.InputLayer(name='input', input_shape=(self.window_size, self.feature_count))) #This breaks restore from backup.  Keras bug.
+		model.add(keras.layers.Conv1D(hidden_layer_size, int(self.window_size-15), input_shape=(self.window_size, self.feature_count), activation='relu'))
 		model.add(keras.layers.Conv1D(int(hidden_layer_size/2), 10, activation='relu'))
 		model.add(keras.layers.Conv1D(int(hidden_layer_size/4), 5, activation='relu'))
 		model.add(keras.layers.Conv1D(32, 3, activation='relu'))
@@ -150,7 +150,7 @@ class SeriesPredictionNN(object):
 		model.compile(loss='mean_squared_error',  optimizer=optimizer,  metrics=metrics)
 		self.model = model	
 
-	def _BuildLSTMModel(self, layer_count:int, hidden_layer_size:int, dropout:bool, dropout_rate:float, optimizer:str, learning_rate:float, metrics:list):
+	def _BuildLSTMModel(self, hidden_layer_size:int, dropout:bool, dropout_rate:float, optimizer:str, learning_rate:float, metrics:list):
 		if self.predictClasses:
 			loss_function = 'categorical_crossentropy'
 			output_activation = 'softmax'
@@ -158,9 +158,10 @@ class SeriesPredictionNN(object):
 			loss_function = 'mean_squared_error'
 			output_activation = 'linear'		
 		model = keras.models.Sequential()
-		model.add(keras.layers.InputLayer(input_shape=(self.window_size, self.feature_count)))
-		for i in range(layer_count):
-			model.add(keras.layers.LSTM(hidden_layer_size, return_sequences=(i < layer_count-1)))
+		model.add(keras.layers.LSTM(hidden_layer_size, input_shape=(self.window_size, self.feature_count)))
+		#model.add(keras.layers.InputLayer(input_shape=(self.window_size, self.feature_count)))  #This breaks restore from backup.  Keras bug.
+		#for i in range(layer_count):
+		#	model.add(keras.layers.LSTM(hidden_layer_size, return_sequences=(i < layer_count-1)))
 		#model.add(keras.layers.Dense(self.feature_count * 2))
 		if dropout: model.add(keras.layers.Dropout(dropout_rate))
 		print('(optimizer, loss, activation) {', optimizer,',', loss_function, ',', output_activation, '}')
@@ -172,7 +173,7 @@ class SeriesPredictionNN(object):
 			model.compile(optimizer=optimizer, loss=loss_function, metrics=metrics)
 		self.model = model
 
-	def BuildModel(self, layer_count:int=1, hidden_layer_size:int=512, dropout:bool=True, dropout_rate:float=0.01, optimizer:str= 'adam', learning_rate:float=2e-5, metrics:list=['accuracy']):
+	def BuildModel(self, hidden_layer_size:int=512, dropout:bool=True, dropout_rate:float=0.01, optimizer:str= 'adam', learning_rate:float=2e-5, metrics:list=['accuracy']):
 		if not (self.sourceDataLoaded):
 			print('Source data needs to be loaded before building model.')
 			assert(False)
@@ -180,9 +181,9 @@ class SeriesPredictionNN(object):
 		if self.batchesCreated:
 			keras.backend.clear_session()
 			if self.UseLSTM:
-				self._BuildLSTMModel(layer_count=layer_count, hidden_layer_size=hidden_layer_size, dropout=dropout, dropout_rate=dropout_rate, optimizer=optimizer, learning_rate=learning_rate, metrics=metrics)
+				self._BuildLSTMModel(hidden_layer_size=hidden_layer_size, dropout=dropout, dropout_rate=dropout_rate, optimizer=optimizer, learning_rate=learning_rate, metrics=metrics)
 			else:
-				self._BuildCNNModel(layer_count=layer_count, hidden_layer_size=hidden_layer_size, dropout=dropout, dropout_rate=dropout_rate, optimizer=optimizer, learning_rate=learning_rate, metrics=metrics)
+				self._BuildCNNModel(hidden_layer_size=hidden_layer_size, dropout=dropout, dropout_rate=dropout_rate, optimizer=optimizer, learning_rate=learning_rate, metrics=metrics)
 		
 #  ----------------------------------------------------  Training / Prediction / Utility -----------------------------------------------------------------
 	def Train(self, epochs=100):
@@ -225,20 +226,23 @@ class SeriesPredictionNN(object):
 			else:
 				predictions = self.model.predict(d)	
 			#print('Predicted: ', predictions)
-			r = predictions[0]
+			r = predictions[0][0]
 		return r
 
 	def Load(self, feature_count:int, number_of_classes:int, window_size:int=_defaultWindowSize, prediction_target_days:int=_defaultTargetDays):
 		keras.backend.clear_session()
 		self.SetModelName(window_size, prediction_target_days, feature_count, number_of_classes)
 		#if not self.batchesCreated: self.MakeBatches()
-		f = self._dataFolderTensorFlowModels + self.modelName + '.h5'
-		if FileExists(f):
+		filename = self._dataFolderTensorFlowModels + self.modelName 
+		if FileExists(filename + '.h5'):
 			keras.backend.clear_session()
-			self.model = keras.models.load_model(f)
+			print('Loading from ' + filename + '.h5')
+			self.model = keras.models.load_model(filename + '.h5')
+			self.model.load_weights(filename + 'weights.h5')	#This is redundant but if verifies the restore
 			print('Model restored from disk')
+			self.model.summary()
 		else:
-			print('Model backup not found: ', f)
+			print('Model backup not found: ', filename + '.ht5')
 			assert(False)
 
 	def Save(self):
@@ -291,7 +295,10 @@ class SeriesPredictionNN(object):
 		print(self.y_train[:-10])
 		
 	def DisplayModel(self, IncludeDetail:bool=False):
-		print('Model')
+		if self.UseLSTM:
+			print('LSTM Model')
+		else:
+			print('CNN Model')
 		print(self.model.summary())
 		if IncludeDetail: print(self.model.to_json())
 		#print('Model Summary: ', self.modelName)
@@ -356,8 +363,15 @@ class TradePredictionNN(SeriesPredictionNN):
 		y = self.targetDF.values
 		y = keras.utils.to_categorical(y)
 		self.number_of_classes = self.targetDF['0'].max() + 1	#Categories 0 to max
+		if not self.UseLSTM:
+			y = y.reshape(-1,1,self.number_of_classes)
 		self.y = y
 
 	def _RecordPredictedValue(self, rowIndex, value):
-		self.predictionDF['0'].iloc[rowIndex] = int(round(value))
+		if self.UseLSTM:
+			self.predictionDF['0'].iloc[rowIndex] = int(round(value))
+		else:
+			#print('Predicted: ', value[0])
+			self.predictionDF['0'].iloc[rowIndex] = value[0]
+		
 		
