@@ -21,6 +21,11 @@ class SeriesPredictionNN(object):
 	targetDataLoaded = False
 	batchesCreated = False
 	predictClasses = False
+	trainStartAccuracy = None
+	trainStartLoss = None
+	trainAccuracy = None
+	testAccuracy = None
+	trainLoss = None
 	model = None
 
 	def __init__(self, baseModelName:str='', UseLSTM:bool=True, PredictionResultsDataFolder:str='', TensorFlowModelsDataFolder:str=''):
@@ -31,6 +36,8 @@ class SeriesPredictionNN(object):
 		else:
 			self.baseModelName += '_CNN'
 		self.modelName = self.baseModelName
+		self.window_size = self._defaultWindowSize
+		self.prediction_target_days = self._defaultTargetDays
 		keras.backend.clear_session()
 		if not PredictionResultsDataFolder =='':
 			if CreateFolder(PredictionResultsDataFolder):
@@ -48,6 +55,7 @@ class SeriesPredictionNN(object):
 	def _CustomTargetOperations(self): pass
 		
 	def LoadSource(self, sourceDF:pandas.DataFrame, FieldList:list=None, window_size:int=_defaultWindowSize):
+		self.sourceDataLoaded = False
 		self.sourceDF = sourceDF.copy()	
 		self.sourceDF.sort_index(inplace=True)				#Expecting date descending index
 		self.sourceDF.fillna(method='bfill', inplace=True)	#TF will start producing Nan results if it encounters Nan values
@@ -125,6 +133,10 @@ class SeriesPredictionNN(object):
 		self.y_train = numpy.array(self.y[:train_test_cuttoff])  #to train_test_cuttoff
 		self.X_test = numpy.array(self.X[train_test_cuttoff:])   #after train_test_cuttoff
 		self.y_test = numpy.array(self.y[train_test_cuttoff:])   #after train_test_cuttoff, can be used for accuracy validation
+		self.train_start_date = self.sourceDF.index.min()
+		self.test_start_date = self.sourceDF.index[-len(self.X_test)]
+		self.test_end_date = self.sourceDF.index.max()
+		print('(train, test, end)', self.train_start_date, self.test_start_date, self.test_end_date)
 		print('train_test_cuttoff: ', train_test_cuttoff)
 		print('(Days, Window size, Features)')
 		print('X_train size: {}'.format(self.X_train.shape)) 
@@ -140,8 +152,11 @@ class SeriesPredictionNN(object):
 #  ----------------------------------------------------  Model Builds  -----------------------------------------------------------------
 	def _BuildCNNModel(self, hidden_layer_size:int, dropout:bool, dropout_rate:float, optimizer:str, learning_rate:float, metrics:list):
 		model = keras.models.Sequential()
-		#model.add(keras.layers.InputLayer(name='input', input_shape=(self.window_size, self.feature_count))) #This breaks restore from backup.  Keras bug.
-		model.add(keras.layers.Conv1D(hidden_layer_size, int(self.window_size-15), input_shape=(self.window_size, self.feature_count), activation='relu'))
+		if False:
+			model.add(keras.layers.InputLayer(name='input', input_shape=(self.window_size, self.feature_count), batch_size=self.batch_size)) #This breaks restore from backup, unless you specify a batch_size int or None
+			model.add(keras.layers.Conv1D(hidden_layer_size, int(self.window_size-15), activation='relu'))
+		else:
+			model.add(keras.layers.Conv1D(hidden_layer_size, int(self.window_size-15), input_shape=(self.window_size, self.feature_count), activation='relu'))
 		model.add(keras.layers.Conv1D(int(hidden_layer_size/2), 10, activation='relu'))
 		model.add(keras.layers.Conv1D(int(hidden_layer_size/4), 5, activation='relu'))
 		model.add(keras.layers.Conv1D(32, 3, activation='relu'))
@@ -193,8 +208,26 @@ class SeriesPredictionNN(object):
 			callBacks = [keras.callbacks.EarlyStopping(monitor='val_loss', patience=3)]
 			if useTensorBoard: 	callBacks.append(TensorBoard(log_dir="data/tensorboard/{}".format(time()), histogram_freq=0, write_graph=True, write_images=True))
 			hist = self.model.fit(self.X_train, self.y_train, batch_size=self.batch_size, epochs=epochs, callbacks=callBacks)
-			val_loss, val_accuracy = self.model.evaluate(self.X_test, self.y_test)
-			print('loss, accurracy', val_loss, val_accuracy)
+			self.trainStartAccuracy = hist.history['acc'][0]
+			self.trainAccuracy = hist.history['acc'][-1]
+			self.trainStartLoss = hist.history['loss'][0]
+			self.trainLoss = hist.history['loss'][-1]
+			print('Result of training: accuracy ' + str(self.trainStartAccuracy) + ' -> ' + str(self.trainAccuracy) + ' (' + str((self.trainAccuracy-self.trainStartAccuracy)*100) + '%) loss ' + str(self.trainStartLoss) + ' -> ' + str(self.trainLoss))
+			if (len(self.X_test) > 0 and  len(self.y_test) > 0):
+				val_loss, val_accuracy = self.model.evaluate(self.X_test, self.y_test)
+				self.testAccuracy = val_accuracy
+				print('Test accuracy: ' + str(val_accuracy) + ' loss: ' + str(val_loss))
+			filename = self._dataFolderTensorFlowModels + self.modelName + '_trainhist.csv'
+			try:
+				if FileExists(filename):
+					f = open(filename,"a")
+				else:
+					f = open(filename,"w+")
+					f.write('TrainStartAccuracy,TrainEndAccuracy,TrainStartLoss,TrainEndLoss,TestAccuracy,TrainSize,TestSize,Epochs\n')
+				f.write(str(self.trainStartAccuracy) + ',' + str(self.trainAccuracy) + ',' + str(self.trainStartLoss) + ',' + str(self.trainLoss) + ',' + str(self.testAccuracy) + ',' + str(len(self.X_train)) + ',' + str(len(self.X_test)) + ',' + str(epochs) + '\n')
+				f.close() 
+			except:
+				print('Unable to write training history to ' + filename)
 
 	def _RecordPredictedValue(self, rowIndex, value):
 		self.predictionDF.iloc[rowIndex] = value
@@ -229,21 +262,28 @@ class SeriesPredictionNN(object):
 			r = predictions[0][0]
 		return r
 
-	def Load(self, feature_count:int, number_of_classes:int, window_size:int=_defaultWindowSize, prediction_target_days:int=_defaultTargetDays):
-		keras.backend.clear_session()
+	def SetModelParams(self, feature_count:int=0, number_of_classes:int=0, window_size:int=0, prediction_target_days:int=0):
+		#These are normally set when you load data, but if you want to restore a model and do some PredictOne operations then you will need set these parameters before Load
+		if (feature_count > 0): self.feature_count = feature_count
+		if (number_of_classes > 0): self.number_of_classes = number_of_classes
+		if (window_size > 0): self.window_size = window_size
+		if (prediction_target_days > 0): self.prediction_target_days = prediction_target_days
 		self.SetModelName(window_size, prediction_target_days, feature_count, number_of_classes)
-		#if not self.batchesCreated: self.MakeBatches()
+
+	def Load(self):
 		filename = self._dataFolderTensorFlowModels + self.modelName 
+		print('Restoring model from ' + filename + '.h5')
 		if FileExists(filename + '.h5'):
 			keras.backend.clear_session()
-			print('Loading from ' + filename + '.h5')
 			self.model = keras.models.load_model(filename + '.h5')
 			self.model.load_weights(filename + 'weights.h5')	#This is redundant but if verifies the restore
 			print('Model restored from disk')
 			self.model.summary()
+			r = True
 		else:
 			print('Model backup not found: ', filename + '.ht5')
-			assert(False)
+			r = False
+		return r		
 
 	def Save(self):
 		if self.model is None:
@@ -255,6 +295,23 @@ class SeriesPredictionNN(object):
 			j = self.model.to_json()
 			with open(filename + '.json', "w") as json_file:
 				json_file.write(j)
+
+	def SavedModelDelete(self):
+		r = True
+		filename = self._dataFolderTensorFlowModels + self.modelName 
+		print('Deleting saved model... ' + filename)
+		if FileExists(filename + '.h5'):
+			keras.backend.clear_session()
+			print('Deleting ' + filename + '.h5')
+			self.model = keras.models.load_model(filename + '.h5')
+			try:
+				os.remove(filename+ '.h5')
+				os.remove(filename+ 'weights.h5')
+			except:
+				r = False
+		else:
+			print('Model backup not found: ', filename + '.ht5')
+		return r
 
 	def GetTrainingResults(self, includeTrainingTargets:bool = False, includeAccuracy:bool = False):
 		if includeTrainingTargets:
@@ -304,6 +361,10 @@ class SeriesPredictionNN(object):
 		#print('Model Summary: ', self.modelName)
 		#model_vars = tf.trainable_variables()
 		#tf.contrib.slim.model_analyzer.analyze_vars(model_vars, print_info=True)
+
+	def DisplayTrainingSummary(self):
+		if self.trainStartAccuracy is not None:
+			print('Last training accuracy ' + str(self.trainStartAccuracy) + ' -> ' + str(self.trainAccuracy) + ' (' + str((self.trainAccuracy-self.trainStartAccuracy)*100) + '%) loss ' + str(self.trainStartLoss) + ' -> ' + str(self.trainLoss))
 
 class StockPredictionNN(SeriesPredictionNN): #Price
 	predictClasses = False
@@ -361,17 +422,18 @@ class TradePredictionNN(SeriesPredictionNN):
 	predictClasses = True
 	def _CustomTargetOperations(self):
 		y = self.targetDF.values
-		y = keras.utils.to_categorical(y)
-		self.number_of_classes = self.targetDF['0'].max() + 1	#Categories 0 to max
+		self.number_of_classes = 7
+		y = keras.utils.to_categorical(y, num_classes=self.number_of_classes)
+		#self.number_of_classes = self.targetDF['actionID'].max() + 1	#Categories 0 to max
 		if not self.UseLSTM:
 			y = y.reshape(-1,1,self.number_of_classes)
 		self.y = y
 
 	def _RecordPredictedValue(self, rowIndex, value):
 		if self.UseLSTM:
-			self.predictionDF['0'].iloc[rowIndex] = int(round(value))
+			self.predictionDF['actionID'].iloc[rowIndex] = int(round(value))
 		else:
 			#print('Predicted: ', value[0])
-			self.predictionDF['0'].iloc[rowIndex] = value[0]
+			self.predictionDF['actionID'].iloc[rowIndex] = value[0]
 		
 		

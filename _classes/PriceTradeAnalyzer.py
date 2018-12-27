@@ -399,7 +399,7 @@ class PricingData:
 			filePath = self._dataFolderhistoricalPrices + self.stockTicker + '_stats.csv'
 			self.historicalPrices.to_csv(filePath)
 		
-	def PredictPrices(self, method:int=1, daysIntoFuture:int=1, NNTrainingEpochs:int=350):
+	def PredictPrices(self, method:int=1, daysIntoFuture:int=1, NNTrainingEpochs:int=0):
 		#Predict current prices from previous days info
 		self.predictionsLoaded = False
 		self.pricePredictions = pd.DataFrame()	#Clear any previous data
@@ -497,14 +497,17 @@ class PricingData:
 			if not self.pricesNormalized:
 				temporarilyNormalize = True
 				self.NormalizePrices()
-			model = StockPredictionNN(baseModelName=self.stockTicker, UseLSTM=True)
+			model = StockPredictionNN(baseModelName='Prices', UseLSTM=True)
 			FieldList = None
 			#FieldList = BaseFieldList
 			model.LoadSource(sourceDF=self.historicalPrices, FieldList=FieldList, window_size=1)
 			model.LoadTarget(targetDF=None, prediction_target_days=daysIntoFuture)
 			model.MakeBatches(batch_size=64, train_test_split=.93)
 			model.BuildModel()
-			model.Train(epochs=NNTrainingEpochs)
+			if (not model.Load() and NNTrainingEpochs == 0): NNTrainingEpochs = 250
+			if (NNTrainingEpochs > 0): 
+				model.Train(epochs=NNTrainingEpochs)
+				model.Save()
 			model.Predict(True)
 			self.pricePredictions = model.GetTrainingResults(False, False)
 			self.pricePredictions = self.pricePredictions.rename(columns={'Average':'estAverage'})
@@ -520,13 +523,16 @@ class PricingData:
 			if not self.pricesNormalized:
 				temporarilyNormalize = True
 				self.NormalizePrices()
-			model = StockPredictionNN(baseModelName=self.stockTicker, UseLSTM=False)
+			model = StockPredictionNN(baseModelName='Prices', UseLSTM=False)
 			FieldList = BaseFieldList
 			model.LoadSource(sourceDF=self.historicalPrices, FieldList=FieldList, window_size=daysIntoFuture*16)
 			model.LoadTarget(targetDF=None, prediction_target_days=daysIntoFuture)
 			model.MakeBatches(batch_size=64, train_test_split=.93)
 			model.BuildModel()
-			model.Train(epochs=NNTrainingEpochs)
+			if (not model.Load() and NNTrainingEpochs == 0): NNTrainingEpochs = 250
+			if (NNTrainingEpochs > 0): 
+				model.Train(epochs=NNTrainingEpochs)
+				model.Save()
 			model.Predict(True)
 			self.pricePredictions = model.GetTrainingResults(False, False)
 			self.pricePredictions['estAverage'] = (self.pricePredictions['Low'] + self.pricePredictions['High'] + self.pricePredictions['Open'] + self.pricePredictions['Close'])/4
@@ -1169,8 +1175,27 @@ class TradingModel(Portfolio):
 			self.PlotTradeHistoryAgainstHistoricalPrices(self.tradeHistory, self.priceHistory[0].GetPriceHistory(), self.modelName)
 		return cashValue
 		
+	def CalculateGain(self, startDate:datetime, endDate:datetime):
+		try:
+			startValue = self.dailyValue['TotalValue'].at[startDate]
+			endValue = self.dailyValue['TotalValue'].at[endDate]
+			gain = endValue = startValue
+			percentageGain = endValue/startValue
+		except:
+			gain = -1
+			percentageGain = -1
+			print('Unable to calculate gain for ', startDate, endDate)
+		return gain, percentageGain
+			
 	def GetCustomValues(self): return self.Custom1, self.Custom2
 	def GetDailyValue(self): return self.dailyValue #returns dataframe with daily value of portfolio
+	def GetValueAt(self, date): 
+		try:
+			r = self.dailyValue['TotalValue'].at[date]
+		except:
+			print('Unable to return value at ', date)
+			r=-1
+		return r
 	def GetPriceSnapshot(self, ticker:str=''): 
 		#returns snapshot object of yesterday's pricing info to help make decisions today
 		r = None
@@ -1218,7 +1243,7 @@ class TradingModel(Portfolio):
 			for ph in self.priceHistory:
 				p = ph.GetPriceSnapshot(self.currentDate)
 				self.ProcessDaysOrders(ph.stockTicker, p.open, p.high, p.low, p.close, self.currentDate)
-		if self.currentDate < self.modelEndDate:
+		if self.currentDate <= self.modelEndDate:
 			try:
 				loc = self.priceHistory[0].historicalPrices.index.get_loc(self.currentDate) + 1
 			except:
@@ -1228,56 +1253,86 @@ class TradingModel(Portfolio):
 				nextDay = self.priceHistory[0].historicalPrices.index.values[loc]
 				self.currentDate = DateFormatDatabase(str(nextDay)[:10])
 			else:
-				print('The end: ' + str(self.modelEndDate))
+				#print('The end: ' + str(self.modelEndDate))
 				self.currentDate=self.modelEndDate		
 	
 	def SetCustomValues(self, v1, v2):
 		self.Custom1 = v1
 		self.custom2 = v2
 		
-class ForcastModel():	#used to forecast the effect of a series of trade actions, one per day, and return the net change in value.  This will mirror the given model
+class ForcastModel():	#used to forecast the effect of a series of trade actions, one per day, and return the net change in value.  This will mirror the given model.  Can also be used to test alternate past actions 
 	def __init__(self, mirroredModel:TradingModel, daysToForecast:int = 10):
 		modelName = 'Forcaster for ' + mirroredModel.modelName
 		self.daysToForecast = daysToForecast
 		self.startDate = mirroredModel.modelStartDate 
 		durationInYears = (mirroredModel.modelEndDate-mirroredModel.modelStartDate).days/365
 		self.tm = TradingModel(modelName=modelName, startingTicker=mirroredModel._stockTickerList[0], startDate=mirroredModel.modelStartDate, durationInYears=durationInYears, totalFunds=mirroredModel.startingValue, verbose=False, trackHistory=False)
+		self.savedModel = TradingModel(modelName=modelName, startingTicker=mirroredModel._stockTickerList[0], startDate=mirroredModel.modelStartDate, durationInYears=durationInYears, totalFunds=mirroredModel.startingValue, verbose=False, trackHistory=False)
 		self.mirroredModel = mirroredModel
+		self.tm._stockTickerList = mirroredModel._stockTickerList
+		self.tm.priceHistory = mirroredModel.priceHistory
+		self.savedModel._stockTickerList = mirroredModel._stockTickerList
+		self.savedModel.priceHistory = mirroredModel.priceHistory
 
-	def Reset(self):
-		self.tm.currentDate = self.mirroredModel.currentDate
-		self.tm._fundsCommittedToOrders=self.mirroredModel._fundsCommittedToOrders
-		self.tm._cash=self.mirroredModel._cash
-		c, a = self.mirroredModel.Value()
+	def Reset(self, updateSavedModel:bool=True):
+		if updateSavedModel:
+			c, a = self.mirroredModel.Value()
+			self.savedModel.currentDate = self.mirroredModel.currentDate
+			self.savedModel._cash=self.mirroredModel._cash
+			self.savedModel._fundsCommittedToOrders=self.mirroredModel._fundsCommittedToOrders
+			self.savedModel.dailyValue = pd.DataFrame([[self.mirroredModel.currentDate,c,a,c+a]], columns=list(['Date','CashValue','AssetValue','TotalValue']))
+			self.savedModel.dailyValue.set_index(['Date'], inplace=True)
+			for i in range(len(self.savedModel._traunches)):
+				self.savedModel._traunches[i].ticker = self.mirroredModel._traunches[i].ticker
+				self.savedModel._traunches[i].available = self.mirroredModel._traunches[i].available
+				self.savedModel._traunches[i].size = self.mirroredModel._traunches[i].size
+				self.savedModel._traunches[i].units = self.mirroredModel._traunches[i].units
+				self.savedModel._traunches[i].purchased = self.mirroredModel._traunches[i].purchased
+				self.savedModel._traunches[i].marketOrder = self.mirroredModel._traunches[i].marketOrder
+				self.savedModel._traunches[i].sold = self.mirroredModel._traunches[i].sold
+				self.savedModel._traunches[i].dateBuyOrderPlaced = self.mirroredModel._traunches[i].dateBuyOrderPlaced
+				self.savedModel._traunches[i].dateBuyOrderFilled = self.mirroredModel._traunches[i].dateBuyOrderFilled
+				self.savedModel._traunches[i].dateSellOrderPlaced = self.mirroredModel._traunches[i].dateSellOrderPlaced
+				self.savedModel._traunches[i].dateSellOrderFilled = self.mirroredModel._traunches[i].dateSellOrderFilled
+				self.savedModel._traunches[i].buyOrderPrice = self.mirroredModel._traunches[i].buyOrderPrice
+				self.savedModel._traunches[i].purchasePrice = self.mirroredModel._traunches[i].purchasePrice
+				self.savedModel._traunches[i].sellOrderPrice = self.mirroredModel._traunches[i].sellOrderPrice
+				self.savedModel._traunches[i].sellPrice = self.mirroredModel._traunches[i].sellPrice
+				self.savedModel._traunches[i].latestPrice = self.mirroredModel._traunches[i].latestPrice
+				self.savedModel._traunches[i].expireAfterDays = self.mirroredModel._traunches[i].expireAfterDays
+		c, a = self.savedModel.Value()
 		self.startingValue = c + a
-		self.tm.dailyValue = pd.DataFrame([[self.mirroredModel.currentDate,c,a,c+a]], columns=list(['Date','CashValue','AssetValue','TotalValue']))
+		self.tm.currentDate = self.savedModel.currentDate
+		self.tm._cash=self.savedModel._cash
+		self.tm._fundsCommittedToOrders=self.savedModel._fundsCommittedToOrders
+		self.tm.dailyValue = pd.DataFrame([[self.savedModel.currentDate,c,a,c+a]], columns=list(['Date','CashValue','AssetValue','TotalValue']))
 		self.tm.dailyValue.set_index(['Date'], inplace=True)
 		for i in range(len(self.tm._traunches)):
-			self.tm._traunches[i].ticker = self.mirroredModel._traunches[i].ticker
-			self.tm._traunches[i].available = self.mirroredModel._traunches[i].available
-			self.tm._traunches[i].size = self.mirroredModel._traunches[i].size
-			self.tm._traunches[i].units = self.mirroredModel._traunches[i].units
-			self.tm._traunches[i].purchased = self.mirroredModel._traunches[i].purchased
-			self.tm._traunches[i].marketOrder = self.mirroredModel._traunches[i].marketOrder
-			self.tm._traunches[i].sold = self.mirroredModel._traunches[i].sold
-			self.tm._traunches[i].dateBuyOrderPlaced = self.mirroredModel._traunches[i].dateBuyOrderPlaced
-			self.tm._traunches[i].dateBuyOrderFilled = self.mirroredModel._traunches[i].dateBuyOrderFilled
-			self.tm._traunches[i].dateSellOrderPlaced = self.mirroredModel._traunches[i].dateSellOrderPlaced
-			self.tm._traunches[i].dateSellOrderFilled = self.mirroredModel._traunches[i].dateSellOrderFilled
-			self.tm._traunches[i].buyOrderPrice = self.mirroredModel._traunches[i].buyOrderPrice
-			self.tm._traunches[i].purchasePrice = self.mirroredModel._traunches[i].purchasePrice
-			self.tm._traunches[i].sellOrderPrice = self.mirroredModel._traunches[i].sellOrderPrice
-			self.tm._traunches[i].sellPrice = self.mirroredModel._traunches[i].sellPrice
-			self.tm._traunches[i].latestPrice = self.mirroredModel._traunches[i].latestPrice
-			self.tm._traunches[i].expireAfterDays = self.mirroredModel._traunches[i].expireAfterDays
+			self.tm._traunches[i].ticker = self.savedModel._traunches[i].ticker
+			self.tm._traunches[i].available = self.savedModel._traunches[i].available
+			self.tm._traunches[i].size = self.savedModel._traunches[i].size
+			self.tm._traunches[i].units = self.savedModel._traunches[i].units
+			self.tm._traunches[i].purchased = self.savedModel._traunches[i].purchased
+			self.tm._traunches[i].marketOrder = self.savedModel._traunches[i].marketOrder
+			self.tm._traunches[i].sold = self.savedModel._traunches[i].sold
+			self.tm._traunches[i].dateBuyOrderPlaced = self.savedModel._traunches[i].dateBuyOrderPlaced
+			self.tm._traunches[i].dateBuyOrderFilled = self.savedModel._traunches[i].dateBuyOrderFilled
+			self.tm._traunches[i].dateSellOrderPlaced = self.savedModel._traunches[i].dateSellOrderPlaced
+			self.tm._traunches[i].dateSellOrderFilled = self.savedModel._traunches[i].dateSellOrderFilled
+			self.tm._traunches[i].buyOrderPrice = self.savedModel._traunches[i].buyOrderPrice
+			self.tm._traunches[i].purchasePrice = self.savedModel._traunches[i].purchasePrice
+			self.tm._traunches[i].sellOrderPrice = self.savedModel._traunches[i].sellOrderPrice
+			self.tm._traunches[i].sellPrice = self.savedModel._traunches[i].sellPrice
+			self.tm._traunches[i].latestPrice = self.savedModel._traunches[i].latestPrice
+			self.tm._traunches[i].expireAfterDays = self.savedModel._traunches[i].expireAfterDays		
 		c, a = self.tm.Value()
 		if self.startingValue != c + a:
-			print('Forcast model accounting error.  ', self.startingValue, c+a)
+			print('Forcast model accounting error.  ', self.startingValue, self.mirroredModel.Value(), self.savedModel.Value(), self.tm.Value())
 			assert(False)
 			
 	def GetResult(self):
 		dayCounter = len(self.tm.dailyValue)
-		while dayCounter < self.daysToForecast:  
+		while dayCounter <= self.daysToForecast:  
 			self.tm.ProcessDay()
 			dayCounter +=1
 		c, a = self.tm.Value()
