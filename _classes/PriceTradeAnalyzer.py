@@ -25,6 +25,14 @@ if useWebProxyServer:
 
 BaseFieldList = ['Open','Close','High','Low']
 #-------------------------------------------- General Utilities -----------------------------------------------
+def PandaIsInIndex(df:pd.DataFrame, value):
+	try:
+		x = df.loc[value]
+		r = True
+	except:
+		r = False
+	return r
+
 #datetime.datetime.fromtimestamp(dt).date()
 def GetMyDateFormat(): return '%m/%d/%Y'
 
@@ -228,7 +236,7 @@ class PricingData:
 		print("historyStartDate=" + str(self.historyStartDate))
 		print("historyEndDate=" + str(self.historyEndDate))
 		
-	def DownloadPriceData(self,daysToGoBack:int=0):
+	def DownloadPriceData(self,daysToGoBack:int=0, verbose:bool=True):
 		url = "https://stooq.com/q/d/l/?i=d&s=" + self.stockTicker + '.us'
 		if self.stockTicker[0] == '^': url = "https://stooq.com/q/d/l/?i=d&s=" + self.stockTicker 
 		filePath = self._dataFolderhistoricalPrices + self.stockTicker + '.csv'
@@ -236,7 +244,7 @@ class PricingData:
 		s1 = ''
 		EndDate = d.strftime(GetMyDateFormat())
 		if daysToGoBack>0:
-			d=d+datetime.timedelta(days=-daysToGoBack)
+			d += datetime.timedelta(days=-daysToGoBack)
 			StartDate = d.strftime(GetMyDateFormat())
 			Interval = "&d1=" + StartDate +"&d2=" + EndDate
 			url = url + Interval
@@ -253,18 +261,18 @@ class PricingData:
 			s1 = r.decode()
 			s1 = s1.replace(chr(13),'')
 		except Exception as e:
-			print('Web connection error: ', e)
+			if verbose: print('Web connection error: ', e)
 		if len(s1) < 1024:
-			print('No data found online for ticker ' + self.stockTicker)
+			if verbose: print(' No data found online for ticker ' + self.stockTicker, url)
 			if useWebProxyServer:
 				global currentProxyServer
 				global proxyList
 				if not currentProxyServer==None and len(proxyList) > 3: 
-					print('Removing proxy: ', currentProxyServer)
+					if verbose: print( 'Removing proxy: ', currentProxyServer)
 					proxyList.remove(currentProxyServer)
 					currentProxyServer = None
 		else:
-			print('Downloaded new data for ticker ' + self.stockTicker)
+			if verbose: print(' Downloaded new data for ticker ' + self.stockTicker)
 			f = open(filePath,'w')
 			f.write(s1)
 			f.close()
@@ -278,7 +286,7 @@ class PricingData:
 			if x > 720: self.DownloadPriceData(0)		
 
 		if not os.path.isfile(filePath):
-			print('No data found for ' + self.stockTicker)
+			print(' No data found for ' + self.stockTicker)
 			self.pricesLoaded = False
 		else:
 			df = pd.read_csv(filePath, index_col=0, parse_dates=True, na_values=['nan'])
@@ -308,7 +316,7 @@ class PricingData:
 				for i in range(1, self.pricePredictions.shape[0]):
 					self.pricePredictions.iloc[i] = (1 + self.pricePredictions.iloc[i]) * self.pricePredictions.iloc[i-1]
 			self.pricesInPercentages = False
-			print('Prices have been converted back from percentages.')
+			print(' Prices have been converted back from percentages.')
 		else:
 			self.CTPFactor = self.historicalPrices.iloc[0]
 			self.historicalPrices = self.historicalPrices[['Open','Close','High','Low','Average']].pct_change(1)
@@ -317,7 +325,7 @@ class PricingData:
 				self.pricePredictions = self.pricePredictions.pct_change(1)
 			self.statsLoaded = False
 			self.pricesInPercentages = True
-			print('Prices have been converted to percentage change from previous day.')
+			print(' Prices have been converted to percentage change from previous day.')
 		
 	def NormalizePrices(self, verbose:bool=False):
 		#(x-min(x))/(max(x)-min(x))
@@ -566,21 +574,34 @@ class PricingData:
 		d = self.historicalPrices.index.values[indexLocation]
 		return DateFormatDatabase(str(d)[:10])
 
-	def GetPrice(self,forDate:datetime):
-		forDate=DateFormatDatabase(forDate)
-		return self.historicalPrices.loc[forDate,['High', 'Low']]
-		
-	def GetPriceSnapshot(self,forDate:datetime, yesterday:bool=False):
+	def GetPrice(self,forDate:datetime, verbose:bool=False):
 		forDate = DateFormatDatabase(forDate)
-		if yesterday:
-			i = self.historicalPrices.index.get_loc(forDate) - 1
-			if i > 0: forDate = self.historicalPrices.index.values[i]
+		i = 0
+		while i < 6 and not PandaIsInIndex(self.historicalPrices, forDate):
+			forDate -= datetime.timedelta(days=1)
+			i+=1
+		try:
+			r = self.historicalPrices.loc[forDate]['Average']
+		except:			
+			if verbose: print('Unable to get price for ' + self.stockTicker + ' on ' + str(forDate))	
+			r = 0
+		return r
+		
+	def GetPriceSnapshot(self,forDate:datetime, verbose:bool=False):
+		forDate = DateFormatDatabase(forDate)
 		sn = PriceSnapshot()
 		sn.ticker = self.stockTicker
-		sn.snapShotDate = forDate
+		i = 0
+		while i < 6 and not PandaIsInIndex(self.historicalPrices, forDate):
+			forDate -= datetime.timedelta(days=1)
+			i+=1
+		sn.snapShotDate = forDate 
 		try:
 			sn.high, sn.low, sn.open,sn.close,sn.oneDayAverage,sn.twoDayAverage,sn.shortEMA,sn.shortEMASlope,sn.longEMA,sn.longEMASlope,sn.channelHigh,sn.channelLow,sn.oneDayApc,sn.oneDayDeviation,sn.fiveDayDeviation,sn.fifteenDayDeviation =self.historicalPrices.loc[forDate,['High','Low','Open','Close','Average','2DayAv','shortEMA','shortEMASlope','longEMA','longEMASlope','channelHigh', 'channelLow','1DayApc','1DayDeviation','5DavDeviation','15DavDeviation']]
-			#1dTarget = IF(15dapc<0, Min(1dav, 1dav.step(1)),Max(1dav, 1dav.step(1)) *(1+15dapc)) old model from Excel
+		except:
+			sn.high, sn.low, sn.open,sn.close = 0,0,0,0
+			if verbose: print('Unable to get price snapshot for ' + self.stockTicker + ' on ' + str(forDate))	
+		if sn.high > 0:
 			if sn.longEMASlope < 0:
 				if sn.shortEMASlope > 0:	#bounce or early recovery
 					sn.nextDayTarget = min(sn.oneDayAverage, sn.twoDayAverage)
@@ -598,8 +619,6 @@ class PricingData:
 			else:
 				tomorrow =  forDate.date() + datetime.timedelta(days=1) 
 				sn.estLow,sn.estHigh= self.pricePredictions.loc[tomorrow,['estLow','estHigh']]
-		except:
-			print('Unable to get price snapshot for ' + self.stockTicker + ' on ' + str(forDate))
 		return sn
 
 	def GetCurrentPriceSnapshot(self): return self.GetPriceSnapshot(self.historyEndDate)
@@ -688,12 +707,12 @@ class Traunch: #interface for handling actions on a chunk of funds
 		self.marketOrder=False
 		self.expireAfterDays=0
 		if self.purchased:
-			if verbose: print('Sell order on ', self.ticker, ' canceled.')
+			if verbose: print(' Sell order on ', self.ticker, ' canceled.')
 			self.dateSellOrderPlaced = None
 			self.sellOrderPrice = 0
 			self.expired=False
 		else:
-			if verbose: print('Buy order for ', self.ticker, ' canceled.')
+			if verbose: print(' Buy order for ', self.ticker, ' canceled.')
 			self.Recycle()
 		
 	def Expire(self):
@@ -715,16 +734,16 @@ class Traunch: #interface for handling actions on a chunk of funds
 		if self.available and price > 0:
 			self.available = False
 			self.ticker=ticker
+			self.marketOrder = marketOrder
 			self.dateBuyOrderPlaced = datePlaced
 			self.buyOrderPrice=price
 			self.units = round(self.size/price)
 			self.purchased = False
-			self.marketOrder = marketOrder
 			self.expireAfterDays=expireAfterDays
 			r=(price*self.units)
 			if self._verbose: 
 				if marketOrder:
-					print(datePlaced, ' Buy placed at Market for ' + str(self.units) + ' Cost ' + str(r) + '(' + self.ticker + ')')
+					print(datePlaced, ' Buy placed at Market (' + str(price) + ') for ' + str(self.units) + ' Cost ' + str(r) + '(' + self.ticker + ')')
 				else:
 					print(datePlaced, ' Buy placed at ' + str(price) + ' for ' + str(self.units) + ' Cost ' + str(r) + '(' + self.ticker + ')')
 		return r
@@ -785,33 +804,34 @@ class Traunch: #interface for handling actions on a chunk of funds
 	
 	def UpdateStatus(self, price, dateChecked):
 		#Returns True if the order had action: filled or expired.
-		self.latestPrice = price
 		r = False
-		if self.buyOrderPrice > 0 and not self.purchased:
-			if self.buyOrderPrice >= price or self.marketOrder:
-				self.dateBuyOrderFilled = dateChecked
-				self.purchasePrice = price
-				self.purchased=True
-				if self._verbose: print(dateChecked, ' Buy ordered on ' + str(self.dateBuyOrderPlaced) + ' filled for ' + str(price) + ' (' + self.ticker + ')')
-				r=True
+		if price > 0: 
+			self.latestPrice = price
+			if self.buyOrderPrice > 0 and not self.purchased:
+				if self.buyOrderPrice >= price or self.marketOrder:
+					self.dateBuyOrderFilled = dateChecked
+					self.purchasePrice = price
+					self.purchased=True
+					if self._verbose: print(dateChecked, ' Buy ordered on ' + str(self.dateBuyOrderPlaced) + ' filled for ' + str(price) + ' (' + self.ticker + ')')
+					r=True
+				else:
+					self.expired = (DateDiffDays(self.dateBuyOrderPlaced , dateChecked) > self.expireAfterDays)
+					if self.expired and self._verbose: print(dateChecked, 'Buy order from ' + str(self.dateBuyOrderPlaced) + ' expired.')
+					r = self.expired
+			elif self.sellOrderPrice > 0 and not self.sold:
+				if self.sellOrderPrice <= price or self.marketOrder:
+					self.dateSellOrderFilled = dateChecked
+					self.sellPrice = price
+					self.sold=True
+					self.expired=False
+					if self._verbose: print(dateChecked, ' Sell ordered on ' + str(self.dateSellOrderPlaced) + ' filled for ' + str(price) + ' (' + self.ticker + ')') 
+					r=True
+				else:
+					self.expired = (DateDiffDays(self.dateSellOrderPlaced, dateChecked) > self.expireAfterDays)
+					if self.expired and self._verbose: print(dateChecked, 'Sell order from ' + str(self.dateSellOrderPlaced) + ' expired.')
+					r = self.expired
 			else:
-				self.expired = (DateDiffDays(self.dateBuyOrderPlaced , dateChecked) > self.expireAfterDays)
-				if self.expired and self._verbose: print(dateChecked, 'Buy order from ' + str(self.dateBuyOrderPlaced) + ' expired.')
-				r = self.expired
-		elif self.sellOrderPrice > 0 and not self.sold:
-			if self.sellOrderPrice <= price or self.marketOrder:
-				self.dateSellOrderFilled = dateChecked
-				self.sellPrice = price
-				self.sold=True
-				self.expired=False
-				if self._verbose: print(dateChecked, ' Sell ordered on ' + str(self.dateSellOrderPlaced) + ' filled for ' + str(price) + ' (' + self.ticker + ')') 
-				r=True
-			else:
-				self.expired = (DateDiffDays(self.dateSellOrderPlaced, dateChecked) > self.expireAfterDays)
-				if self.expired and self._verbose: print(dateChecked, 'Sell order from ' + str(self.dateSellOrderPlaced) + ' expired.')
-				r = self.expired
-		else:
-			r=False
+				r=False
 		return r
 
 class Position:	#Simple interface for open positions
@@ -830,7 +850,7 @@ class Portfolio:
 	_cash=0
 	_fundsCommittedToOrders=0
 	_commisionCost = 4
-	_traunches = []			#Sets of funds for investing, rather than just a pool of cash I feel it is better to use chunks of funds
+	_traunches = []			#Sets of funds for investing, rather than just a pool of cash.  Simplifies accounting.
 	_traunchCount = 0
 	_verbose = False
 	
@@ -856,10 +876,10 @@ class Portfolio:
 	def AccountingError(self):
 		r = False
 		if not self.ValidateFundsCommittedToOrders() == 0: 
-			print('Accounting error: inaccurcy in funds committed to orders!')
+			print(' Accounting error: inaccurcy in funds committed to orders!')
 			r=True
 		if self.FundsAvailable() + self._traunchCount*self._commisionCost < 0: 
-			print('Accounting error: negative cash balance.  (Cash, CommittedFunds, AvailableFunds) ', self._cash, self._fundsCommittedToOrders, self.FundsAvailable())
+			print(' Accounting error: negative cash balance.  (Cash, CommittedFunds, AvailableFunds) ', self._cash, self._fundsCommittedToOrders, self.FundsAvailable())
 			r=True
 		return r
 
@@ -918,7 +938,7 @@ class Portfolio:
 			if FixIt: 
 				self._fundsCommittedToOrders = x
 			else:
-				print('Committed funds variance actual/recorded', x, self._fundsCommittedToOrders)
+				print( 'Committed funds variance actual/recorded', x, self._fundsCommittedToOrders)
 		return (self._fundsCommittedToOrders - x)
 
 	def Value(self):
@@ -927,6 +947,35 @@ class Portfolio:
 			if t.purchased:
 				assetValue = assetValue + (t.units*t.latestPrice)
 		return self._cash, assetValue
+		
+	def ReEvaluateTraunchCount(self, verbose:bool=False):
+		#Portfolio performance may require adjusting the available Traunches
+		traunchSize = self._traunches[0].size
+		c = self._traunchCount
+		availableTraunches,_,_,_ = self.PositionSummary()
+		availableFunds = self._cash - self._fundsCommittedToOrders
+		targetAvailable = int(availableFunds/traunchSize)
+		if targetAvailable > availableTraunches:
+			if verbose: 
+				print(' Available Funds: ', availableFunds, availableTraunches * traunchSize)
+				print(' Adding ' + str(targetAvailable - availableTraunches) + ' new Traunches to portfolio..')
+			for i in range(targetAvailable - availableTraunches):
+				self._traunches.append(Traunch(traunchSize))
+				self._traunchCount +=1
+		elif targetAvailable < availableTraunches:
+			if verbose: print( 'Removing ' + str(availableTraunches - targetAvailable) + ' traunches from portfolio..')
+			#print(targetAvailable, availableFunds, traunchSize, availableTraunches)
+			i = self._traunchCount-1
+			while i > 0:
+				if self._traunches[i].available and targetAvailable < availableTraunches:
+					if verbose: 
+						print(' Available Funds: ', availableFunds, availableTraunches * traunchSize)
+						print(' Removing traunch at ', i)
+					self._traunches.pop(i)	#remove last available
+					self._traunchCount -=1
+					availableTraunches -=1
+				i -=1
+
 
 	#--------------------------------------  Order interface  ---------------------------------------
 	def CancelAllOrders(self, currentDate:datetime):
@@ -936,21 +985,29 @@ class Portfolio:
 
 	def PlaceBuy(self, ticker:str, price:float, datePlaced:datetime, marketOrder:bool=False, expireAfterDays:int=10, verbose:bool=False):
 		#Place with first available traunch, returns True if order was placed
-		price = round(price, 3)
 		r=False
+		price = round(price, 3)
 		oldestExistingOrder = None
-		FundsAvailable = self.FundsAvailable()
-		units = round(self._traunches[0].size/price)
-		cost = units*price  + self._commisionCost
-		if units == 0 or FundsAvailable < cost:
-			if verbose: print('Unable to purchase.  Price exceeds available funds')
+		availableCash = self.FundsAvailable()
+		units=0
+		if price > 0: units = int(self._traunches[0].size/price)
+		cost = units*price + self._commisionCost
+		if availableCash < cost and units > 2:
+			units -=1
+			cost = units*price + self._commisionCost
+		if units == 0 or availableCash < cost:
+			if verbose: 
+				if price==0:
+					print( 'Unable to purchase ' + ticker + '.  Price lookup failed.')
+				else:
+					print( 'Unable to purchase ' + ticker + '.  Price (' + str(price) + ') exceeds available funds', availableCash)
 		else:	
 			for t in self._traunches: #Find available 
 				if t.available :	#Place new order
 					self._fundsCommittedToOrders = self._fundsCommittedToOrders + cost 
 					x = self._commisionCost + t.PlaceBuy(ticker=ticker, price=price, datePlaced=datePlaced, marketOrder=marketOrder, expireAfterDays=expireAfterDays, verbose=verbose) 
 					if not x == cost: #insufficient funds for full purchase
-						print('Expected cost changed from', cost, 'to', x)
+						if verbose: print(' Expected cost changed from', cost, 'to', x)
 						self._fundsCommittedToOrders = self._fundsCommittedToOrders - cost + x + self._commisionCost
 					r=True
 					break
@@ -962,15 +1019,15 @@ class Portfolio:
 		if not r and units > 0 and False:	#We could allow replacing oldest existing order
 			if oldestExistingOrder == None:
 				if self.TraunchesAvailable() > 0:
-					if self._verbose: print(' Unable to buy ' + str(units) + ' of ' + ticker + ' with funds available: ' + str(FundsAvailable))
+					if verbose: print(' Unable to buy ' + str(units) + ' of ' + ticker + ' with funds available: ' + str(FundsAvailable))
 				else: 
-					if self._verbose: print(' Unable to buy ' + ticker + ' no traunches available')
+					if verbose: print(' Unable to buy ' + ticker + ' no traunches available')
 			else:
 				for t in self._traunches:
 					if not t.purchased and t.ticker == ticker and oldestExistingOrder==t.dateBuyOrderPlaced:
-						if self._verbose: print(' No traunch available... replacing order from ' + str(oldestExistingOrder))
+						if verbose: print(' No traunch available... replacing order from ' + str(oldestExistingOrder))
 						oldCost = t.buyOrderPrice * t.units + self._commisionCost
-						if self._verbose: print(' Replacing Buy order for ' + ticker + ' from ' + str(t.buyOrderPrice) + ' to ' + str(price))
+						if verbose: print(' Replacing Buy order for ' + ticker + ' from ' + str(t.buyOrderPrice) + ' to ' + str(price))
 						t.units = units
 						t.buyOrderPrice = price
 						t.dateBuyOrderPlaced = datePlaced
@@ -992,7 +1049,7 @@ class Portfolio:
 		if not r:	#couldn't find one without a sell, try to update an existing sell order
 			for t in self._traunches:
 				if t.ticker == ticker and t.purchased:
-					if self._verbose: print(' Updating existing sell order ')
+					if verbose: print(' Updating existing sell order ')
 					t.PlaceSell(price=price, datePlaced=datePlaced, marketOrder=marketOrder, expireAfterDays=expireAfterDays, verbose=verbose)
 					r=True
 					break					
@@ -1028,14 +1085,14 @@ class Portfolio:
 							if (fundsavailable - actualCost - self._commisionCost) < 25:	#insufficient funds
 								unitsCanAfford = max(round((fundsavailable - self._commisionCost)/price)-1, 0)
 								if self._verbose:
-									print('Ajusting units on market order for ' + ticker + ' Price: ', price, ' Requested Units: ', t.units,  ' Can afford:', unitsCanAfford)
+									print(' Ajusting units on market order for ' + ticker + ' Price: ', price, ' Requested Units: ', t.units,  ' Can afford:', unitsCanAfford)
 									print(' Cash: ', self._cash, ' Committed Funds: ', self._fundsCommittedToOrders, ' Available: ', fundsavailable)
 								if unitsCanAfford ==0:
 									t.Recycle()
 								else:
 									t.AdjustBuyUnits(unitsCanAfford)
 						if t.units == 0:
-							if self._verbose: print('Can not afford any ' + ticker + ' at market ' + str(price) + ' canceling Buy')
+							if self._verbose: print( 'Can not afford any ' + ticker + ' at market ' + str(price) + ' canceling Buy')
 							t.Recycle()
 						else:
 							self._cash = self._cash - (t.units*price) - self._commisionCost 
@@ -1116,12 +1173,18 @@ class TradingModel(Portfolio):
 		CreateFolder(self._dataFolderTradeModel)
 		p = PricingData(startingTicker)
 		if p.LoadHistory(True): 
-			if verbose: print('Loading ' + startingTicker)
+			if verbose: print(' Loading ' + startingTicker)
 			p.CalculateStats()
-			p.TrimToDateRange(startDate, endDate)
+			p.TrimToDateRange(startDate - datetime.timedelta(days=60), endDate + datetime.timedelta(days=10))
 			self.priceHistory = [p]
-			self.modelStartDate = p.historyStartDate
-			self.modelEndDate = p.historyEndDate
+			if not PandaIsInIndex(p.historicalPrices, startDate): startDate += datetime.timedelta(days=1)
+			if not PandaIsInIndex(p.historicalPrices, startDate): startDate += datetime.timedelta(days=1)
+			if not PandaIsInIndex(p.historicalPrices, startDate): startDate += datetime.timedelta(days=1)
+			if not PandaIsInIndex(p.historicalPrices, endDate): endDate -= datetime.timedelta(days=1)
+			if not PandaIsInIndex(p.historicalPrices, endDate): endDate -= datetime.timedelta(days=1)
+			if not PandaIsInIndex(p.historicalPrices, endDate): endDate -= datetime.timedelta(days=1)
+			self.modelStartDate = startDate
+			self.modelEndDate = endDate
 			self.currentDate = self.modelStartDate
 			modelName += '_' + str(startDate)[:10] + '_' + str(durationInYears) + 'year'
 			self.modelName = modelName
@@ -1146,34 +1209,37 @@ class TradingModel(Portfolio):
 			if self.verbose: print(' Loading price history for ' + ticker)
 			if p.LoadHistory(True): 
 				p.CalculateStats()
-				if p.historyStartDate > self.modelStartDate or p.historyEndDate < self.modelEndDate:
-					print('Unable to add ' + ticker + ' to the trading model because the price history does not match the model.')
+				p.TrimToDateRange(self.modelStartDate - datetime.timedelta(days=60), self.modelEndDate + datetime.timedelta(days=10))
+				if len(p.historicalPrices) > len(self.priceHistory[0].historicalPrices): #first element is used for trading day indexing, replace if this is a better match
+					self.priceHistory.insert(0, p)
+					self._stockTickerList.insert(0, ticker)
 				else:
-					p.TrimToDateRange(self.modelStartDate, self.modelEndDate)
 					self.priceHistory.append(p)
 					self._stockTickerList.append(ticker)
-					r = True
+				r = True
 			else:
-				print('Unable to download price history for ' + ticker)
+				print( 'Unable to download price history for ' + ticker)
 		return r
 
 	def CancelAllOrders(self): super(TradingModel, self).CancelAllOrders(self.currentDate)
 	
 	def CloseModel(self, plotResults:bool=True, saveHistoryToFile:bool=True, folderName:str='data/trademodel/', dpi:int=600):	
 		cashValue, assetValue = self.Value()
-		netChange = cashValue + assetValue - self.startingValue 		
 		if assetValue > 0:
-			self.SellAllPositions(self.currentDate, ticker='')
+			self.SellAllPositions(self.currentDate)
 			self.ProcessDay()
+		cashValue, assetValue = self.Value()
+		netChange = cashValue + assetValue - self.startingValue 		
 		if saveHistoryToFile:
 			self.SaveDailyValueToFile(folderName)
 			self.SaveTradeHistoryToFile(folderName)
 		print('Model ' + self.modelName + ' from ' + str(self.modelStartDate)[:10] + ' to ' + str(self.modelEndDate)[:10])
 		print('Cash: ' + str(round(cashValue)) + ' asset: ' + str(round(assetValue)) + ' total: ' + str(round(cashValue + assetValue)))
 		print('Net change: ' + str(round(netChange)), str(round((netChange/self.startingValue) * 100, 2)) + '%')
+		print('')
 		if plotResults and self.trackHistory: 
 			self.PlotTradeHistoryAgainstHistoricalPrices(self.tradeHistory, self.priceHistory[0].GetPriceHistory(), self.modelName)
-		return cashValue
+		return cashValue + assetValue
 		
 	def CalculateGain(self, startDate:datetime, endDate:datetime):
 		try:
@@ -1196,19 +1262,34 @@ class TradingModel(Portfolio):
 			print('Unable to return value at ', date)
 			r=-1
 		return r
-	def GetPriceSnapshot(self, ticker:str=''): 
+
+	def GetPrice(self, ticker:str=''): 
 		#returns snapshot object of yesterday's pricing info to help make decisions today
+		forDate = self.currentDate + datetime.timedelta(days=-1)
 		r = None
 		if ticker =='':
-			r = self.priceHistory[0].GetPriceSnapshot(self.currentDate, yesterday=True)
+			r = self.priceHistory[0].GetPrice(forDate)
 		else:
 			if not ticker in self._stockTickerList:	self.AddStockTicker(ticker)
 			if ticker in self._stockTickerList:
 				for ph in self.priceHistory:
-					if ph.stockTicker == ticker: r = ph.GetPriceSnapshot(self.currentDate, yesterday=True) 
+					if ph.stockTicker == ticker: r = ph.GetPrice(forDate) 
 		return r
 
-	def ModelCompleted(self):	return(self.currentDate == self.modelEndDate)
+	def GetPriceSnapshot(self, ticker:str=''): 
+		#returns snapshot object of yesterday's pricing info to help make decisions today
+		forDate = self.currentDate + datetime.timedelta(days=-1)
+		r = None
+		if ticker =='':
+			r = self.priceHistory[0].GetPriceSnapshot(forDate)
+		else:
+			if not ticker in self._stockTickerList:	self.AddStockTicker(ticker)
+			if ticker in self._stockTickerList:
+				for ph in self.priceHistory:
+					if ph.stockTicker == ticker: r = ph.GetPriceSnapshot(forDate) 
+		return r
+
+	def ModelCompleted(self):	return(self.currentDate >= self.modelEndDate)
 
 	def NormalizePrices(self):
 		self._NormalizePrices =  not self._NormalizePrices
@@ -1216,8 +1297,12 @@ class TradingModel(Portfolio):
 			if not p.pricesNormalized: p.NormalizePrices()
 		
 	def PlaceBuy(self, ticker:str, price:float, marketOrder:bool=False, expireAfterDays:bool=10, verbose:bool=False):
-		if not ticker in self._stockTickerList: self.AddStockTicker(ticker)
-		if ticker in self._stockTickerList:	super(TradingModel, self).PlaceBuy(ticker, price, self.currentDate, marketOrder, expireAfterDays, verbose)
+		if not ticker in self._stockTickerList: self.AddStockTicker(ticker)	
+		if ticker in self._stockTickerList:	
+			if marketOrder: price = self.GetPrice(ticker)
+			super(TradingModel, self).PlaceBuy(ticker, price, self.currentDate, marketOrder, expireAfterDays, verbose)
+		else:
+			print(' Unable to add ticker ' + ticker + ' to portfolio.')
 
 	def PlaceSell(self, ticker:str, price:float, marketOrder:bool=False, expireAfterDays:bool=10, datepurchased:datetime=None, verbose:bool=False): 
 		super(TradingModel, self).PlaceSell(ticker=ticker, price=price, datePlaced=self.currentDate, marketOrder=marketOrder, expireAfterDays=expireAfterDays, verbose=verbose)
@@ -1236,25 +1321,27 @@ class TradingModel(Portfolio):
 
 	def ProcessDay(self):
 		#Process current day and increment the current date
-		if self.currentDate <= self.modelEndDate: 
-			if self.verbose: 
-				c, a = self.Value()
-				if self.verbose: print(str(self.currentDate) + ' model: ' + self.modelName + ' _cash: ' + str(c) + ' Assets: ' + str(a))
-			for ph in self.priceHistory:
-				p = ph.GetPriceSnapshot(self.currentDate)
-				self.ProcessDaysOrders(ph.stockTicker, p.open, p.high, p.low, p.close, self.currentDate)
-		if self.currentDate <= self.modelEndDate:
+		#if self.currentDate <= self.modelEndDate: 
+		if self.verbose: 
+			c, a = self.Value()
+			if self.verbose: print(str(self.currentDate) + ' model: ' + self.modelName + ' _cash: ' + str(c) + ' Assets: ' + str(a))
+		for ph in self.priceHistory:
+			p = ph.GetPriceSnapshot(self.currentDate)
+			self.ProcessDaysOrders(ph.stockTicker, p.open, p.high, p.low, p.close, self.currentDate)
+			self.ReEvaluateTraunchCount()
+		if self.currentDate <= self.modelEndDate: #increment the date
 			try:
 				loc = self.priceHistory[0].historicalPrices.index.get_loc(self.currentDate) + 1
+				if loc < self.priceHistory[0].historicalPrices.shape[0]:
+					nextDay = self.priceHistory[0].historicalPrices.index.values[loc]
+					self.currentDate = DateFormatDatabase(str(nextDay)[:10])
+				else:
+					print('The end: ' + str(self.modelEndDate))
+					self.currentDate=self.modelEndDate		
 			except:
 				#print(self.priceHistory[0].historicalPrices)
-				print('Unable to set current date to ', self.currentDate)
-			if loc < self.priceHistory[0].historicalPrices.shape[0]:
-				nextDay = self.priceHistory[0].historicalPrices.index.values[loc]
-				self.currentDate = DateFormatDatabase(str(nextDay)[:10])
-			else:
-				#print('The end: ' + str(self.modelEndDate))
-				self.currentDate=self.modelEndDate		
+				print('Unable to find next date in index from ', self.currentDate)
+				self.currentDate += datetime.timedelta(days=1)
 	
 	def SetCustomValues(self, v1, v2):
 		self.Custom1 = v1
@@ -1327,7 +1414,7 @@ class ForcastModel():	#used to forecast the effect of a series of trade actions,
 			self.tm._traunches[i].expireAfterDays = self.savedModel._traunches[i].expireAfterDays		
 		c, a = self.tm.Value()
 		if self.startingValue != c + a:
-			print('Forcast model accounting error.  ', self.startingValue, self.mirroredModel.Value(), self.savedModel.Value(), self.tm.Value())
+			print( 'Forcast model accounting error.  ', self.startingValue, self.mirroredModel.Value(), self.savedModel.Value(), self.tm.Value())
 			assert(False)
 			
 	def GetResult(self):
@@ -1337,8 +1424,53 @@ class ForcastModel():	#used to forecast the effect of a series of trade actions,
 			dayCounter +=1
 		c, a = self.tm.Value()
 		endingValue = c + a
-		#print('Start Value: ', self.startingValue)
-		#print('End Value: ', endingValue)
-		#print(self.tm.dailyValue)
 		return endingValue - self.startingValue
 		
+class StockPicker():
+	def __init__(self): 
+		self.priceData = []
+		self._stockTickerList = []
+		
+	def __del__(self): 
+		self.priceData = None
+		self._stockTickerList = None
+		
+	def AddTicker(self, ticker:str):
+		if not ticker in self._stockTickerList:
+			p = PricingData(ticker)
+			if p.LoadHistory(True): 
+				self.priceData.append(p)
+				self._stockTickerList.append(ticker)
+
+	def GetHighestPriceMomentum(self, currentDate:datetime, longHistoryDays:int = 365, shortHistoryDays:int = 30, stocksToReturn:int = 5, filterOption:int = 0): 
+		minDailyPerformance = 0.05/365
+		candidates = pd.DataFrame(columns=list(['Ticker','currentPrice','historicalPrice','percentageChangeLongTerm','percentageChangeShortTerm']))
+		candidates.set_index(['Ticker'], inplace=True)
+		lookBackDateLT = currentDate + datetime.timedelta(days=-longHistoryDays)
+		lookBackDateST = currentDate + datetime.timedelta(days=-shortHistoryDays)
+		for i in range(len(self.priceData)):
+			ticker = self.priceData[i].stockTicker
+			startValue = self.priceData[i].GetPrice(lookBackDateLT)
+			endValue = self.priceData[i].GetPrice(currentDate)
+			percentageChangeShortTerm = 0
+			percentageChangeLongTerm = 0
+			if (startValue > 0 and endValue > 0): 
+				percentageChangeLongTerm = ((endValue/startValue)-1)/longHistoryDays
+				startValue = self.priceData[i].GetPrice(lookBackDateST)				
+				percentageChangeShortTerm = ((endValue/startValue)-1)/shortHistoryDays
+				candidates.loc[ticker] = [endValue, startValue, percentageChangeLongTerm, percentageChangeShortTerm]
+		candidates.sort_values('percentageChangeLongTerm', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last')
+		if filterOption ==1: #high performer, recently at a discount or slowing down but not negative
+			filter = (candidates['percentageChangeLongTerm'] > candidates['percentageChangeShortTerm']) & (candidates['percentageChangeLongTerm'] > minDailyPerformance) & (candidates['percentageChangeShortTerm'] > 0) 
+		elif filterOption ==2: #high performer, recently doing better
+			filter = (candidates['percentageChangeLongTerm'] < candidates['percentageChangeShortTerm']) & (candidates['percentageChangeLongTerm'] > minDailyPerformance) & (candidates['percentageChangeShortTerm'] > minDailyPerformance)
+		elif filterOption ==3: 
+			filter = (candidates['percentageChangeLongTerm'] > minDailyPerformance) & (candidates['percentageChangeShortTerm'] > 0) #Best overall returns 26% average yearly over 27 years
+		else:
+			filter = (candidates['percentageChangeLongTerm'] > minDailyPerformance) & (candidates['percentageChangeShortTerm'] > 0)
+		result = candidates[filter]
+		result = result[:stocksToReturn]
+		return result
+
+	
+	
