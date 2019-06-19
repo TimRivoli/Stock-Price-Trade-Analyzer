@@ -1,63 +1,59 @@
 #WARNING: "Far more money has been lost by investors preparing for corrections or trying to anticipate corrections  
 #than has been lost in corrections themselves." - Peter Lynch.
-import pandas
+import pandas as pd
 from _classes.PriceTradeAnalyzer import TradingModel, PlotHelper, PriceSnapshot, Position
-SPTop70MinusDogs=['AAPL','MSFT','AMZN','FB','BRK-B','JPM','JNJ','XOM','GOOG','GOOGL','BAC','WFC','CVX','UNH','HD','INTC','PFE','T','V','PG','VZ','CSCO','C','CMCSA','ABBV','BA','KO','DWDP','PEP','MRK','DIS','WMT','ORCL','MA','MMM','NVDA','IBM','AMGN','MCD','MO','NFLX','HON','MDT','GILD','TXN','ABT','UNP','SLB','BMY','UTX','AVGO','ACN','QCOM','ADBE','CAT','GS','PYPL','PCLN','USB','UPS','LOW','NKE','TMO','LMT','COST','CVS','LLY','CELG']
-SomeStocks=['AAPL','MSFT','AMZN','FB','BRK-B','JPM','JNJ','XOM','BAC','WFC','CVX','UNH','HD','INTC','PFE','T','V','PG','VZ','CSCO','C','CMCSA','ABBV','BA','KO','DWDP','PEP','MRK','DIS','WMT','ORCL','MA','MMM','NVDA','IBM','AMGN','MCD','MO','NFLX','HON','MDT','GILD','TXN','ABT','UNP','SLB','BMY','UTX','AVGO','ACN','QCOM','ADBE','CAT','GS','PYPL','PCLN','USB','UPS','LOW','NKE','TMO','LMT','COST','CVS','LLY','CELG']
-TradeRunnerStocks = ['scg','wec']	#TradeRunner 90,000 profit in 14 years, buy and hold would be more like 400,000 on wec.  7% return would be 157,853 profit instead of 90,000, spx would be 83,000
 
-#------------------------------------------- Global helper functions  ----------------------------------------------		
-def ExtendedDurationTest(modelName:str, modelFunction, ticker:str):
-	PortfolioSize=10000
+#------------------------------------------- Global model functions  ----------------------------------------------		
+def ExtendedDurationTest(modelName:str, modelFunction, ticker:str, portfolioSize:int=10000):
 	#test the model over and extended range of periods and years
-	TestResults = pandas.DataFrame([['1/1/1950','1/1/1950',0,0]], columns=list(['StartDate','EndDate','Duration','EndingValue']))
+	TestResults = pd.DataFrame([['1/1/1950','1/1/1950',0,0]], columns=list(['StartDate','EndDate','Duration','EndingValue']))
 	TestResults.set_index(['StartDate'], inplace=True)		
 	for duration in range(1,10,2):
 		for year in range(1950,2017):
 			for month in range(1,12,3):
 				startDate = str(month) + '/1/' + str(year)
 				endDate = str(month) + '/1/' + str(year + duration)
-				endValue = RunModel(modelName, modelFunction, ticker, startDate, duration, PortfolioSize, saveHistoryToFile=False, returndailyValues=False, verbose=False)
-				y = pandas.DataFrame([[startDate,endDate,duration,endValue]], columns=list(['StartDate','EndDate','Duration','EndingValue']))
+				endValue = RunModel(modelName, modelFunction, ticker, startDate, duration, portfolioSize, saveHistoryToFile=False, returndailyValues=False, verbose=False)
+				y = pd.DataFrame([[startDate,endDate,duration,endValue]], columns=list(['StartDate','EndDate','Duration','EndingValue']))
 				TestResults = TestResults.append(y, ignore_index=True)
 	TestResults.to_csv('data/trademodel/' + modelName + '_' + ticker +'_extendedTest.csv')
 	print(TestResults)
 
-def PlotModeldailyValue(modelName:str, modelFunction, ticker:str, startDate:str, durationInYears:int):
-	PortfolioSize=10000
-	m1 = RunModel(modelName, modelFunction, ticker, startDate, durationInYears, PortfolioSize, saveHistoryToFile=True, returndailyValues=True, verbose=False)
+def PlotModeldailyValue(modelName:str, modelFunction, ticker:str, startDate:str, durationInYears:int, portfolioSize:int=10000):
+	m1 = RunModel(modelName, modelFunction, ticker, startDate, durationInYears, portfolioSize, saveHistoryToFile=True, returndailyValues=True, verbose=False)
 	if m1.shape[0] > 0:
 		plot = PlotHelper()
 		plot.PlotDataFrame(m1, modelName + ' Daily Value (' + ticker + ')', 'Date', 'Value') 
 
-def CompareModels(modelOneName:str, modelOneFunction, modelTwoName:str, modelTwoFunction, ticker:str, startDate:str, durationInYears:int):
-	PortfolioSize=10000
-	m1 = RunModel(modelOneName, modelOneFunction, ticker, startDate, durationInYears, PortfolioSize, saveHistoryToFile=False, returndailyValues=True, verbose=False)
-	m2 = RunModel(modelTwoName, modelTwoFunction, ticker, startDate, durationInYears, PortfolioSize, saveHistoryToFile=False, returndailyValues=True, verbose=False)
+def CompareModels(modelOneName:str, modelOneFunction, modelTwoName:str, modelTwoFunction, ticker:str, startDate:str, durationInYears:int, portfolioSize:int=10000):
+	m1 = RunModel(modelOneName, modelOneFunction, ticker, startDate, durationInYears, portfolioSize, saveHistoryToFile=False, returndailyValues=True, verbose=False)
+	m2 = RunModel(modelTwoName, modelTwoFunction, ticker, startDate, durationInYears, portfolioSize, saveHistoryToFile=False, returndailyValues=True, verbose=False)
 	if m1.shape[0] > 0 and m2.shape[0] > 0:
 		m1 = m1.join(m2, lsuffix='_' + modelOneName, rsuffix='_' + modelTwoName)
 		plot = PlotHelper()
 		plot.PlotDataFrame(m1, ticker + ' Model Comparison', 'Date', 'Value') 
 
-def RunModel(modelName:str, modelFunction, ticker:str, startDate:str, durationInYears:int, totalFunds:int, saveHistoryToFile:bool=True, returndailyValues:bool=False, verbose:bool=False):	
+def RunModel(modelName:str, modelFunction, ticker:str, startDate:str, durationInYears:int, portfolioSize:int, saveHistoryToFile:bool=True, returndailyValues:bool=False, verbose:bool=False):	
 	modelName = modelName + '_' + ticker 
-	tm = TradingModel(modelName=modelName, startingTicker=ticker, startDate=startDate, durationInYears=durationInYears, totalFunds=totalFunds, verbose=verbose)
+	tm = TradingModel(modelName=modelName, startingTicker=ticker, startDate=startDate, durationInYears=durationInYears, totalFunds=portfolioSize, verbose=verbose)
 	if not tm.modelReady:
 		print('Unable to initialize price history for model for ' + str(startDate))
-		if returndailyValues: return pandas.DataFrame()
-		else:return totalFunds
+		if returndailyValues: return pd.DataFrame()
+		else:return portfolioSize
 	else:
 		while not tm.ModelCompleted():
 			tm.ProcessDay()
 			modelFunction(tm, ticker)
 			if tm.AccountingError(): 
-				print('Accounting error.  The numbers do not add up correctly.')
+				print('Accounting error.  The numbers do not add up correctly.  Terminating model run.')
+				tm.PositionSummary()
+				#tm.PrintPositions()
 				break
 		if returndailyValues:
 			tm.CloseModel(verbose, saveHistoryToFile)
-			return tm.GetDailyValue()   #return daily value
+			return tm.GetDailyValue()   #return daily value for model comparisons
 		else:
-			return tm.CloseModel(verbose, saveHistoryToFile)		#return closing value
+			return tm.CloseModel(verbose, saveHistoryToFile)		#return simple closing value to view net effect
 
 #------------------------------------------- Your models go here ----------------------------------------------		
 #	Each function should define what actions should be taken in the given day from the TradingModel, Buy/Sell/Hold
@@ -222,12 +218,18 @@ def RunTradingModelSwingTrend(tm: TradingModel, ticker:str):
 		
 
 if __name__ == '__main__':
-	RunModel('BuyAndHold', RunTradingModelBuyHold, '^Spx','1/1/2009', 8, 30000, verbose=False)
-	#RunModel('BuyAndHold', RunTradingModelBuyHold, 'MRK','1/2/2008', 5, 50000, verbose=False)
-	#ExtendedDurationTest('BuyHold', RunTradingModelBuyHold,'^SPX')
-	#RunModel('Trending', RunTradingModelTrending, 'GOOGL','1/2/2008', 5, 50000, verbose=False)
-	#CompareModels('BuyHold',RunTradingModelBuyHold,'Trending', RunTradingModelTrending, 'Googl','1/1/2000',15)
-	#RunModel('Trending', RunTradingModelTrending, '^Spx','1/2/2008', 5, 50000, verbose=False)
+	#RunModel('BuyAndHold', RunTradingModelBuyHold, 'BAC','1/1/1990', 10, 30000, verbose=False)
+	RunModel('BuyAndHold', RunTradingModelBuyHold, 'BAC','3/27/1990', 20, 30000, verbose=False)
+	#RunModel('BuyAndHold', RunTradingModelBuyHold, 'JNJ','1/1/1990', 28, 30000, verbose=False)
+	#RunModel('BuyAndHold', RunTradingModelBuyHold, 'JNJ','1/1/1990', 28, 30000, verbose=False)
+	#RunModel('BuyAndHold', RunTradingModelBuyHold, 'JNJ','1/1/1990', 28, 30000, verbose=False)
+	#RunModel('BuyAndHold', RunTradingModelBuyHold, 'JPM','1/1/1990', 25, 30000, verbose=False)
+	#RunModel('BuyAndHold', RunTradingModelBuyHold, 'XOM','1/1/1990', 25, 30000, verbose=False)
+	#RunModel('BuyAndHold', RunTradingModelBuyHold, 'JNJ','1/1/1990', 25, 30000, verbose=False)
+	ExtendedDurationTest('BuyHold', RunTradingModelBuyHold,'^SPX')
+	RunModel('Trending', RunTradingModelTrending, 'GOOGL','1/2/2008', 5, 50000, verbose=False)
+	CompareModels('BuyHold',RunTradingModelBuyHold,'Trending', RunTradingModelTrending, 'Googl','1/1/2000',15)
+	RunModel('Trending', RunTradingModelTrending, '^Spx','1/2/2008', 5, 50000, verbose=False)
 	#RunModel('Trending', RunTradingModelTrending, '^Spx','1/1/1990', 27, 50000, verbose=False)
 	#RunModel('SwingTrend', RunTradingModelSwingTrend, '^Spx','1/1/1990', 27, 50000, verbose=False)
 	#RunModel('BuyAndHold', RunTradingModelBuyHold, '^Spx','1/1/1980', 1, 10000, verbose=False)

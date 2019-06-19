@@ -1,16 +1,12 @@
 import datetime, os, pandas
 from _classes.PriceTradeAnalyzer import PricingData, PriceSnapshot, PlotHelper
-
-AShortList=['^SPX','AAPL','GOOGL','F','CVX','XOM','MRK','FCX','NEM','BA']
-SPTop70=['^SPX','AAPL','MSFT','AMZN','FB','BRK-B','JPM','JNJ','XOM','GOOG','GOOGL','BAC','WFC','CVX','UNH','HD','INTC','PFE','T','V','PG','VZ','CSCO','C','CMCSA','ABBV','BA','KO','DWDP','PEP','PM','MRK','DIS','WMT','ORCL','MA','MMM','NVDA','IBM','AMGN','MCD','GE','MO','NFLX','HON','MDT','GILD','TXN','ABT','UNP','SLB','BMY','UTX','AVGO','ACN','QCOM','ADBE','CAT','GS','PYPL','PCLN','USB','UPS','LOW','NKE','TMO','LMT','COST','CVS','LLY','CELG']
-DogsOfDOW=['VZ','IBM','XOM','PFE','CVX','PG','MRK','KO','GE','CSCO']
-SPTop70MinusDogs=['^SPX','AAPL','MSFT','AMZN','FB','BRK-B','JPM','JNJ','XOM','GOOG','GOOGL','BAC','WFC','CVX','UNH','HD','INTC','PFE','T','V','PG','VZ','CSCO','C','CMCSA','ABBV','BA','KO','DWDP','PEP','MRK','DIS','WMT','ORCL','MA','MMM','NVDA','IBM','AMGN','MCD','MO','NFLX','HON','MDT','GILD','TXN','ABT','UNP','SLB','BMY','UTX','AVGO','ACN','QCOM','ADBE','CAT','GS','PYPL','PCLN','USB','UPS','LOW','NKE','TMO','LMT','COST','CVS','LLY','CELG']
+from _classes.TickerLists import TickerLists
 IndexList=['^SPX','^DJI', '^NDQ']
 
 def PlotAnnualPerformance(ticker:str='^SPX'):
 	print('Annual performance rate for ' + ticker)
 	prices = PricingData(ticker)
-	if prices.LoadHistory(True):
+	if prices.LoadHistory():
 		x = prices.GetPriceHistory(['Average'])
 		yearly=x.groupby([(x.index.year)]).first()
 		yearlyChange = yearly.pct_change(1)
@@ -24,7 +20,7 @@ def PlotAnnualPerformance(ticker:str='^SPX'):
 def PlotPrediction(ticker:str='^SPX', predictionMethod:int=0, daysToGraph:int=60, daysForward:int=5, learnhingEpochs:int=500):
 	print('Plotting predictions for ' + ticker)
 	prices = PricingData(ticker)
-	if prices.LoadHistory(True):
+	if prices.LoadHistory():
 		prices.NormalizePrices()
 		prices.PredictPrices(predictionMethod, daysForward, learnhingEpochs)
 		prices.NormalizePrices()
@@ -35,7 +31,7 @@ def DownloadAndGraphStocks(tickerList:list):
 	for ticker in tickerList:
 		prices = PricingData(ticker)
 		print('Loading ' + ticker)
-		if prices.LoadHistory(True):
+		if prices.LoadHistory():
 			print('Calcualting stats ' + ticker)
 			prices.NormalizePrices()
 			prices.CalculateStats()
@@ -51,22 +47,27 @@ def DownloadAndGraphStocks(tickerList:list):
 def GraphTimePeriod(ticker:str, endDate:datetime, days:int):
 	prices = PricingData(ticker)
 	print('Loading ' + ticker)
-	if prices.LoadHistory(True):
+	if prices.LoadHistory():
 		prices.GraphData(endDate, days, None , False, True, None)
 
 def CalculatePriceCorrelation(tickerList:list):
 	datafileName = 'data/_priceCorrelations.csv'
 	summaryfileName = 'data/_priceCorrelationTop10.txt'
-	result = pandas.DataFrame()
+	result = None
 	startDate = str(datetime.datetime.now().date()  + datetime.timedelta(days=-365))
 	endDate = str(datetime.datetime.now().date())
 	for ticker in tickerList:
 		prices = PricingData(ticker)
 		print('Loading ' + ticker)
-		if prices.LoadHistory(True):
+		if prices.LoadHistory():
 			prices.TrimToDateRange(startDate, endDate)
 			prices.NormalizePrices()
-			result[ticker] = prices.GetPriceHistory(['Average'])
+			x = prices.GetPriceHistory(['Average'])
+			x.rename(index=str, columns={"Average": ticker}, inplace=True)
+			if result is None:
+				result = x
+			else:
+				result = result.join(x, how='outer')
 	result = result.corr()
 	result.to_csv(datafileName)
 
@@ -93,7 +94,7 @@ def OpportunityFinder(tickerList:list):
 	for ticker in tickerList:
 		prices = PricingData(ticker)
 		print('Checking ' + ticker)
-		if prices.LoadHistory(True):
+		if prices.LoadHistory():
 			prices.CalculateStats()
 			psnap = prices.GetCurrentPriceSnapshot()
 			titleStatistics =' 5/15 dev: ' + str(round(psnap.fiveDayDeviation*100, 2)) + '/' + str(round(psnap.fifteenDayDeviation*100, 2)) + '% ' + str(psnap.low) + '/' + str(psnap.nextDayTarget) + '/' + str(psnap.high) + str(psnap.snapShotDate)
@@ -121,15 +122,15 @@ def OpportunityFinder(tickerList:list):
 	f.close()
 	
 if __name__ == '__main__': #Choose your adventure.
-	#CalculatePriceCorrelation(SPTop70)
-	#CalculatePriceCorrelation(DogsOfDOW)
-	#PlotAnnualPerformance('TSLA')
-	PlotAnnualPerformance('^SPX')
-	#PlotPrediction('^SPX', 1, 120, 15)
-	#OpportunityFinder(SPTop70)
-	#DownloadAndGraphStocks(IndexList)
-	#DownloadAndGraphStocks(SPTop70)
-	#DownloadAndGraphStocks(DogsOfDOW)
-	#for i in range(30,40,2):	GraphTimePeriod('^SPX', '1/3/19' + str(i), 600)
-	#PlotPrediction('^SPX', predictionMethod=3, daysToGraph=60, daysForward=5, learnhingEpochs=750) #LSTM
+	#CalculatePriceCorrelation(TickerLists.SPTop70())
+	CalculatePriceCorrelation(TickerLists.DogsOfDOW())
+	PlotAnnualPerformance('TSLA')
+	#PlotAnnualPerformance('VIGRX')
+	PlotPrediction('^SPX', 1, 120, 15)
+	CalculatePriceCorrelation(TickerLists.SPTop70())
+	DownloadAndGraphStocks(TickerLists.SPTop70())
+	OpportunityFinder(TickerLists.SPTop70())
+	DownloadAndGraphStocks(TickerLists.DogsOfDOW())
+	for i in range(30,40,2):	GraphTimePeriod('^SPX', '1/3/19' + str(i), 600)
+	PlotPrediction('^SPX', predictionMethod=3, daysToGraph=60, daysForward=5, learnhingEpochs=750) #LSTM
 	#PlotPrediction('^SPX', predictionMethod=4, daysToGraph=60, daysForward=5, learnhingEpochs=750) #CNN
