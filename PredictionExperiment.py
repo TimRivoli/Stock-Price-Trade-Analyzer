@@ -18,7 +18,7 @@ def SampleGraphs(ticker:str, daysInGraph:int):
 	plot = PlotHelper()
 	prices = PricingData(ticker)
 	print('Loading ' + ticker)
-	if prices.LoadHistory(True):
+	if prices.LoadHistory():
 		prices.NormalizePrices()
 		sampleData = prices.GetPriceHistory()
 		d = sampleData.index[-1]  
@@ -31,7 +31,7 @@ def SampleLSTM(ticker:str):
 	prices = PricingData(ticker)
 	print('Loading ' + ticker)
 	CreateFolder(dataFolder + 'samples')
-	if prices.LoadHistory(True):
+	if prices.LoadHistory():
 		prices.NormalizePrices()
 		daysInTarget = 15
 		daysInTraining = 200
@@ -47,7 +47,7 @@ def SampleCNN(ticker:str):
 	plot = PlotHelper()
 	prices = PricingData(ticker)
 	print('Loading ' + ticker)
-	if prices.LoadHistory(True):
+	if prices.LoadHistory():
 		prices.NormalizePrices()
 		window_size = 80
 		target_size = 10
@@ -123,7 +123,7 @@ def RunPredictions(ticker:str='^SPX', numberOfLearningPasses:int = 750):
 	prices = PricingData(ticker)
 	CreateFolder(dataFolder)
 	print('Loading ' + ticker)
-	if prices.LoadHistory(True):
+	if prices.LoadHistory():
 		prices.TrimToDateRange('1/1/1950', '3/1/2018')
 		prices.NormalizePrices()
 		for ii in [4,20,60]:
