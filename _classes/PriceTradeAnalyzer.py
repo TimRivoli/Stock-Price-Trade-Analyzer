@@ -124,7 +124,7 @@ def PlotDataFrame(df:pd.DataFrame, title:str, xlabel:str, ylabel:str, adjustScal
 
 def GetProxiedOpener():
 	testURL = 'https://stooq.com'
-	userName, password = 'Bill', 'test'
+	userName, password = 'Bob', 'test'
 	context = ssl._create_unverified_context()
 	handler = webRequest.HTTPSHandler(context=context)
 	i = -1
@@ -236,19 +236,12 @@ class PricingData:
 		print("historyStartDate=" + str(self.historyStartDate))
 		print("historyEndDate=" + str(self.historyEndDate))
 		
-	def DownloadPriceData(self,daysToGoBack:int=0, verbose:bool=True):
+	def _DownloadPriceData(self,verbose:bool=False):
 		url = "https://stooq.com/q/d/l/?i=d&s=" + self.stockTicker + '.us'
 		if self.stockTicker[0] == '^': url = "https://stooq.com/q/d/l/?i=d&s=" + self.stockTicker 
 		filePath = self._dataFolderhistoricalPrices + self.stockTicker + '.csv'
-		d = datetime.datetime.now()
 		s1 = ''
-		EndDate = d.strftime(GetMyDateFormat())
-		if daysToGoBack>0:
-			d += datetime.timedelta(days=-daysToGoBack)
-			StartDate = d.strftime(GetMyDateFormat())
-			Interval = "&d1=" + StartDate +"&d2=" + EndDate
-			url = url + Interval
-			if CreateFolder(self._dataFolderCurrentPrices): filePath = self._dataFolderCurrentPrices + '/'+ self.stockTicker + '.csv'
+		if CreateFolder(self._dataFolderCurrentPrices): filePath = self._dataFolderCurrentPrices + '/'+ self.stockTicker + '.csv'
 		try:
 			if useWebProxyServer:
 				opener = GetProxiedOpener()
@@ -277,27 +270,46 @@ class PricingData:
 			f.write(s1)
 			f.close()
 
-	def LoadHistory(self, refreshIfOld:bool=False, dropVolume:bool = True):
+	def _LoadHistory(self, refreshPrices:bool=False,verbose:bool=False):
 		filePath = self._dataFolderhistoricalPrices + self.stockTicker + '.csv'
-		if not os.path.isfile(filePath):
-			self.DownloadPriceData(0)
-		elif refreshIfOld:
-			x = round((int(time.time()) - round(os.path.getmtime(filePath))) / 60, 2) # how many minutes old it is
-			if x > 720: self.DownloadPriceData(0)		
+		if not os.path.isfile(filePath) or refreshPrices: self._DownloadPriceData(verbose=verbose)
 
 		if not os.path.isfile(filePath):
 			print(' No data found for ' + self.stockTicker)
 			self.pricesLoaded = False
 		else:
 			df = pd.read_csv(filePath, index_col=0, parse_dates=True, na_values=['nan'])
-			if dropVolume: df = df[BaseFieldList]
+			df = df[BaseFieldList]
+			df['Average'] = df.loc[:,BaseFieldList].mean(axis=1) #select those rows, calculate the mean value
+			if (df['Open'] < df['Low']).any() or (df['Close'] < df['Low']).any() or (df['High'] < df['Low']).any() or (df['Open'] > df['High']).any() or (df['Close'] > df['High']).any(): 
+				print(df.loc[df['Low'] > df['High']])
+				print(' Data validation error, Low > High.  Dropping values..')
+				df = df.loc[df['Low'] <= df['High']]
+				df = df.loc[df['Low'] <= df['Open']]
+				df = df.loc[df['Low'] <= df['Close']]
+				df = df.loc[df['High'] >= df['Open']]
+				df = df.loc[df['High'] >= df['Close']]
 			self.historicalPrices = df
-			self.historicalPrices['Average'] = self.historicalPrices.loc[:,BaseFieldList].mean(axis=1) #select those rows, calculate the mean value
 			self.historyStartDate = self.historicalPrices.index.min()
 			self.historyEndDate = self.historicalPrices.index.max()
 			self.pricesLoaded = True
 		return self.pricesLoaded 
 		
+	def LoadHistory(self, requestedStartDate:datetime=None, requestedEndDate:datetime=None, verbose:bool=False):
+		self._LoadHistory(refreshPrices=False, verbose=verbose)
+		if self.pricesLoaded:
+			requestNewData = False
+			if not(requestedStartDate==None): requestNewData = (requestedStartDate < self.historyStartDate)
+			if not(requestedEndDate==None): requestNewData = (requestNewData or (self.historyEndDate < requestedEndDate))
+			if requestNewData and verbose: print(' Requesting new data for ' + self.stockTicker + ' (requestedStart, historyStart, historyEnd, requestedEnd)', requestedStartDate, self.historyStartDate, self.historyEndDate, requestedEndDate)
+			if (requestedStartDate==None and requestedEndDate==None):
+				filePath = self._dataFolderhistoricalPrices + self.stockTicker + '.csv'
+				lastUpdated = datetime.datetime.fromtimestamp(os.path.getmtime(filePath))
+				requestNewData = (DateDiffDays(startDate=lastUpdated, endDate=datetime.datetime.now()) > 1)
+				if verbose: print(' Requesting new data ' + self.stockTicker + ' reason stale data ', lastUpdated)
+			if requestNewData: self._LoadHistory(refreshPrices=True, verbose=verbose)
+		return(self.pricesLoaded)
+
 	def TrimToDateRange(self,startDate:datetime, endDate:datetime):
 		startDate = DateFormatDatabase(startDate)
 		endDate = DateFormatDatabase(endDate)
@@ -346,7 +358,7 @@ class PricingData:
 			self.PreNormalizationHigh = high
 			self.PreNormalizationDiff = diff
 			self.pricesNormalized = True
-			print('Prices have been normalized.')
+			print(' Prices have been normalized.')
 		else:
 			low = self.PreNormalizationLow
 			high = self.PreNormalizationHigh 
@@ -360,13 +372,16 @@ class PricingData:
 				self.pricePredictions['estAverage'] = (self.pricePredictions['estAverage'] * diff) + low
 				self.pricePredictions['estHigh'] = (self.pricePredictions['estHigh'] * diff) + low
 			self.pricesNormalized = False
-			print('Prices have been un-normalized.')
+			print(' Prices have been un-normalized.')
 		x['Average'] = (x['Open'] + x['Close'] + x['High'] + x['Low'])/4
 		#x['Average'] = x.loc[:,BaseFieldList].mean(axis=1, skipna=True) #Wow, this doesn't work.
 		if (x['Average'] < x['Low']).any() or (x['Average'] > x['High']).any(): 
-			print('WTF?, averages not computed correctly.')
-			print(x)
-			print(x.loc[:,BaseFieldList].mean(axis=1))
+			print(x.loc[x['Average'] < x['Low']])
+			print(x.loc[x['Average'] > x['High']])
+			print(x.loc[x['Low'] > x['High']])
+			print(self.PreNormalizationLow, self.PreNormalizationHigh, self.PreNormalizationDiff, self.PreNormalizationHigh-self.PreNormalizationLow)
+			#print(x.loc[:,BaseFieldList].mean(axis=1))
+			print('Stop: averages not computed correctly.')
 			assert(False)
 		self.historicalPrices = x
 		if self.statsLoaded: self.CalculateStats()
@@ -1172,7 +1187,7 @@ class TradingModel(Portfolio):
 		self.modelReady = False
 		CreateFolder(self._dataFolderTradeModel)
 		p = PricingData(startingTicker)
-		if p.LoadHistory(True): 
+		if p.LoadHistory(requestedStartDate=startDate, requestedEndDate=endDate, verbose=verbose): 
 			if verbose: print(' Loading ' + startingTicker)
 			p.CalculateStats()
 			p.TrimToDateRange(startDate - datetime.timedelta(days=60), endDate + datetime.timedelta(days=10))
@@ -1207,7 +1222,7 @@ class TradingModel(Portfolio):
 		if not ticker in self._stockTickerList:
 			p = PricingData(ticker)
 			if self.verbose: print(' Loading price history for ' + ticker)
-			if p.LoadHistory(True): 
+			if p.LoadHistory(requestedStartDate=self.modelStartDate, requestedEndDate=self.modelEndDate): 
 				p.CalculateStats()
 				p.TrimToDateRange(self.modelStartDate - datetime.timedelta(days=60), self.modelEndDate + datetime.timedelta(days=10))
 				if len(p.historicalPrices) > len(self.priceHistory[0].historicalPrices): #first element is used for trading day indexing, replace if this is a better match
@@ -1218,7 +1233,7 @@ class TradingModel(Portfolio):
 					self._stockTickerList.append(ticker)
 				r = True
 			else:
-				print( 'Unable to download price history for ' + ticker)
+				print( 'Unable to download price history for ticker ' + ticker)
 		return r
 
 	def CancelAllOrders(self): super(TradingModel, self).CancelAllOrders(self.currentDate)
@@ -1289,7 +1304,13 @@ class TradingModel(Portfolio):
 					if ph.stockTicker == ticker: r = ph.GetPriceSnapshot(forDate) 
 		return r
 
-	def ModelCompleted(self):	return(self.currentDate >= self.modelEndDate)
+	def ModelCompleted(self):
+		if self.currentDate ==None or self.modelEndDate == None: 
+			r = True
+			print('Model start or end date is None', self.currentDate, self.modelEndDate)
+		else:
+			r = self.currentDate >= self.modelEndDate
+		return(r)
 
 	def NormalizePrices(self):
 		self._NormalizePrices =  not self._NormalizePrices
@@ -1427,9 +1448,11 @@ class ForcastModel():	#used to forecast the effect of a series of trade actions,
 		return endingValue - self.startingValue
 		
 class StockPicker():
-	def __init__(self): 
+	def __init__(self, startDate:datetime=None, endDate:datetime=None): 
 		self.priceData = []
 		self._stockTickerList = []
+		self._startDate = startDate
+		self._endDate = endDate
 		
 	def __del__(self): 
 		self.priceData = None
@@ -1438,7 +1461,7 @@ class StockPicker():
 	def AddTicker(self, ticker:str):
 		if not ticker in self._stockTickerList:
 			p = PricingData(ticker)
-			if p.LoadHistory(True): 
+			if p.LoadHistory(self._startDate, self._endDate): 
 				self.priceData.append(p)
 				self._stockTickerList.append(ticker)
 
