@@ -53,9 +53,17 @@ def GetDateTimeStamp():
 	d = datetime.datetime.now()
 	return d.strftime('%Y%m%d%H%M')
 
+def GetTodaysDate():
+	d = datetime.datetime.now()
+	return d.strftime('%m/%d/%Y')
+
 def DateDiffDays(startDate:datetime, endDate:datetime):
 	delta = endDate-startDate
 	return delta.days
+
+def DateDiffHours(startDate:datetime, endDate:datetime):
+	delta = endDate-startDate
+	return int(delta.seconds / 3600)
 
 def CreateFolder(p:str):
 	r = True
@@ -194,7 +202,6 @@ class PricingData:
 	predictionDeviation = 0	#Average percentage off from target
 	pricesNormalized = False
 	pricesInPercentages = False
-	_dataFolderCurrentPrices = 'data/current/'
 	_dataFolderhistoricalPrices = 'data/historical/'
 	_dataFolderCharts = 'data/charts/'
 	_dataFolderDailyPicks = 'data/dailypicks/'
@@ -205,11 +212,9 @@ class PricingData:
 			if CreateFolder(dataFolderRoot):
 				if not dataFolderRoot[-1] =='/': dataFolderRoot += '/'
 				self._dataFolderCharts = dataFolderRoot + 'charts/'
-				self._dataFolderCurrentPrices = dataFolderRoot + 'current/'
 				self._dataFolderhistoricalPrices = dataFolderRoot + 'historical/'
 				self._dataFolderDailyPicks = dataFolderRoot + 'dailypicks/'
 		else: CreateFolder('data')
-		CreateFolder(self._dataFolderCurrentPrices)
 		CreateFolder(self._dataFolderhistoricalPrices)
 		CreateFolder(self._dataFolderCharts)
 		CreateFolder(self._dataFolderDailyPicks)
@@ -241,7 +246,7 @@ class PricingData:
 		if self.stockTicker[0] == '^': url = "https://stooq.com/q/d/l/?i=d&s=" + self.stockTicker 
 		filePath = self._dataFolderhistoricalPrices + self.stockTicker + '.csv'
 		s1 = ''
-		if CreateFolder(self._dataFolderCurrentPrices): filePath = self._dataFolderCurrentPrices + '/'+ self.stockTicker + '.csv'
+		if CreateFolder(self._dataFolderhistoricalPrices): filePath = self._dataFolderhistoricalPrices + self.stockTicker + '.csv'
 		try:
 			if useWebProxyServer:
 				opener = GetProxiedOpener()
@@ -282,8 +287,10 @@ class PricingData:
 			df = df[BaseFieldList]
 			df['Average'] = df.loc[:,BaseFieldList].mean(axis=1) #select those rows, calculate the mean value
 			if (df['Open'] < df['Low']).any() or (df['Close'] < df['Low']).any() or (df['High'] < df['Low']).any() or (df['Open'] > df['High']).any() or (df['Close'] > df['High']).any(): 
-				print(df.loc[df['Low'] > df['High']])
-				print(' Data validation error, Low > High.  Dropping values..')
+				if verbose:
+					print(self.stockTicker)
+					print(df.loc[df['Low'] > df['High']])
+					print(' Data validation error, Low > High.  Dropping values..')
 				df = df.loc[df['Low'] <= df['High']]
 				df = df.loc[df['Low'] <= df['Open']]
 				df = df.loc[df['Low'] <= df['Close']]
@@ -299,13 +306,14 @@ class PricingData:
 		self._LoadHistory(refreshPrices=False, verbose=verbose)
 		if self.pricesLoaded:
 			requestNewData = False
-			if not(requestedStartDate==None): requestNewData = (requestedStartDate < self.historyStartDate)
-			if not(requestedEndDate==None): requestNewData = (requestNewData or (self.historyEndDate < requestedEndDate))
-			if requestNewData and verbose: print(' Requesting new data for ' + self.stockTicker + ' (requestedStart, historyStart, historyEnd, requestedEnd)', requestedStartDate, self.historyStartDate, self.historyEndDate, requestedEndDate)
-			if (requestedStartDate==None and requestedEndDate==None):
-				filePath = self._dataFolderhistoricalPrices + self.stockTicker + '.csv'
-				lastUpdated = datetime.datetime.fromtimestamp(os.path.getmtime(filePath))
-				requestNewData = (DateDiffDays(startDate=lastUpdated, endDate=datetime.datetime.now()) > 1)
+			filePath = self._dataFolderhistoricalPrices + self.stockTicker + '.csv'
+			lastUpdated = datetime.datetime.fromtimestamp(os.path.getmtime(filePath))
+			if DateDiffHours(lastUpdated, datetime.datetime.now()) > 2:	#Limit how many times per hour we refresh the data to prevent abusing the source
+				if not(requestedStartDate==None): requestNewData = (requestedStartDate < self.historyStartDate)
+				if not(requestedEndDate==None): requestNewData = (requestNewData or (self.historyEndDate < requestedEndDate))
+				if requestNewData and verbose: print(' Requesting new data for ' + self.stockTicker + ' (requestedStart, historyStart, historyEnd, requestedEnd)', requestedStartDate, self.historyStartDate, self.historyEndDate, requestedEndDate)
+				if (requestedStartDate==None and requestedEndDate==None):
+					requestNewData = (DateDiffDays(startDate=lastUpdated, endDate=datetime.datetime.now()) > 1)
 				if verbose: print(' Requesting new data ' + self.stockTicker + ' reason stale data ', lastUpdated)
 			if requestNewData: self._LoadHistory(refreshPrices=True, verbose=verbose)
 		return(self.pricesLoaded)
@@ -1461,7 +1469,7 @@ class StockPicker():
 	def AddTicker(self, ticker:str):
 		if not ticker in self._stockTickerList:
 			p = PricingData(ticker)
-			if p.LoadHistory(self._startDate, self._endDate): 
+			if p.LoadHistory(self._startDate, self._endDate, verbose=True): 
 				self.priceData.append(p)
 				self._stockTickerList.append(ticker)
 
