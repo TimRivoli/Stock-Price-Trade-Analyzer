@@ -208,8 +208,8 @@ class SeriesPredictionNN(object):
 			callBacks = [keras.callbacks.EarlyStopping(monitor='val_loss', patience=3)]
 			if useTensorBoard: 	callBacks.append(TensorBoard(log_dir="data/tensorboard/{}".format(time()), histogram_freq=0, write_graph=True, write_images=True))
 			hist = self.model.fit(self.X_train, self.y_train, batch_size=self.batch_size, epochs=epochs, callbacks=callBacks)
-			self.trainStartAccuracy = hist.history['acc'][0]
-			self.trainAccuracy = hist.history['acc'][-1]
+			self.trainStartAccuracy = hist.history['accuracy'][0]
+			self.trainAccuracy = hist.history['accuracy'][-1]
 			self.trainStartLoss = hist.history['loss'][0]
 			self.trainLoss = hist.history['loss'][-1]
 			print('Result of training: accuracy ' + str(self.trainStartAccuracy) + ' -> ' + str(self.trainAccuracy) + ' (' + str((self.trainAccuracy-self.trainStartAccuracy)*100) + '%) loss ' + str(self.trainStartLoss) + ' -> ' + str(self.trainLoss))

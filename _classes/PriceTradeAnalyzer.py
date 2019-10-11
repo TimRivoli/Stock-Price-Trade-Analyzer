@@ -1473,33 +1473,37 @@ class StockPicker():
 				self.priceData.append(p)
 				self._stockTickerList.append(ticker)
 
-	def GetHighestPriceMomentum(self, currentDate:datetime, longHistoryDays:int = 365, shortHistoryDays:int = 30, stocksToReturn:int = 5, filterOption:int = 0): 
+	def GetHighestPriceMomentum(self, currentDate:datetime, longHistoryDays:int = 365, shortHistoryDays:int = 30, stocksToReturn:int = 5, filterOption:int = 3): 
 		minDailyPerformance = 0.05/365
-		candidates = pd.DataFrame(columns=list(['Ticker','currentPrice','historicalPrice','percentageChangeLongTerm','percentageChangeShortTerm']))
+		candidates = pd.DataFrame(columns=list(['Ticker','longHistoricalValue','shortHistoricalValue','currentPrice','percentageChangeLongTerm','percentageChangeShortTerm']))
 		candidates.set_index(['Ticker'], inplace=True)
 		lookBackDateLT = currentDate + datetime.timedelta(days=-longHistoryDays)
 		lookBackDateST = currentDate + datetime.timedelta(days=-shortHistoryDays)
 		for i in range(len(self.priceData)):
 			ticker = self.priceData[i].stockTicker
-			startValue = self.priceData[i].GetPrice(lookBackDateLT)
-			endValue = self.priceData[i].GetPrice(currentDate)
+			longHistoricalValue = self.priceData[i].GetPrice(lookBackDateLT)
+			currentPrice = self.priceData[i].GetPrice(currentDate)
 			percentageChangeShortTerm = 0
 			percentageChangeLongTerm = 0
-			if (startValue > 0 and endValue > 0): 
-				percentageChangeLongTerm = ((endValue/startValue)-1)/longHistoryDays
-				startValue = self.priceData[i].GetPrice(lookBackDateST)				
-				percentageChangeShortTerm = ((endValue/startValue)-1)/shortHistoryDays
-				candidates.loc[ticker] = [endValue, startValue, percentageChangeLongTerm, percentageChangeShortTerm]
+			if (longHistoricalValue > 0 and currentPrice > 0): 
+				percentageChangeLongTerm = ((currentPrice/longHistoricalValue)-1)/longHistoryDays
+				shortHistoricalValue = self.priceData[i].GetPrice(lookBackDateST)				
+				percentageChangeShortTerm = ((currentPrice/shortHistoricalValue)-1)/shortHistoryDays
+				candidates.loc[ticker] = [longHistoricalValue, shortHistoricalValue, currentPrice, percentageChangeLongTerm, percentageChangeShortTerm]
 		candidates.sort_values('percentageChangeLongTerm', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last')
 		if filterOption ==1: #high performer, recently at a discount or slowing down but not negative
 			filter = (candidates['percentageChangeLongTerm'] > candidates['percentageChangeShortTerm']) & (candidates['percentageChangeLongTerm'] > minDailyPerformance) & (candidates['percentageChangeShortTerm'] > 0) 
+			result = candidates[filter]
 		elif filterOption ==2: #high performer, recently doing better
 			filter = (candidates['percentageChangeLongTerm'] < candidates['percentageChangeShortTerm']) & (candidates['percentageChangeLongTerm'] > minDailyPerformance) & (candidates['percentageChangeShortTerm'] > minDailyPerformance)
+			result = candidates[filter]
 		elif filterOption ==3: 
 			filter = (candidates['percentageChangeLongTerm'] > minDailyPerformance) & (candidates['percentageChangeShortTerm'] > 0) #Best overall returns 26% average yearly over 27 years
+			result = candidates[filter]
 		else:
-			filter = (candidates['percentageChangeLongTerm'] > minDailyPerformance) & (candidates['percentageChangeShortTerm'] > 0)
-		result = candidates[filter]
+			result = candidates
+		result['percentageChangeLongTerm'] = result['percentageChangeLongTerm'].multiply(longHistoryDays)
+		result['percentageChangeShortTerm'] = result['percentageChangeShortTerm'].multiply(shortHistoryDays)
 		result = result[:stocksToReturn]
 		return result
 
