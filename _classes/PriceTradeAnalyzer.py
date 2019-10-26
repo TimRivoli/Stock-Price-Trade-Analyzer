@@ -1,6 +1,7 @@
 #These settings can be configured in a global config.ini in the program root directory under [Settings]
 useWebProxyServer = False	#If you need a web proxy to browse the web
 nonGUIEnvironment = False	#hosted environments often have no GUI so matplotlib won't be outputting to display
+suspendPriceLoads = False
 
 #pip install any of these if they are missing
 import time, datetime, random, os, ssl, matplotlib
@@ -132,7 +133,7 @@ def PlotDataFrame(df:pd.DataFrame, title:str, xlabel:str, ylabel:str, adjustScal
 
 def GetProxiedOpener():
 	testURL = 'https://stooq.com'
-	userName, password = 'Bob', 'test'
+	userName, password = 'mUser', 'SecureAccess'
 	context = ssl._create_unverified_context()
 	handler = webRequest.HTTPSHandler(context=context)
 	i = -1
@@ -144,6 +145,8 @@ def GetProxiedOpener():
 		auth = webRequest.HTTPBasicAuthHandler()
 		opener = webRequest.build_opener(proxy, auth, handler) 
 		opener.addheaders = [('User-agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_4) AppleWebKit/603.1.30 (KHTML, like Gecko) Version/10.1 Safari/603.1.30')]
+		#opener.addheaders = [('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/12.1.1 Safari/605.1.15')]	
+		#opener.addheaders = [('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/64.0.3282.140 Safari/537.36 Edge/18.17763')]
 		try:
 			conn = opener.open(testURL)
 			print('Proxy ' + currentProxyServer + ' is functioning')
@@ -174,6 +177,7 @@ class PriceSnapshot:
 	close=0
 	oneDayAverage=0
 	twoDayAverage=0
+	fiveDayAverage=0
 	shortEMA=0
 	shortEMASlope=0
 	longEMA=0
@@ -184,6 +188,9 @@ class PriceSnapshot:
 	oneDayDeviation=0
 	fiveDayDeviation=0
 	fifteenDayDeviation=0
+	dailyGain=0
+	monthlyGain=0
+	monthlyLossStd=0
 	estLow=0
 	nextDayTarget=0
 	estHigh=0
@@ -250,7 +257,6 @@ class PricingData:
 		try:
 			if useWebProxyServer:
 				opener = GetProxiedOpener()
-				opener.addheaders = [('User-agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_4) AppleWebKit/603.1.30 (KHTML, like Gecko) Version/10.1 Safari/603.1.30')]
 				openUrl = opener.open(url)
 			else:
 				openUrl = webRequest.urlopen(url) 
@@ -308,7 +314,7 @@ class PricingData:
 			requestNewData = False
 			filePath = self._dataFolderhistoricalPrices + self.stockTicker + '.csv'
 			lastUpdated = datetime.datetime.fromtimestamp(os.path.getmtime(filePath))
-			if DateDiffHours(lastUpdated, datetime.datetime.now()) > 2:	#Limit how many times per hour we refresh the data to prevent abusing the source
+			if DateDiffHours(lastUpdated, datetime.datetime.now()) > 12 and not suspendPriceLoads:	#Limit how many times per hour we refresh the data to prevent abusing the source
 				if not(requestedStartDate==None): requestNewData = (requestedStartDate < self.historyStartDate)
 				if not(requestedEndDate==None): requestNewData = (requestNewData or (self.historyEndDate < requestedEndDate))
 				if requestNewData and verbose: print(' Requesting new data for ' + self.stockTicker + ' (requestedStart, historyStart, historyEnd, requestedEnd)', requestedStartDate, self.historyStartDate, self.historyEndDate, requestedEndDate)
@@ -397,8 +403,8 @@ class PricingData:
 
 	def CalculateStats(self):
 		if not self.pricesLoaded: self.LoadHistory()
-		twodav = self.historicalPrices['Average'].rolling(window=2, center=False).mean()
-		self.historicalPrices['2DayAv'] = twodav
+		self.historicalPrices['2DayAv'] = self.historicalPrices['Average'].rolling(window=2, center=False).mean()
+		self.historicalPrices['5DayAv'] = self.historicalPrices['Average'].rolling(window=5, center=False).mean()
 		self.historicalPrices['shortEMA'] =  self.historicalPrices['Average'].ewm(com=3,min_periods=0,adjust=True,ignore_na=False).mean()
 		self.historicalPrices['shortEMASlope'] = (self.historicalPrices['shortEMA']/self.historicalPrices['shortEMA'].shift(1))-1
 		self.historicalPrices['longEMA'] = self.historicalPrices['Average'].ewm(com=9,min_periods=0,adjust=True,ignore_na=False).mean()
@@ -410,6 +416,12 @@ class PricingData:
 		self.historicalPrices['15DavDeviation'] = self.historicalPrices['1DayDeviation'].rolling(window=15, center=False).mean()
 		self.historicalPrices['1DayApc'] = ((self.historicalPrices['Average'] - self.historicalPrices['Average'].shift(1)) / self.historicalPrices['Average'].shift(1))
 		self.historicalPrices['3DayApc'] = self.historicalPrices['1DayApc'].rolling(window=3, center=False).mean()
+		self.historicalPrices['dailyGain'] = (self.historicalPrices['5DayAv'] / self.historicalPrices['5DayAv'].shift(1))-1
+		self.historicalPrices['monthlyGain'] = (self.historicalPrices['5DayAv'] / self.historicalPrices['5DayAv'].shift(20))-1
+		#self.historicalPrices['monthlyGainStd'] = self.historicalPrices['monthlyGain'].rolling(window=253, center=False).std()
+		self.historicalPrices['monthlyLosses'] = self.historicalPrices['monthlyGain']
+		self.historicalPrices['monthlyLosses'].loc[self.historicalPrices['monthlyLosses'] > 0] = 0 #zero out the positives
+		self.historicalPrices['monthlyLossStd'] = self.historicalPrices['monthlyLosses'].rolling(window=253, center=False).std()	#Stdev of negative values, these are the negative monthly price drops in the past year
 		self.historicalPrices['1DayMomentum'] = (self.historicalPrices['Average'] / self.historicalPrices['Average'].shift(1))-1
 		self.historicalPrices['3DayMomentum'] = (self.historicalPrices['Average'] / self.historicalPrices['Average'].shift(3))-1
 		self.historicalPrices['5DayMomentum'] = (self.historicalPrices['Average'] / self.historicalPrices['Average'].shift(5))-1
@@ -420,8 +432,10 @@ class PricingData:
 		self.historicalPrices.fillna(method='bfill', inplace=True)
 		self.statsLoaded = True
 		return True
-	
-	def SaveStatsToFile(self, includePredictions:bool=False):
+
+	def MonthyReturnVolatility(self): return self.historicalPrices['MonthlyGain'].rolling(window=253, center=False).std() #of the past year
+
+	def SaveStatsToFile(self, includePredictions:bool=False, verbose:bool=False):
 		if includePredictions:
 			filePath = self._dataFolderhistoricalPrices + self.stockTicker + '_stats_predictions.csv'
 			r = self.historicalPrices.join(self.pricePredictions, how='outer') #, rsuffix='_Predicted'
@@ -429,6 +443,7 @@ class PricingData:
 		else:
 			filePath = self._dataFolderhistoricalPrices + self.stockTicker + '_stats.csv'
 			self.historicalPrices.to_csv(filePath)
+		print('Statistics saved to: ' + filePath)
 		
 	def PredictPrices(self, method:int=1, daysIntoFuture:int=1, NNTrainingEpochs:int=0):
 		#Predict current prices from previous days info
@@ -620,7 +635,7 @@ class PricingData:
 			i+=1
 		sn.snapShotDate = forDate 
 		try:
-			sn.high, sn.low, sn.open,sn.close,sn.oneDayAverage,sn.twoDayAverage,sn.shortEMA,sn.shortEMASlope,sn.longEMA,sn.longEMASlope,sn.channelHigh,sn.channelLow,sn.oneDayApc,sn.oneDayDeviation,sn.fiveDayDeviation,sn.fifteenDayDeviation =self.historicalPrices.loc[forDate,['High','Low','Open','Close','Average','2DayAv','shortEMA','shortEMASlope','longEMA','longEMASlope','channelHigh', 'channelLow','1DayApc','1DayDeviation','5DavDeviation','15DavDeviation']]
+			sn.high,sn.low,sn.open,sn.close,sn.oneDayAverage,sn.twoDayAverage,sn.fiveDayAverage,sn.shortEMA,sn.shortEMASlope,sn.longEMA,sn.longEMASlope,sn.channelHigh,sn.channelLow,sn.oneDayApc,sn.oneDayDeviation,sn.fiveDayDeviation,sn.fifteenDayDeviation,sn.dailyGain,sn.monthlyGain,sn.monthlyLossStd =self.historicalPrices.loc[forDate,['High','Low','Open','Close','Average','2DayAv','5DayAv','shortEMA','shortEMASlope','longEMA','longEMASlope','channelHigh', 'channelLow','1DayApc','1DayDeviation','5DavDeviation','15DavDeviation','dailyGain','monthlyGain','monthlyLossStd']]
 		except:
 			sn.high, sn.low, sn.open,sn.close = 0,0,0,0
 			if verbose: print('Unable to get price snapshot for ' + self.stockTicker + ' on ' + str(forDate))	
@@ -739,10 +754,10 @@ class Traunch: #interface for handling actions on a chunk of funds
 			self.Recycle()
 		
 	def Expire(self):
-		if not self.purchased:
+		if not self.purchased:  #cancel buy
 			if self._verbose: print(' Buy order from ' + str(self.dateBuyOrderPlaced) + ' has expired (' + self.ticker + ')')
 			self.Recycle()
-		else:
+		else: #cancel sell
 			if self._verbose: print(' Sell order from ' + str(self.dateSellOrderPlaced) + ' has expired (' + self.ticker + ')')
 			self.dateSellOrderPlaced=None
 			self.sellOrderPrice=0
@@ -872,7 +887,7 @@ class Portfolio:
 	dailyValue = []	  #DataFrame for the value at the end of each day
 	_cash=0
 	_fundsCommittedToOrders=0
-	_commisionCost = 4
+	_commisionCost = 0
 	_traunches = []			#Sets of funds for investing, rather than just a pool of cash.  Simplifies accounting.
 	_traunchCount = 0
 	_verbose = False
@@ -1082,6 +1097,7 @@ class Portfolio:
 		for t in self._traunches:
 			if t.purchased and (t.ticker==ticker or ticker==''): 
 				t.PlaceSell(price=t.latestPrice, datePlaced=datePlaced, marketOrder=True, expireAfterDays=5, verbose=verbose)
+		self.ProcessDay(withIncrement=False)
 
 	#--------------------------------------  Order Processing ---------------------------------------
 	def _CheckOrders(self, ticker, price, dateChecked):
@@ -1250,7 +1266,7 @@ class TradingModel(Portfolio):
 		cashValue, assetValue = self.Value()
 		if assetValue > 0:
 			self.SellAllPositions(self.currentDate)
-			self.ProcessDay()
+			#self.ProcessDay()
 		cashValue, assetValue = self.Value()
 		netChange = cashValue + assetValue - self.startingValue 		
 		if saveHistoryToFile:
@@ -1348,7 +1364,7 @@ class TradingModel(Portfolio):
 		dfTemp = dfTemp.join(sells)
 		PlotDataFrame(dfTemp, modelName, 'Date', 'Value')
 
-	def ProcessDay(self):
+	def ProcessDay(self, withIncrement:bool=True):
 		#Process current day and increment the current date
 		#if self.currentDate <= self.modelEndDate: 
 		if self.verbose: 
@@ -1358,7 +1374,7 @@ class TradingModel(Portfolio):
 			p = ph.GetPriceSnapshot(self.currentDate)
 			self.ProcessDaysOrders(ph.stockTicker, p.open, p.high, p.low, p.close, self.currentDate)
 			self.ReEvaluateTraunchCount()
-		if self.currentDate <= self.modelEndDate: #increment the date
+		if withIncrement and self.currentDate <= self.modelEndDate: #increment the date
 			try:
 				loc = self.priceHistory[0].historicalPrices.index.get_loc(self.currentDate) + 1
 				if loc < self.priceHistory[0].historicalPrices.shape[0]:
@@ -1470,37 +1486,83 @@ class StockPicker():
 		if not ticker in self._stockTickerList:
 			p = PricingData(ticker)
 			if p.LoadHistory(self._startDate, self._endDate, verbose=True): 
+				p.CalculateStats()
 				self.priceData.append(p)
 				self._stockTickerList.append(ticker)
 
-	def GetHighestPriceMomentum(self, currentDate:datetime, longHistoryDays:int = 365, shortHistoryDays:int = 30, stocksToReturn:int = 5, filterOption:int = 3): 
-		minDailyPerformance = 0.05/365
-		candidates = pd.DataFrame(columns=list(['Ticker','longHistoricalValue','shortHistoricalValue','currentPrice','percentageChangeLongTerm','percentageChangeShortTerm']))
+	def FindOpportunities(self, currentDate:datetime, stocksToReturn:int = 5, filterOption:int = 3, minPercentGain=0.00): 
+		result = []
+		for i in range(len(self.priceData)):
+			ticker = self.priceData[i].stockTicker
+			psnap = self.priceData[i].GetPriceSnapshot(currentDate)
+			if  ((psnap.shortEMA/psnap.longEMA)-1 > minPercentGain):
+				if filterOption ==0: #Overbought
+					if psnap.low > psnap.channelHigh: result.append(ticker)
+				if filterOption ==1: #Oversold
+					if psnap.high < psnap.channelLow: result.append(ticker)
+				if filterOption ==1: #High price deviation
+					if psnap.fiveDayDeviation > .0275: result.append(ticker)
+		return result
+
+	def GetHighestPriceMomentum(self, currentDate:datetime, longHistoryDays:int = 365, shortHistoryDays:int = 30, stocksToReturn:int = 5, filterOption:int = 3, minPercentGain=0.05, maxVolatility=.12): 
+		minDailyGain = minPercentGain/365
+		candidates = pd.DataFrame(columns=list(['Ticker','hp2Year','hp1Year','hp6mo','hp3mo','hp2mo','hp1mo','currentPrice','2yearPriceChange','1yearPriceChange','6moPriceChange','2moPriceChange','1moPriceChange','dailyGain','monthlyGain','monthlyLossStd','longHistoricalValue','shortHistoricalValue','percentageChangeLongTerm','percentageChangeShortTerm']))
 		candidates.set_index(['Ticker'], inplace=True)
 		lookBackDateLT = currentDate + datetime.timedelta(days=-longHistoryDays)
 		lookBackDateST = currentDate + datetime.timedelta(days=-shortHistoryDays)
 		for i in range(len(self.priceData)):
 			ticker = self.priceData[i].stockTicker
 			longHistoricalValue = self.priceData[i].GetPrice(lookBackDateLT)
-			currentPrice = self.priceData[i].GetPrice(currentDate)
+			shortHistoricalValue = self.priceData[i].GetPrice(lookBackDateST)				
+			#hp2Year = self.priceData[i].GetPrice(currentDate )				
+			#hp1Year = self.priceData[i].GetPrice(currentDate + datetime.timedelta(days=-365))				
+			#hp6mo = self.priceData[i].GetPrice(currentDate + datetime.timedelta(days=-180))				
+			#hp2mo = self.priceData[i].GetPrice(currentDate + datetime.timedelta(days=-60))				
+			#hp1mo = self.priceData[i].GetPrice(currentDate + datetime.timedelta(days=-30))				
+			#currentPrice = self.priceData[i].GetPrice(currentDate)
+			s = self.priceData[i].GetPriceSnapshot(currentDate + datetime.timedelta(days=-730))
+			hp2Year = s.fiveDayAverage
+			s = self.priceData[i].GetPriceSnapshot(currentDate + datetime.timedelta(days=-365))
+			hp1Year = s.fiveDayAverage
+			s = self.priceData[i].GetPriceSnapshot(currentDate + datetime.timedelta(days=-180))
+			hp6mo = s.fiveDayAverage
+			s = self.priceData[i].GetPriceSnapshot(currentDate + datetime.timedelta(days=-90))
+			hp3mo = s.fiveDayAverage
+			s = self.priceData[i].GetPriceSnapshot(currentDate + datetime.timedelta(days=-60))
+			hp2mo = s.fiveDayAverage
+			s = self.priceData[i].GetPriceSnapshot(currentDate + datetime.timedelta(days=-30))
+			hp1mo = s.fiveDayAverage
+			s = self.priceData[i].GetPriceSnapshot(currentDate)
+			#currentPrice = s.oneDayAverage	
+			currentPrice = s.twoDayAverage	
 			percentageChangeShortTerm = 0
 			percentageChangeLongTerm = 0
-			if (longHistoricalValue > 0 and currentPrice > 0): 
+			if (longHistoricalValue > 0 and currentPrice > 0 and shortHistoricalValue > 0 and hp2Year > 0 and hp1Year > 0 and hp6mo > 0 and hp2mo > 0 and hp1mo > 0): #values were loaded
 				percentageChangeLongTerm = ((currentPrice/longHistoricalValue)-1)/longHistoryDays
-				shortHistoricalValue = self.priceData[i].GetPrice(lookBackDateST)				
 				percentageChangeShortTerm = ((currentPrice/shortHistoricalValue)-1)/shortHistoryDays
-				candidates.loc[ticker] = [longHistoricalValue, shortHistoricalValue, currentPrice, percentageChangeLongTerm, percentageChangeShortTerm]
-		candidates.sort_values('percentageChangeLongTerm', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last')
+				candidates.loc[ticker] = [hp2Year,hp1Year,hp6mo,hp3mo,hp2mo,hp1mo,currentPrice,(currentPrice/hp2Year)-1,(currentPrice/hp1Year)-1,(currentPrice/hp6mo)-1,(currentPrice/hp2mo)-1,(currentPrice/hp1mo)-1,s.dailyGain, s.monthlyGain, s.monthlyLossStd,longHistoricalValue,shortHistoricalValue,percentageChangeLongTerm, percentageChangeShortTerm]
+			else:
+				if currentPrice > 0: print('Price load failed for ticker: ' + ticker, currentDate, hp2Year,hp1Year,hp6mo,hp2mo,hp1mo)
+		candidates.sort_values('percentageChangeLongTerm', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last') #Most critical factor, sorting by largest long term gain
 		if filterOption ==1: #high performer, recently at a discount or slowing down but not negative
-			filter = (candidates['percentageChangeLongTerm'] > candidates['percentageChangeShortTerm']) & (candidates['percentageChangeLongTerm'] > minDailyPerformance) & (candidates['percentageChangeShortTerm'] > 0) 
+			filter = (candidates['percentageChangeLongTerm'] > candidates['percentageChangeShortTerm']) & (candidates['percentageChangeLongTerm'] > minDailyGain) & (candidates['percentageChangeShortTerm'] > 0) 
 			result = candidates[filter]
-		elif filterOption ==2: #high performer, recently doing better
-			filter = (candidates['percentageChangeLongTerm'] < candidates['percentageChangeShortTerm']) & (candidates['percentageChangeLongTerm'] > minDailyPerformance) & (candidates['percentageChangeShortTerm'] > minDailyPerformance)
+		elif filterOption ==2: #Long term gain meets min requirements
+			filter = (candidates['percentageChangeLongTerm'] > minDailyGain) 
 			result = candidates[filter]
-		elif filterOption ==3: 
-			filter = (candidates['percentageChangeLongTerm'] > minDailyPerformance) & (candidates['percentageChangeShortTerm'] > 0) #Best overall returns 26% average yearly over 27 years
+		elif filterOption ==3: #Best overall returns 25% average yearly over 36 years which choosing top 5 sorted by best yearly average
+			filter = (candidates['percentageChangeLongTerm'] > minDailyGain) & (candidates['percentageChangeShortTerm'] > 0) 
 			result = candidates[filter]
-		else:
+		elif filterOption ==4: #Short term gain meets mine requirements
+			filter =  (candidates['percentageChangeShortTerm']  > minDailyGain) 
+			result = candidates[filter]
+		elif filterOption ==6: #
+			filter = (candidates['1yearPriceChange'] > minPercentGain) & (candidates['monthlyGain'] > 0) & (candidates['monthlyLossStd'] < maxVolatility)
+			result = candidates[filter]
+		elif filterOption ==7: #
+			filter = (candidates['1yearPriceChange'] > minPercentGain) &  (candidates['monthlyLossStd'] < maxVolatility)
+			result = candidates[filter]
+		else: #no filter
 			result = candidates
 		result['percentageChangeLongTerm'] = result['percentageChangeLongTerm'].multiply(longHistoryDays)
 		result['percentageChangeShortTerm'] = result['percentageChangeShortTerm'].multiply(shortHistoryDays)
