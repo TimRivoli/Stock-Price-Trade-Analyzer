@@ -62,7 +62,7 @@ def RunTradingModelBuyHold(tm: TradingModel, ticker:str):
 	currentPrices = tm.GetPriceSnapshot()
 	if tm.verbose: print(currentPrices.snapShotDate, currentPrices.nextDayTarget)
 	if not currentPrices == None:
-		if tm.TraunchesAvailable() > 0 and tm.FundsAvailable() > currentPrices.high: tm.PlaceBuy(ticker, currentPrices.low, True)
+		if tm.TranchesAvailable() > 0 and tm.FundsAvailable() > currentPrices.high: tm.PlaceBuy(ticker, currentPrices.low, True)
 
 def RunTradingModelSeasonal(tm: TradingModel, ticker:str):
 	SellMonth = 4	#April
@@ -234,6 +234,3 @@ if __name__ == '__main__':
 	#RunModel('SwingTrend', RunTradingModelSwingTrend, '^Spx','1/1/1990', 27, 50000, verbose=False)
 	#RunModel('BuyAndHold', RunTradingModelBuyHold, '^Spx','1/1/1980', 1, 10000, verbose=False)
 	PlotModeldailyValue('Trending',RunTradingModelTrending, 'Googl','1/1/2005',10)
-
-
-
