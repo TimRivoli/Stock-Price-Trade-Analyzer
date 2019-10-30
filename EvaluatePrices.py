@@ -1,5 +1,5 @@
 import datetime, os, pandas
-from _classes.PriceTradeAnalyzer import PricingData, PriceSnapshot, PlotHelper
+from _classes.PriceTradeAnalyzer import PricingData, PriceSnapshot, PlotHelper, GetTodaysDate
 from _classes.TickerLists import TickerLists
 IndexList=['^SPX','^DJI', '^NDQ']
 
@@ -25,19 +25,28 @@ def PlotPrediction(ticker:str='^SPX', predictionMethod:int=0, daysToGraph:int=60
 		prices.PredictPrices(predictionMethod, daysForward, learnhingEpochs)
 		prices.NormalizePrices()
 		prices.GraphData(None, daysToGraph, ticker + ' ' + str(daysToGraph) + 'days', True, True, str(daysToGraph) + 'days')
-		prices.SaveStatsToFile(True)
+		prices.SaveStatsToFile(includePredictions=True, verbose=True)
+
+def DownloadAndSaveStocksWithStats(tickerList:list):
+	for ticker in tickerList:
+		prices = PricingData(ticker)
+		print('Loading ' + ticker)
+		if prices.LoadHistory(requestedEndDate=GetTodaysDate()):
+			print('Calcualting stats ' + ticker)
+			prices.CalculateStats()
+			prices.SaveStatsToFile(includePredictions=False, verbose=True)
 
 def DownloadAndGraphStocks(tickerList:list):
 	for ticker in tickerList:
 		prices = PricingData(ticker)
 		print('Loading ' + ticker)
-		if prices.LoadHistory():
+		if prices.LoadHistory(requestedEndDate=GetTodaysDate()):
 			print('Calcualting stats ' + ticker)
 			prices.NormalizePrices()
 			prices.CalculateStats()
 			prices.PredictPrices(2, 15)
 			prices.NormalizePrices()
-			#prices.SaveStatsToFile(True)
+			#prices.SaveStatsToFile(includePredictions=True, verbose=True)
 			psnap = prices.GetCurrentPriceSnapshot()
 			titleStatistics =' 5/15 dev: ' + str(round(psnap.fiveDayDeviation*100, 2)) + '/' + str(round(psnap.fifteenDayDeviation*100, 2)) + '% ' + str(psnap.low) + '/' + str(psnap.nextDayTarget) + '/' + str(psnap.high) + ' ' + str(psnap.snapShotDate)[:10]
 			print('Graphing ' + ticker + ' ' + str(psnap.snapShotDate)[:10])
@@ -49,6 +58,7 @@ def GraphTimePeriod(ticker:str, endDate:datetime, days:int):
 	print('Loading ' + ticker)
 	if prices.LoadHistory():
 		prices.GraphData(endDate, days, None , False, True, None)
+		print('Chart saved to \data\charts')
 
 def CalculatePriceCorrelation(tickerList:list):
 	datafileName = 'data/_priceCorrelations.csv'
@@ -59,7 +69,7 @@ def CalculatePriceCorrelation(tickerList:list):
 	for ticker in tickerList:
 		prices = PricingData(ticker)
 		print('Loading ' + ticker)
-		if prices.LoadHistory():
+		if prices.LoadHistory(requestedEndDate=GetTodaysDate()):
 			prices.TrimToDateRange(startDate, endDate)
 			prices.NormalizePrices()
 			x = prices.GetPriceHistory(['Average'])
@@ -79,7 +89,6 @@ def CalculatePriceCorrelation(tickerList:list):
 		f.write(topTen[ticker].to_string(header=True,index=True) + '\n')
 		f.write('\n')
 	f.close()
-	#return result
 
 def OpportunityFinder(tickerList:list):
 	outputFolder = 'data/dailypicks/'
@@ -94,7 +103,7 @@ def OpportunityFinder(tickerList:list):
 	for ticker in tickerList:
 		prices = PricingData(ticker)
 		print('Checking ' + ticker)
-		if prices.LoadHistory():
+		if prices.LoadHistory(requestedEndDate=datetime.datetime.now()):
 			prices.CalculateStats()
 			psnap = prices.GetCurrentPriceSnapshot()
 			titleStatistics =' 5/15 dev: ' + str(round(psnap.fiveDayDeviation*100, 2)) + '/' + str(round(psnap.fifteenDayDeviation*100, 2)) + '% ' + str(psnap.low) + '/' + str(psnap.nextDayTarget) + '/' + str(psnap.high) + str(psnap.snapShotDate)
