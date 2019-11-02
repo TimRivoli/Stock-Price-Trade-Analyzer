@@ -1,5 +1,5 @@
 import datetime, os, pandas
-from _classes.PriceTradeAnalyzer import PricingData, PriceSnapshot, PlotHelper, GetTodaysDate
+from _classes.PriceTradeAnalyzer import PricingData, PriceSnapshot, PlotHelper
 from _classes.TickerLists import TickerLists
 IndexList=['^SPX','^DJI', '^NDQ']
 
