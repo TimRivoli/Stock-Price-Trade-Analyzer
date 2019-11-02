@@ -69,7 +69,7 @@ def CalculatePriceCorrelation(tickerList:list):
 	for ticker in tickerList:
 		prices = PricingData(ticker)
 		print('Loading ' + ticker)
-		if prices.LoadHistory(requestedEndDate=GetTodaysDate()):
+		if prices.LoadHistory(requestedEndDate=datetime.datetime.now()):
 			prices.TrimToDateRange(startDate, endDate)
 			prices.NormalizePrices()
 			x = prices.GetPriceHistory(['Average'])
