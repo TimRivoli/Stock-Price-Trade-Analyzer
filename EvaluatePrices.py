@@ -31,7 +31,7 @@ def DownloadAndSaveStocksWithStats(tickerList:list):
 	for ticker in tickerList:
 		prices = PricingData(ticker)
 		print('Loading ' + ticker)
-		if prices.LoadHistory(requestedEndDate=GetTodaysDate()):
+		if prices.LoadHistory(requestedEndDate=datetime.datetime.now()):
 			print('Calcualting stats ' + ticker)
 			prices.CalculateStats()
 			prices.SaveStatsToFile(includePredictions=False, verbose=True)
@@ -40,7 +40,7 @@ def DownloadAndGraphStocks(tickerList:list):
 	for ticker in tickerList:
 		prices = PricingData(ticker)
 		print('Loading ' + ticker)
-		if prices.LoadHistory(requestedEndDate=GetTodaysDate()):
+		if prices.LoadHistory(requestedEndDate=datetime.datetime.now()):
 			print('Calcualting stats ' + ticker)
 			prices.NormalizePrices()
 			prices.CalculateStats()
