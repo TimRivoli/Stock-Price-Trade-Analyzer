@@ -5,7 +5,7 @@ suspendPriceLoads = False
 
 #pip install any of these if they are missing
 import time, datetime, random, os, ssl, matplotlib
-import numpy as np,  pandas as pd
+import numpy as np, pandas as pd
 from pandas.tseries.offsets import BDay
 import urllib.request as webRequest
 from _classes.Utility import *
@@ -50,13 +50,25 @@ def DateFormatDatabase(givenDate:datetime):
 		r = givenDate
 	return r
 
+def ToDateTime(givenDate):
+#returns datetime, converting from string if necessary
+	if type(givenDate) == str:
+		if givenDate.find('-') > 0 :
+			r = datetime.datetime.strptime(givenDate, '%Y-%m-%d')
+		else:
+			r = datetime.datetime.strptime(givenDate, GetMyDateFormat())
+	else:
+		r = givenDate
+	return r
+
 def GetDateTimeStamp():
 	d = datetime.datetime.now()
 	return d.strftime('%Y%m%d%H%M')
 
 def GetTodaysDate():
 	d = datetime.datetime.now()
-	return d.strftime('%m/%d/%Y')
+	#return d.strftime('%m/%d/%Y')
+	return d.date()
 
 def DateDiffDays(startDate:datetime, endDate:datetime):
 	delta = endDate-startDate
@@ -76,10 +88,10 @@ def CreateFolder(p:str):
 			f = False
 	return r
 	
-def PlotInitDefaults():
-	#'xx-small', 'x-small', 'small', 'medium', 'large', 'x-large', 'xx-large'
-	params = {'legend.fontsize': 'xx-small', 'axes.labelsize': 'xx-small','axes.titlesize':'xx-small','xtick.labelsize':'xx-small','ytick.labelsize':'xx-small'}
-	plt.rcParams.update(params)
+def PlotSetDefaults():
+	#params = {'legend.fontsize': 4, 'axes.labelsize': 4,'axes.titlesize':4,'xtick.labelsize':4,'ytick.labelsize':4}
+	#plt.rcParams.update(params)
+	plt.rcParams['font.size'] = 4
 
 def PlotScalerDateAdjust(minDate:datetime, maxDate:datetime, ax):
 	if type(minDate)==str:
@@ -110,7 +122,7 @@ def PlotScalerDateAdjust(minDate:datetime, maxDate:datetime, ax):
 
 def PlotDataFrame(df:pd.DataFrame, title:str, xlabel:str, ylabel:str, adjustScale:bool=True, fileName:str = '', dpi:int = 600):
 	if df.shape[0] >= 4:
-		PlotInitDefaults()
+		PlotSetDefaults()
 		ax=df.plot(title=title, linewidth=.75)
 		ax.set_xlabel(xlabel)
 		ax.set_ylabel(ylabel)
@@ -322,16 +334,20 @@ class PricingData:
 					requestNewData = (DateDiffDays(startDate=lastUpdated, endDate=datetime.datetime.now()) > 1)
 				if verbose: print(' Requesting new data ' + self.stockTicker + ' reason stale data ', lastUpdated)
 			if requestNewData: self._LoadHistory(refreshPrices=True, verbose=verbose)
+			if not(requestedStartDate==None): 
+				if (requestedEndDate==None): requestedEndDate = self.historyEndDate
+				self.TrimToDateRange(requestedStartDate, requestedEndDate)
 		return(self.pricesLoaded)
 
 	def TrimToDateRange(self,startDate:datetime, endDate:datetime):
 		startDate = DateFormatDatabase(startDate)
+		startDate -= datetime.timedelta(days=45) #If we do not include earlier dates we can not calculate all the stats
 		endDate = DateFormatDatabase(endDate)
-		self.historicalPrices = self.historicalPrices[self.historicalPrices.index >= startDate]
-		self.historicalPrices = self.historicalPrices[self.historicalPrices.index <= endDate]
+		self.historicalPrices = self.historicalPrices[(self.historicalPrices.index >= startDate) & (self.historicalPrices.index <= endDate)]
 		self.historyStartDate = self.historicalPrices.index.min()
 		self.historyEndDate = self.historicalPrices.index.max()
-	
+		#print(self.stockTicker, 'trim to ', startDate, endDate, self.historyStartDate, self.historyEndDate, len(self.historicalPrices))
+		
 	def ConvertToPercentages(self):
 		if self.pricesInPercentages:
 			self.historicalPrices.iloc[0] = self.CTPFactor
@@ -365,14 +381,14 @@ class PricingData:
 			x['High'] = (x['High']-low)/diff
 			x['Low'] = (x['Low']-low)/diff
 			if self.predictionsLoaded:
-				self.pricePredictions['estLow'] = (self.pricePredictions['estLow']-low)/diff
-				self.pricePredictions['estAverage'] = (self.pricePredictions['estAverage']-low)/diff
-				self.pricePredictions['estHigh'] = (self.pricePredictions['estHigh']-low)/diff
+				self.pricePredictions[['estLow']] = (self.pricePredictions[['estLow']]-low)/diff
+				self.pricePredictions[['estAverage']] = (self.pricePredictions[['estAverage']]-low)/diff
+				self.pricePredictions[['estHigh']] = (self.pricePredictions[['estHigh']]-low)/diff
 			self.PreNormalizationLow = low
 			self.PreNormalizationHigh = high
 			self.PreNormalizationDiff = diff
 			self.pricesNormalized = True
-			print(' Prices have been normalized.')
+			if verbose: print(' Prices have been normalized.')
 		else:
 			low = self.PreNormalizationLow
 			high = self.PreNormalizationHigh 
@@ -382,11 +398,11 @@ class PricingData:
 			x['High'] = (x['High'] * diff) + low
 			x['Low'] = (x['Low'] * diff) + low
 			if self.predictionsLoaded:
-				self.pricePredictions['estLow'] = (self.pricePredictions['estLow'] * diff) + low
-				self.pricePredictions['estAverage'] = (self.pricePredictions['estAverage'] * diff) + low
-				self.pricePredictions['estHigh'] = (self.pricePredictions['estHigh'] * diff) + low
+				self.pricePredictions[['estLow']] = (self.pricePredictions[['estLow']] * diff) + low
+				self.pricePredictions[['estAverage']] = (self.pricePredictions[['estAverage']] * diff) + low
+				self.pricePredictions[['estHigh']] = (self.pricePredictions[['estHigh']] * diff) + low
 			self.pricesNormalized = False
-			print(' Prices have been un-normalized.')
+			if verbose: print(' Prices have been un-normalized.')
 		x['Average'] = (x['Open'] + x['Close'] + x['High'] + x['Low'])/4
 		#x['Average'] = x.loc[:,BaseFieldList].mean(axis=1, skipna=True) #Wow, this doesn't work.
 		if (x['Average'] < x['Low']).any() or (x['Average'] > x['High']).any(): 
@@ -615,6 +631,7 @@ class PricingData:
 	def GetPrice(self,forDate:datetime, verbose:bool=False):
 		forDate = DateFormatDatabase(forDate)
 		i = 0
+		#TCR: idx = df.index[df.index.get_loc(dt, method='nearest')] this would be better
 		while i < 6 and not PandaIsInIndex(self.historicalPrices, forDate):
 			forDate -= datetime.timedelta(days=1)
 			i+=1
@@ -630,7 +647,7 @@ class PricingData:
 		sn = PriceSnapshot()
 		sn.ticker = self.stockTicker
 		i = 0
-		while i < 6 and not PandaIsInIndex(self.historicalPrices, forDate):
+		while i < 30 and not PandaIsInIndex(self.historicalPrices, forDate):
 			forDate -= datetime.timedelta(days=1)
 			i+=1
 		sn.snapShotDate = forDate 
@@ -673,13 +690,14 @@ class PricingData:
 		return self.pricePredictions.copy()  #best to pass back copies instead of reference.
 
 	def GraphData(self, endDate:datetime=None, daysToGraph:int=90, graphTitle:str=None, includePredictions:bool=False, saveToFile:bool=False, fileNameSuffix:str=None, saveToFolder:str='', dpi:int=600, trimHistoricalPredictions:bool = True):
-		PlotInitDefaults()
+		PlotSetDefaults()
+		if not self.statsLoaded: self.CalculateStats()
 		if includePredictions:
 			if not self.predictionsLoaded: self.PredictPrices()
 			if endDate == None: endDate = self.pricePredictions.index.max()
 			endDate = DateFormatDatabase(endDate)
 			startDate = endDate - BDay(daysToGraph) 
-			fieldSet = ['High','Low', 'channelHigh', 'channelLow', 'estHigh','estLow']
+			fieldSet = ['High','Low', 'channelHigh', 'channelLow', 'estHigh','estLow', 'shortEMA','longEMA']
 			if trimHistoricalPredictions: 
 				y = self.pricePredictions[self.pricePredictions.index >= self.historyEndDate]
 				x = self.historicalPrices.join(y, how='outer')
@@ -691,27 +709,31 @@ class PricingData:
 			if endDate == None: endDate = self.historyEndDate
 			endDate = DateFormatDatabase(endDate)
 			startDate = endDate - BDay(daysToGraph) 
-			fieldSet = ['High','Low', 'channelHigh', 'channelLow']
+			fieldSet = ['High','Low', 'channelHigh', 'channelLow','shortEMA','longEMA']
 			if daysToGraph > 1800: fieldSet = ['Average']
 			x = self.historicalPrices
 		if fileNameSuffix == None: fileNameSuffix = str(endDate)[:10] + '_' + str(daysToGraph) + 'days'
-		if graphTitle==None: graphTitle = self.stockTicker + ' ' + fileNameSuffix 
-		ax=x.loc[startDate:endDate,fieldSet].plot(title=graphTitle, linewidth=.75)			
-		ax.set_xlabel('Date')
-		ax.set_ylabel('Price')
-		ax.tick_params(axis='x', rotation=70)
-		ax.grid(b=True, which='major', color='black', linestyle='solid', linewidth=.5)
-		ax.grid(b=True, which='minor', color='0.65', linestyle='solid', linewidth=.3)
-
-		PlotScalerDateAdjust(startDate, endDate, ax)
-		if saveToFile:
-			if not fileNameSuffix =='': fileNameSuffix = '_' + fileNameSuffix
-			if saveToFolder=='': saveToFolder = self._dataFolderCharts
-			if not saveToFolder.endswith('/'): saveToFolder = saveToFolder + '/'
-			if CreateFolder(saveToFolder): 	plt.savefig(saveToFolder + self.stockTicker + fileNameSuffix + '.png', dpi=dpi)			
+		if graphTitle==None: graphTitle = self.stockTicker + ' ' + fileNameSuffix
+		x = x[(x.index >= startDate) & (x.index <= endDate)]
+		if x.shape[0] == 0:
+			print('Empty source data')
 		else:
-			plt.show()
-		plt.close('all')
+			ax=x.loc[startDate:endDate,fieldSet].plot(title=graphTitle, linewidth=.75, color = ['blue', 'red','purple','purple','mediumseagreen','seagreen'])			
+			ax.set_xlabel('Date')
+			ax.set_ylabel('Price')
+			ax.tick_params(axis='x', rotation=70)
+			ax.grid(b=True, which='major', color='black', linestyle='solid', linewidth=.5)
+			ax.grid(b=True, which='minor', color='0.65', linestyle='solid', linewidth=.1)
+			PlotScalerDateAdjust(startDate, endDate, ax)
+			if saveToFile:
+				if not fileNameSuffix =='': fileNameSuffix = '_' + fileNameSuffix
+				if saveToFolder=='': saveToFolder = self._dataFolderCharts
+				if not saveToFolder.endswith('/'): saveToFolder = saveToFolder + '/'
+				if CreateFolder(saveToFolder): 	plt.savefig(saveToFolder + self.stockTicker + fileNameSuffix + '.png', dpi=dpi)
+				print(' Saved to ' + saveToFolder + self.stockTicker + fileNameSuffix + '.png')
+			else:
+				plt.show()
+			plt.close('all')
 
 class Tranche: #interface for handling actions on a chunk of funds
 	ticker = ''
@@ -918,9 +940,26 @@ class Portfolio:
 		if not self.ValidateFundsCommittedToOrders() == 0: 
 			print(' Accounting error: inaccurcy in funds committed to orders!')
 			r=True
-		if self.FundsAvailable() + self._tranchCount*self._commisionCost < 0: 
-			print(' Accounting error: negative cash balance.  (Cash, CommittedFunds, AvailableFunds) ', self._cash, self._fundsCommittedToOrders, self.FundsAvailable())
-			r=True
+		if self.FundsAvailable() + self._tranchCount*self._commisionCost < -10: #Over-committed funds		
+			OrdersAdjusted = False		
+			for t in self._tranches:
+				if not t.purchased and t.units > 0:
+					print(' Reducing purchase of ' + t.ticker + ' by one unit due to overcommitted funds.')
+					t.units -= 1
+					OrdersAdjusted = True
+					break
+			if OrdersAdjusted: self.ValidateFundsCommittedToOrders(True)
+			if self.FundsAvailable() + self._tranchCount*self._commisionCost < -10: 
+				OrdersAdjusted = False		
+				for t in self._tranches:
+					if not t.purchased and t.units > 1:
+						print(' Reducing purchase of ' + t.ticker + ' by two units due to overcommitted funds.')
+						t.units -= 2
+						OrdersAdjusted = True
+						break
+			if self.FundsAvailable() + self._tranchCount*self._commisionCost < -10: #Over-committed funds						
+				print(' Accounting error: negative cash balance.  (Cash, CommittedFunds, AvailableFunds) ', self._cash, self._fundsCommittedToOrders, self.FundsAvailable())
+				r=True
 		return r
 
 	def FundsAvailable(self): return (self._cash - self._fundsCommittedToOrders)
@@ -951,11 +990,11 @@ class Portfolio:
 		for t in self._tranches:
 			if t.available:
 				available +=1
-			elif  not t.purchased:
+			elif not t.purchased:
 				buyPending +=1
 			elif t.purchased and t.dateSellOrderPlaced==None:
 				longPostition +=1
-			elif t.dateBuyOrderPlaced:
+			elif t.dateSellOrderPlaced:
 				sellPending +=1
 		return available, buyPending, sellPending, longPostition			
 
@@ -973,7 +1012,7 @@ class Portfolio:
 		a, b, s, l = self.PositionSummary()
 		return a
 
-	def ValidateFundsCommittedToOrders(self, FixIt:bool=False):
+	def ValidateFundsCommittedToOrders(self, SaveAdjustments:bool=True):
 		#Returns difference between recorded value and actual
 		x=0
 		for t in self._tranches:
@@ -981,7 +1020,7 @@ class Portfolio:
 				x = x + (t.units*t.buyOrderPrice) + self._commisionCost
 		if round(self._fundsCommittedToOrders, 5) == round(x,5): self._fundsCommittedToOrders=x
 		if not (self._fundsCommittedToOrders - x) ==0:
-			if FixIt: 
+			if SaveAdjustments: 
 				self._fundsCommittedToOrders = x
 			else:
 				print( 'Committed funds variance actual/recorded', x, self._fundsCommittedToOrders)
@@ -1116,19 +1155,25 @@ class Portfolio:
 				r = t.UpdateStatus(price, dateChecked)
 				if r:	#Order was filled, update account
 					if t.expired:
-						if not t.purchased: self._fundsCommittedToOrders = self._fundsCommittedToOrders - (t.units*t.buyOrderPrice) - self._commisionCost	#return ear marked order fund
+						if self._verbose: print(t.ticker, " expired ")
+						if not t.purchased: 
+							self._fundsCommittedToOrders -= (t.units*t.buyOrderPrice)	#return funds committed to order
+							self._fundsCommittedToOrders -= self._commisionCost
 						t.Expire()
 					elif t.sold:
+						if self._verbose: print(t.ticker, " sold for ",t.sellPrice)
 						self._cash = self._cash + (t.units*t.sellPrice) - self._commisionCost
-						if self._verbose: print(' Commission charged for Sell: ' + str(self._commisionCost))
+						if self._verbose and self._commisionCost > 0: print(' Commission charged for Sell: ' + str(self._commisionCost))
 						if self.trackHistory:
 							self.tradeHistory.loc[(t.dateBuyOrderPlaced, t.ticker)]=[t.dateBuyOrderFilled,t.dateSellOrderPlaced,t.dateSellOrderFilled,t.units,t.buyOrderPrice,t.purchasePrice,t.sellOrderPrice,t.sellPrice,((t.sellPrice - t.purchasePrice)*t.units)-self._commisionCost*2] 
 						t.Recycle()
 					elif t.purchased:
-						self._fundsCommittedToOrders = self._fundsCommittedToOrders - (t.units*t.buyOrderPrice) - self._commisionCost	#return ear marked order fund
+						self._fundsCommittedToOrders -= (t.units*t.buyOrderPrice)	#return funds committed to order
+						self._fundsCommittedToOrders -= self._commisionCost
 						fundsavailable = self._cash - abs(self._fundsCommittedToOrders)
 						if t.marketOrder:
 							actualCost = t.units*price
+							if self._verbose: print(t.ticker, " purchased for ",price)
 							if (fundsavailable - actualCost - self._commisionCost) < 25:	#insufficient funds
 								unitsCanAfford = max(round((fundsavailable - self._commisionCost)/price)-1, 0)
 								if self._verbose:
@@ -1143,7 +1188,7 @@ class Portfolio:
 							t.Recycle()
 						else:
 							self._cash = self._cash - (t.units*price) - self._commisionCost 
-							if self._verbose: print(' Commission charged for Buy: ' + str(self._commisionCost))		
+							if self._verbose and self._commisionCost > 0: print(' Commission charged for Buy: ' + str(self._commisionCost))		
 							if self.trackHistory:							
 								self.tradeHistory.loc[(t.dateBuyOrderPlaced,t.ticker), 'dateBuyOrderFilled']=t.dateBuyOrderFilled #Create the row
 								self.tradeHistory.loc[(t.dateBuyOrderPlaced,t.ticker)]=[t.dateBuyOrderFilled,t.dateSellOrderPlaced,t.dateSellOrderFilled,t.units,t.buyOrderPrice,t.purchasePrice,t.sellOrderPrice,t.sellPrice,''] 
@@ -1161,7 +1206,7 @@ class Portfolio:
 			self._CheckOrders(ticker, p2, dateChecked)	
 
 	def ProcessDaysOrders(self, ticker, open, high, low, close, dateChecked):
-		#approximate a sequence of the days prices for given ticker and check orders for each
+		#approximate a sequence of the day's prices for given ticker, check orders for each, update price value
 		if self.PendingOrders() > 0:
 			p2=low
 			p3=high
@@ -1224,6 +1269,7 @@ class TradingModel(Portfolio):
 			p.CalculateStats()
 			p.TrimToDateRange(startDate - datetime.timedelta(days=60), endDate + datetime.timedelta(days=10))
 			self.priceHistory = [p]
+			#idx = df.index[df.index.get_loc(dt, method='nearest')]  TCR: This would be better
 			if not PandaIsInIndex(p.historicalPrices, startDate): startDate += datetime.timedelta(days=1)
 			if not PandaIsInIndex(p.historicalPrices, startDate): startDate += datetime.timedelta(days=1)
 			if not PandaIsInIndex(p.historicalPrices, startDate): startDate += datetime.timedelta(days=1)
@@ -1274,7 +1320,6 @@ class TradingModel(Portfolio):
 		cashValue, assetValue = self.Value()
 		if assetValue > 0:
 			self.SellAllPositions(self.currentDate)
-			#self.ProcessDay()
 		cashValue, assetValue = self.Value()
 		netChange = cashValue + assetValue - self.startingValue 		
 		if saveHistoryToFile:
@@ -1374,14 +1419,13 @@ class TradingModel(Portfolio):
 
 	def ProcessDay(self, withIncrement:bool=True):
 		#Process current day and increment the current date
-		#if self.currentDate <= self.modelEndDate: 
 		if self.verbose: 
 			c, a = self.Value()
 			if self.verbose: print(str(self.currentDate) + ' model: ' + self.modelName + ' _cash: ' + str(c) + ' Assets: ' + str(a))
 		for ph in self.priceHistory:
 			p = ph.GetPriceSnapshot(self.currentDate)
 			self.ProcessDaysOrders(ph.stockTicker, p.open, p.high, p.low, p.close, self.currentDate)
-			self.ReEvaluateTrancheCount()
+		self.ReEvaluateTrancheCount()
 		if withIncrement and self.currentDate <= self.modelEndDate: #increment the date
 			try:
 				loc = self.priceHistory[0].historicalPrices.index.get_loc(self.currentDate) + 1
@@ -1493,11 +1537,15 @@ class StockPicker():
 	def AddTicker(self, ticker:str):
 		if not ticker in self._stockTickerList:
 			p = PricingData(ticker)
-			if p.LoadHistory(self._startDate, self._endDate, verbose=True): 
+			if p.LoadHistory(self._startDate, self._endDate, verbose=False): 
 				p.CalculateStats()
 				self.priceData.append(p)
 				self._stockTickerList.append(ticker)
 
+	def NormalizePrices(self):
+		for i in range(len(self.priceData)):
+			self.priceData[i].NormalizePrices()
+			
 	def FindOpportunities(self, currentDate:datetime, stocksToReturn:int = 5, filterOption:int = 3, minPercentGain=0.00): 
 		result = []
 		for i in range(len(self.priceData)):
@@ -1514,7 +1562,7 @@ class StockPicker():
 
 	def GetHighestPriceMomentum(self, currentDate:datetime, longHistoryDays:int = 365, shortHistoryDays:int = 30, stocksToReturn:int = 5, filterOption:int = 3, minPercentGain=0.05, maxVolatility=.1, verbose:bool=False): 
 		minDailyGain = minPercentGain/365
-		candidates = pd.DataFrame(columns=list(['Ticker','hp2Year','hp1Year','hp6mo','hp3mo','hp2mo','hp1mo','currentPrice','2yearPriceChange','1yearPriceChange','6moPriceChange','2moPriceChange','1moPriceChange','dailyGain','monthlyGain','monthlyLossStd','longHistoricalValue','shortHistoricalValue','percentageChangeLongTerm','percentageChangeShortTerm']))
+		candidates = pd.DataFrame(columns=list(['Ticker','hp2Year','hp1Year','hp6mo','hp3mo','hp2mo','hp1mo','currentPrice','2yearPriceChange','1yearPriceChange','6moPriceChange','3moPriceChange','2moPriceChange','1moPriceChange','dailyGain','monthlyGain','monthlyLossStd','longHistoricalValue','shortHistoricalValue','percentageChangeLongTerm','percentageChangeShortTerm','pointValue','Comments','latestEntry']))
 		candidates.set_index(['Ticker'], inplace=True)
 		lookBackDateLT = currentDate + datetime.timedelta(days=-longHistoryDays)
 		lookBackDateST = currentDate + datetime.timedelta(days=-shortHistoryDays)
@@ -1522,12 +1570,6 @@ class StockPicker():
 			ticker = self.priceData[i].stockTicker
 			longHistoricalValue = self.priceData[i].GetPrice(lookBackDateLT)
 			shortHistoricalValue = self.priceData[i].GetPrice(lookBackDateST)				
-			#hp2Year = self.priceData[i].GetPrice(currentDate )				
-			#hp1Year = self.priceData[i].GetPrice(currentDate + datetime.timedelta(days=-365))				
-			#hp6mo = self.priceData[i].GetPrice(currentDate + datetime.timedelta(days=-180))				
-			#hp2mo = self.priceData[i].GetPrice(currentDate + datetime.timedelta(days=-60))				
-			#hp1mo = self.priceData[i].GetPrice(currentDate + datetime.timedelta(days=-30))				
-			#currentPrice = self.priceData[i].GetPrice(currentDate)
 			s = self.priceData[i].GetPriceSnapshot(currentDate + datetime.timedelta(days=-730))
 			hp2Year = s.fiveDayAverage
 			s = self.priceData[i].GetPriceSnapshot(currentDate + datetime.timedelta(days=-365))
@@ -1543,39 +1585,80 @@ class StockPicker():
 			s = self.priceData[i].GetPriceSnapshot(currentDate)
 			#currentPrice = s.oneDayAverage	
 			currentPrice = s.twoDayAverage	
+			Comments = ''
+			if s.low > s.channelHigh: 
+				Comments += 'Overbought; '
+			if s.high < s.channelLow: 
+				Comments += 'Oversold; '
+			if s.fiveDayDeviation > .0275: 
+				Comments += 'HighDeviation; '
 			percentageChangeShortTerm = 0
 			percentageChangeLongTerm = 0
 			if (longHistoricalValue > 0 and currentPrice > 0 and shortHistoricalValue > 0 and hp2Year > 0 and hp1Year > 0 and hp6mo > 0 and hp2mo > 0 and hp1mo > 0): #values were loaded
 				percentageChangeLongTerm = ((currentPrice/longHistoricalValue)-1)/longHistoryDays
 				percentageChangeShortTerm = ((currentPrice/shortHistoricalValue)-1)/shortHistoryDays
-				candidates.loc[ticker] = [hp2Year,hp1Year,hp6mo,hp3mo,hp2mo,hp1mo,currentPrice,(currentPrice/hp2Year)-1,(currentPrice/hp1Year)-1,(currentPrice/hp6mo)-1,(currentPrice/hp2mo)-1,(currentPrice/hp1mo)-1,s.dailyGain, s.monthlyGain, s.monthlyLossStd,longHistoricalValue,shortHistoricalValue,percentageChangeLongTerm, percentageChangeShortTerm]
+				pc1yr=((currentPrice/hp1Year)-1) 
+				pc6mo=((currentPrice/hp6mo)-1) 
+				pc3mo=((currentPrice/hp3mo)-1) 
+				pc2mo=((currentPrice/hp2mo)-1) 
+				pc1mo=((currentPrice/hp1mo)-1) 
+				pointValue = round((10*pc1yr) + (10*pc6mo) + (10*pc3mo) + (10*pc1mo) - (3-10*s.monthlyLossStd))
+				candidates.loc[ticker] = [hp2Year,hp1Year,hp6mo,hp3mo,hp2mo,hp1mo,currentPrice,(currentPrice/hp2Year)-1,(currentPrice/hp1Year)-1,(currentPrice/hp6mo)-1,(currentPrice/hp3mo)-1,(currentPrice/hp2mo)-1,(currentPrice/hp1mo)-1,s.dailyGain, s.monthlyGain, s.monthlyLossStd,longHistoricalValue,shortHistoricalValue,percentageChangeLongTerm, percentageChangeShortTerm, pointValue, Comments, self.priceData[i].historyEndDate]
 			else:
-				if currentPrice > 0 and verbose: print('Price load failed for ticker: ' + ticker, currentDate, hp2Year,hp1Year,hp6mo,hp2mo,hp1mo)
-		candidates.sort_values('percentageChangeLongTerm', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last') #Most critical factor, sorting by largest long term gain
+				if currentPrice > 0 and verbose or True: 
+					if len(self.priceData[i].historicalPrices) > 0: print('Price load failed for ticker: ' + ticker, currentDate, self.priceData[i].historyStartDate, self.priceData[i].historyEndDate, hp2Year,hp1Year,hp6mo,hp2mo,hp1mo)
 		if filterOption ==1: #high performer, recently at a discount or slowing down but not negative
 			filter = (candidates['percentageChangeLongTerm'] > candidates['percentageChangeShortTerm']) & (candidates['percentageChangeLongTerm'] > minDailyGain) & (candidates['percentageChangeShortTerm'] > 0) 
-			result = candidates[filter]
+			candidates.sort_values('percentageChangeLongTerm', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last') #Most critical factor, sorting by largest long term gain
 		elif filterOption ==2: #Long term gain meets min requirements
 			filter = (candidates['percentageChangeLongTerm'] > minDailyGain) 
-			result = candidates[filter]
+			candidates.sort_values('percentageChangeLongTerm', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last') #Most critical factor, sorting by largest long term gain
 		elif filterOption ==3: #Best overall returns 25% average yearly over 36 years which choosing top 5 sorted by best yearly average
 			filter = (candidates['percentageChangeLongTerm'] > minDailyGain) & (candidates['percentageChangeShortTerm'] > 0) 
-			result = candidates[filter]
-		elif filterOption ==4: #Short term gain meets mine requirements
-			filter =  (candidates['percentageChangeShortTerm']  > minDailyGain) 
-			result = candidates[filter]
-		elif filterOption ==6: #
-			filter = (candidates['1yearPriceChange'] > minPercentGain) & (candidates['monthlyGain'] > 0) & (candidates['monthlyLossStd'] < maxVolatility)
-			result = candidates[filter]
-		elif filterOption ==7: #
-			filter = (candidates['1yearPriceChange'] > minPercentGain) &  (candidates['monthlyLossStd'] < maxVolatility)
-			result = candidates[filter]
+			candidates.sort_values('percentageChangeLongTerm', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last') #Most critical factor, sorting by largest long term gain
+		elif filterOption ==4: #Short term gain meets min requirements
+			filter =  (candidates['percentageChangeShortTerm'] > minDailyGain) 
+			candidates.sort_values('percentageChangeShortTerm', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last') #Most critical factor, sorting by largest short term gain, not effective
+		elif filterOption ==44: #Short term gain meets min requirements, sort long value
+			filter =  (candidates['percentageChangeShortTerm'] > minDailyGain) 
+			candidates.sort_values('percentageChangeLongTerm', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last') #Most critical factor, sorting by largest long term gain
+		elif filterOption ==5: #Point Value
+			filter = (candidates['1yearPriceChange'] > minDailyGain) & (candidates['pointValue'] > 0)
+			candidates.sort_values('pointValue', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last') 
 		else: #no filter
-			result = candidates
-		result['percentageChangeLongTerm'] = result['percentageChangeLongTerm'].multiply(longHistoryDays)
-		result['percentageChangeShortTerm'] = result['percentageChangeShortTerm'].multiply(shortHistoryDays)
-		result = result[:stocksToReturn]
-		return result
+			filter = (candidates['currentPrice'] > 0)
+			candidates.sort_values('percentageChangeLongTerm', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last') #Most critical factor, sorting by largest long term gain
+		candidates = candidates[filter]
+		candidates.drop(columns=['longHistoricalValue','shortHistoricalValue','percentageChangeLongTerm','percentageChangeShortTerm'], inplace=True, axis=1)
+		candidates = candidates[:stocksToReturn]
+		return candidates
 
-	
-	
+	def ToDataFrame(self, intervalInWeeks:int = 1, pivotOnTicker:bool = False, showGain:bool = True):
+		r = pd.DataFrame()
+		for i in range(len(self.priceData)):
+			t = self.priceData[i].stockTicker
+			if len(self.priceData[i].historicalPrices) > 0:
+				x = self.priceData[i].historicalPrices.copy()
+				if intervalInWeeks > 1:
+					startDate = x.index[0]
+					x['DayOffset'] = (x.index - startDate).days
+					x = x[x['DayOffset'] % (intervalInWeeks * 7) ==0] #Drop all data except specified weekly interval of dates
+					x.drop(columns=['DayOffset'], inplace=True, axis=1)
+				if pivotOnTicker:
+					if r.empty: r = pd.DataFrame(index=x.index)
+					if showGain:
+						r[t] = (x['Average']/x['Average'].shift(-1))
+					else:
+						r[t] = x['Average']				
+				else:
+					if showGain:
+						x['Gain'] = x['Average']/x['Average'].shift(-1)
+						x = x[['Gain']]
+					x['Ticker'] = t
+					if r.empty: 
+						r = x
+					else:
+						r = r.append(x)
+		r.fillna(value=0, inplace=True)
+		r.sort_index
+		return r
