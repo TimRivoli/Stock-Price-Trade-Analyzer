@@ -30,7 +30,6 @@ def SampleLSTM(ticker:str):
 	plot = PlotHelper()
 	prices = PricingData(ticker)
 	print('Loading ' + ticker)
-	CreateFolder(dataFolder + 'samples')
 	if prices.LoadHistory():
 		prices.NormalizePrices()
 		daysInTarget = 15
@@ -104,13 +103,14 @@ def PredictPrices(prices:PricingData, predictionMethod:int=0, daysForward:int = 
 			UseLSTM = False
 			window_size = 16 * daysForward
 			modelDescription = prices.stockTicker + '_CNN' + '_epochs' + str(numberOfLearningPasses) + '_histwin' + str(window_size) + '_daysforward' + str(daysForward) 
-		learningModule = StockPredictionNN(modelName=prices.stockTicker, UseLSTM=UseLSTM)
-		learningModule.LoadSource(prices.GetPriceHistory(), SourceFieldList=SourceFieldList, window_size=window_size)
+		learningModule = StockPredictionNN(baseModelName=prices.stockTicker, UseLSTM=UseLSTM)
+		learningModule.LoadSource(prices.GetPriceHistory(), FieldList=SourceFieldList, window_size=window_size)
 		learningModule.LoadTarget(targetDF=None, prediction_target_days=daysForward)
 		learningModule.MakeBatches(batch_size=32, train_test_split=.93)
 		learningModule.Train(epochs=numberOfLearningPasses)
 		learningModule.Predict(True)
 		predDF = learningModule.GetTrainingResults(True, True)
+		predDF['PercentageDeviation'] = abs((predDF['Average']-predDF['Average_Predicted'])/predDF['Average'])
 	averageDeviation = predDF['PercentageDeviation'].tail(round(predDF.shape[0]/4)).mean() #Average of the last 25% to account for training.
 	print('Average deviation: ', averageDeviation * 100, '%')
 	predDF = predDF.reindex(sorted(predDF.columns), axis=1) #Sort columns alphabetical
@@ -121,7 +121,6 @@ def PredictPrices(prices:PricingData, predictionMethod:int=0, daysForward:int = 
 
 def RunPredictions(ticker:str='^SPX', numberOfLearningPasses:int = 750):
 	prices = PricingData(ticker)
-	CreateFolder(dataFolder)
 	print('Loading ' + ticker)
 	if prices.LoadHistory():
 		prices.TrimToDateRange('1/1/1950', '3/1/2018')
@@ -131,6 +130,8 @@ def RunPredictions(ticker:str='^SPX', numberOfLearningPasses:int = 750):
 				PredictPrices(prices,i, ii, numberOfLearningPasses)
 
 				
+CreateFolder(dataFolder)
+CreateFolder(dataFolder + '/samples')
 StockTicker='NFLX' #'NFLX', 'AMZN', 'GOOGL', '^SPX'
 SampleGraphs('^SPX', 15)
 SampleLSTM('^SPX')
