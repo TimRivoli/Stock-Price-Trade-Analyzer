@@ -15,6 +15,7 @@ def CreateFolder(p:str):
 	return r
 
 def SampleGraphs(ticker:str, daysInGraph:int):
+	#Print sample graphs of ticker, these are just samples of the type of data we will be predicting, prices normalized, scaled to a max value of 1
 	plot = PlotHelper()
 	prices = PricingData(ticker)
 	print('Loading ' + ticker)
@@ -27,6 +28,7 @@ def SampleGraphs(ticker:str, daysInGraph:int):
 			plot.PlotDataFrameDateRange(sampleData[['Open','High', 'Low','Close']], sampleDate, daysInGraph, 'Sample window ' + str(daysInGraph), 'Date', 'Price', dataFolder + 'samples/sample' + str(i) + '_' + str(daysInGraph)) 
 
 def SampleLSTM(ticker:str):
+	#Print sample LSTM graphs of ticker, LSTM will used series data to predict the continuation of the series
 	plot = PlotHelper()
 	prices = PricingData(ticker)
 	print('Loading ' + ticker)
@@ -38,11 +40,12 @@ def SampleLSTM(ticker:str):
 		endDate  = sampleData.index.max()
 		cuttoffDate = endDate - BDay(daysInTarget)
 		startDate = cuttoffDate - BDay(daysInTraining)
-		print(dataFolder + 'samples/LSTMsampleLearning', startDate, cuttoffDate, endDate)
+		print(dataFolder + 'samples\LSTMsampleLearning', startDate, cuttoffDate, endDate)
 		plot.PlotDataFrameDateRange(sampleData[['Average']], cuttoffDate, daysInTraining, 'Learn from this series of days', 'Date', 'Price', dataFolder + 'samples/LSTMLearning') 
 		plot.PlotDataFrameDateRange(sampleData[['Average']], endDate, daysInTarget, 'Predict what happens after this series of days', 'Date', 'Price', dataFolder + 'samples/LSTMTarget') 
 
 def SampleCNN(ticker:str):
+	#Print sample CNN graphs of ticker, CNN will treat price data as picture and anticipate the next picture
 	plot = PlotHelper()
 	prices = PricingData(ticker)
 	print('Loading ' + ticker)
@@ -55,7 +58,7 @@ def SampleCNN(ticker:str):
 		endDate  = sampleData.index.max()
 		cuttoffDate = endDate - BDay(window_size)
 		startDate = cuttoffDate - BDay(daysInTraining)
-		print(dataFolder + 'samples/LSTMsampleLearning', startDate, cuttoffDate, endDate)
+		print(dataFolder + 'samples\CNNsampleLearning', startDate, cuttoffDate, endDate)
 		for i in range(0,10):
 			ii = i * window_size
 			d1 = startDate + BDay(ii)
@@ -64,19 +67,9 @@ def SampleCNN(ticker:str):
 			plot.PlotDataFrameDateRange(sampleData[['Average']], d1, window_size, 'Sample image ' + str(i), 'Date', 'Price', dataFolder + 'samples/CNN' + str(i) + 'Sample') 
 			plot.PlotDataFrameDateRange(sampleData[['Average']], d2, target_size, 'Target image ' + str(i), 'Date', 'Price', dataFolder + 'samples/CNN' + str(i) + 'Target') 
 
-def CreateAdditionalGraph():
-	plot = PlotHelper()
-	for root, dirs, files in os.walk(dataFolder):
-		for f in files:
-			if f.endswith('.csv'):
-				predDF = pandas.read_csv(os.path.join(root, f), index_col=0, parse_dates=True, na_values=['nan'])
-				modelDescription = f[:len(f)-4]
-				print(modelDescription)
-				plot.PlotDataFrameDateRange(predDF[['Average','Average_Predicted']], None, 500, modelDescription + '_last500ays', 'Date', 'Price', dataFolder + modelDescription + '_last500Days') 
-				plot.PlotDataFrameDateRange(predDF[['Average','Average_Predicted']], None, 1000, modelDescription + '_last1000ays', 'Date', 'Price', dataFolder + modelDescription + '_last1000Days') 
-
 def PredictPrices(prices:PricingData, predictionMethod:int=0, daysForward:int = 5, numberOfLearningPasses:int = 500):
-	#Simple procedure to test different prediction methods
+	#Procedure to execute a given prediction method: linear projection, LSTM, CNN
+	#Results are exported to the "experiment" sub folder, including a CSV file containing actual and predicted data, and graphs
 	assert(0 <= predictionMethod <= 2)
 	plot = PlotHelper()
 	if predictionMethod ==0:		#Linear projection
@@ -120,6 +113,7 @@ def PredictPrices(prices:PricingData, predictionMethod:int=0, daysForward:int = 
 	plot.PlotDataFrameDateRange(predDF[['Average','Average_Predicted']], None, 1000, modelDescription + '_last1000ays', 'Date', 'Price', dataFolder + modelDescription + '_last1000Days') 
 
 def RunPredictions(ticker:str='^SPX', numberOfLearningPasses:int = 750):
+	#Runs three prediction models (Linear, LSTM, CCN) predicting a target price 4, 20, and 60 days in the future.
 	prices = PricingData(ticker)
 	print('Loading ' + ticker)
 	if prices.LoadHistory():
@@ -129,12 +123,25 @@ def RunPredictions(ticker:str='^SPX', numberOfLearningPasses:int = 750):
 			for i in range(0,3):
 				PredictPrices(prices,i, ii, numberOfLearningPasses)
 
+def CreateAdditionalGraph():
+	#Allows you to plot out additional graphs from the existing data without having to re-run the training
+	plot = PlotHelper()
+	for root, dirs, files in os.walk(dataFolder):
+		for f in files:
+			if f.endswith('.csv'):
+				predDF = pandas.read_csv(os.path.join(root, f), index_col=0, parse_dates=True, na_values=['nan'])
+				modelDescription = f[:len(f)-4]
+				print(modelDescription)
+				plot.PlotDataFrameDateRange(predDF[['Average','Average_Predicted']], None, 500, modelDescription + '_last500ays', 'Date', 'Price', dataFolder + modelDescription + '_last500Days') 
+				plot.PlotDataFrameDateRange(predDF[['Average','Average_Predicted']], None, 1000, modelDescription + '_last1000ays', 'Date', 'Price', dataFolder + modelDescription + '_last1000Days') 
 				
 CreateFolder(dataFolder)
-CreateFolder(dataFolder + '/samples')
+CreateFolder(dataFolder + '\samples')
 StockTicker='NFLX' #'NFLX', 'AMZN', 'GOOGL', '^SPX'
 SampleGraphs('^SPX', 15)
 SampleLSTM('^SPX')
 SampleCNN('^SPX')
+print('Sample data has been placed in ' + dataFolder)
 RunPredictions(StockTicker, 10)
+print('Output put in ' + dataFolder)
 CreateAdditionalGraph()
