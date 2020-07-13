@@ -9,4 +9,4 @@ class TickerLists:
 		r += TickerLists.SPTop70()
 		return r
 	def Indexes():return ['^SPX','^DJI','^NDQ']
-	def TopPerformers(): return ['CHTR','PG','MA','AVGO','MSFT','HD','QCOM','T','TXN','COST','V','TMO','FB','LMT','POR','PYPL','CMCSA','INTC','PEP','ABT','CAT','NKE','JPM','MRK','HON','BAC','MDT','TM','ACN','UNP','AES','WMT','BMYRT']
+	def TopPerformers(): return ['CHTR','PG','MA','AVGO','MSFT','HD','QCOM','T','TXN','COST','V','TMO','FB','LMT','POR','PYPL','CMCSA','INTC','PEP','ABT','CAT','NKE','JPM','MRK','HON','BAC','MDT','TM','ACN','UNP','AES','WMT']
