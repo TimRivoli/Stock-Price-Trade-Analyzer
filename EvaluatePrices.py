@@ -140,14 +140,14 @@ def OpportunityFinder(tickerList:list):
 if __name__ == '__main__': #Choose your adventure.
 	DownloadAndGraphStocks(IndexList)
 	CalculatePriceCorrelation(TickerLists.SPTop70())
-	#CalculatePriceCorrelation(TickerLists.DogsOfDOW())
+	CalculatePriceCorrelation(TickerLists.DogsOfDOW())
 	PlotAnnualPerformance('TSLA')
 	PlotAnnualPerformance('VIGRX')
 	PlotPrediction('^SPX', 1, 120, 15)
 	#for year in range(1930,1980,2):	GraphTimePeriod('^SPX', '1/3/' + str(year), 600)
-	for year in range(1980,2020,2): GraphTimePeriod('^SPX', '1/3/' + str(year), 600)
+	#for year in range(1980,2020,2): GraphTimePeriod('^SPX', '1/3/' + str(year), 600)
 	GraphTimePeriod('NVDA', '1/1/2003',400)
 	OpportunityFinder(TickerLists.TopPerformers())
 	CalculatePriceCorrelation(TickerLists.TopPerformers())
 	PlotPrediction('^SPX', predictionMethod=3, daysToGraph=60, daysForward=5, learnhingEpochs=750) #LSTM
-	PlotPrediction('^SPX', predictionMethod=4, daysToGraph=60, daysForward=5, learnhingEpochs=750) #CNN
+	#PlotPrediction('^SPX', predictionMethod=4, daysToGraph=60, daysForward=5, learnhingEpochs=750) #CNN
