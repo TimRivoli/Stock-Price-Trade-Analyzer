@@ -1474,7 +1474,7 @@ class ForcastModel():	#used to forecast the effect of a series of trade actions,
 				while len(self.savedModel._tranches) < tc:
 					self.savedModel._tranches.append(Tranche(tranchSize))
 				while len(self.savedModel._tranches) > tc:
-					self.savedModel._tranches.pop(1)
+					self.savedModel._tranches.pop(-1)
 				self.savedModel._tranchCount = len(self.savedModel._tranches)			
 			for i in range(len(self.savedModel._tranches)):
 				self.savedModel._tranches[i].ticker = self.mirroredModel._tranches[i].ticker
@@ -1501,6 +1501,15 @@ class ForcastModel():	#used to forecast the effect of a series of trade actions,
 		self.tm._fundsCommittedToOrders=self.savedModel._fundsCommittedToOrders
 		self.tm.dailyValue = pd.DataFrame([[self.savedModel.currentDate,c,a,c+a]], columns=list(['Date','CashValue','AssetValue','TotalValue']))
 		self.tm.dailyValue.set_index(['Date'], inplace=True)
+		if len(self.tm._tranches) != len(self.savedModel._tranches):
+			print(len(self.tm._tranches), len(self.savedModel._tranches))
+			tranchSize = self.savedModel._tranches[0].size
+			tc = len(self.savedModel._tranches)
+			while len(self.tm._tranches) < tc:
+				self.tm._tranches.append(Tranche(tranchSize))
+			while len(self.tm._tranches) > tc:
+				self.tm._tranches.pop(-1)
+			self.tm._tranchCount = len(self.tm._tranches)			
 		for i in range(len(self.tm._tranches)):
 			self.tm._tranches[i].ticker = self.savedModel._tranches[i].ticker
 			self.tm._tranches[i].available = self.savedModel._tranches[i].available
