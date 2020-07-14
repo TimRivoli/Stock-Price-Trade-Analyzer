@@ -1466,6 +1466,16 @@ class ForcastModel():	#used to forecast the effect of a series of trade actions,
 			self.savedModel._fundsCommittedToOrders=self.mirroredModel._fundsCommittedToOrders
 			self.savedModel.dailyValue = pd.DataFrame([[self.mirroredModel.currentDate,c,a,c+a]], columns=list(['Date','CashValue','AssetValue','TotalValue']))
 			self.savedModel.dailyValue.set_index(['Date'], inplace=True)
+
+			if len(self.savedModel._tranches) != len(self.mirroredModel._tranches):
+				print(len(self.savedModel._tranches), len(self.mirroredModel._tranches))
+				tranchSize = self.mirroredModel._tranches[0].size
+				tc = len(self.mirroredModel._tranches)
+				while len(self.savedModel._tranches) < tc:
+					self.savedModel._tranches.append(Tranche(tranchSize))
+				while len(self.savedModel._tranches) > tc:
+					self.savedModel._tranches.pop(1)
+				self.savedModel._tranchCount = len(self.savedModel._tranches)			
 			for i in range(len(self.savedModel._tranches)):
 				self.savedModel._tranches[i].ticker = self.mirroredModel._tranches[i].ticker
 				self.savedModel._tranches[i].available = self.mirroredModel._tranches[i].available
