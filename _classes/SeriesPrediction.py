@@ -76,7 +76,7 @@ class SeriesPredictionNN(object):
 		self.sourceDF.drop(self.sourceDF.index[:self.window_size-1], inplace=True) #Forget anything that occurs before the history window.  Data is not part of the training source or target
 		self.daysInDataSet = self.sourceDF.shape[0]
 		print('Features in source dataset: {}'.format(self.feature_count))
-		print('Days in the source data set: {}'.format(self.daysInDataSet))
+		print('Days in the source dataframe: {}'.format(self.daysInDataSet))
 		print('Window size: ', self.window_size)
 		self.sourceDataLoaded = True
 		
@@ -88,11 +88,13 @@ class SeriesPredictionNN(object):
 			self.targetDF = self.sourceDF.copy()
 		else:
 			self.targetDF = targetDF.copy()
+			print(targetDF.shape[0])
 			self.targetDF = self.targetDF[self.sourceDF.index.min():self.sourceDF.index.max()]	#trim any entries prior to start of source
+			print(self.targetDF.shape[0])
 		self.prediction_target_days = prediction_target_days
 		self._CustomTargetOperations()
 		print('Classes in target values: {}'.format(self.number_of_classes))
-		print('Days in target data: {}'.format(self.targetDF.shape[0]))
+		print('Days in target dataframe: {}'.format(self.targetDF.shape[0]))
 		if self.targetDF.isnull().values.any(): 
 			print('Nan values in target input.  This will break the training.\n')
 			assert(False)
@@ -102,6 +104,10 @@ class SeriesPredictionNN(object):
 			print('X shape: ', len(self.X))
 			print('y shape: ', len(self.y))
 			print('X and Y should have the same number of rows')
+			print('Missing target dates')
+			print(self.sourceDF.index.difference(self.targetDF.index))
+			print('Missing source dates')
+			print(self.targetDF.index.difference(self.sourceDF.index))
 			assert(False)
 		if not self.UseLSTM and not self.number_of_classes == self.feature_count and not self.predictClasses:
 			print('CNN model requires feature count to equal class count.')
@@ -425,6 +431,7 @@ class TradePredictionNN(SeriesPredictionNN): #Categorical: Predicts best trade a
 		y = self.targetDF.values
 		self.number_of_classes = 7
 		y = keras.utils.to_categorical(y, num_classes=self.number_of_classes)
+		print('y', len(y))
 		#self.number_of_classes = self.targetDF['actionID'].max() + 1	#Categories 0 to max
 		if not self.UseLSTM:
 			y = y.reshape(-1,1,self.number_of_classes)
