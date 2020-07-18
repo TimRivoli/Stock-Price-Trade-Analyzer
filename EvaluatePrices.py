@@ -1,6 +1,7 @@
-import datetime, os, pandas as pd
+import os, pandas as pd
 from _classes.PriceTradeAnalyzer import PricingData, PriceSnapshot, PlotHelper, GetTodaysDate
 from _classes.TickerLists import TickerLists
+from _classes.Utility import *
 IndexList=['^SPX','^DJI', '^NDQ']
 
 def PlotAnnualPerformance(ticker:str='^SPX'):
@@ -53,7 +54,7 @@ def DownloadAndGraphStocks(tickerList:list):
 			for days in [90,180,365,2190,4380]:
 				prices.GraphData(endDate=None, daysToGraph=days, graphTitle=ticker + '_days' + str(days) + ' ' + titleStatistics, includePredictions=(days < 1000), saveToFile=True, fileNameSuffix=str(days).rjust(4, '0') + 'd', trimHistoricalPredictions=False)
 
-def GraphTimePeriod(ticker:str, endDate:datetime, days:int):
+def GraphTimePeriod(ticker:str, endDate:str, days:int):
 	prices = PricingData(ticker)
 	print('Loading ' + ticker)
 	if prices.LoadHistory():
@@ -64,7 +65,7 @@ def CalculatePriceCorrelation(tickerList:list):
 	datafileName = 'data/_priceCorrelations.csv'
 	summaryfileName = 'data/_priceCorrelationTop10.txt'
 	result = None
-	startDate = str(GetTodaysDate() + datetime.timedelta(days=-365))
+	startDate = str(AddDays(GetTodaysDate(), -365))
 	endDate = str(GetTodaysDate())
 	for ticker in tickerList:
 		prices = PricingData(ticker)
@@ -106,17 +107,17 @@ def OpportunityFinder(tickerList:list):
 		print('Checking ' + ticker)
 		if prices.LoadHistory(requestedEndDate=currentDate):
 			prices.CalculateStats()
-			psnap = prices.GetPriceSnapshot(currentDate + datetime.timedelta(days=-730))
+			psnap = prices.GetPriceSnapshot(AddDays(currentDate,-730))
 			hp2Year = psnap.fiveDayAverage
-			psnap = prices.GetPriceSnapshot(currentDate + datetime.timedelta(days=-365))
+			psnap = prices.GetPriceSnapshot(AddDays(currentDate, -365))
 			hp1Year = psnap.fiveDayAverage
-			psnap = prices.GetPriceSnapshot(currentDate + datetime.timedelta(days=-180))
+			psnap = prices.GetPriceSnapshot(AddDays(currentDate, -180))
 			hp6mo = psnap.fiveDayAverage
-			psnap = prices.GetPriceSnapshot(currentDate + datetime.timedelta(days=-90))
+			psnap = prices.GetPriceSnapshot(AddDays(currentDate, -90))
 			hp3mo = psnap.fiveDayAverage
-			psnap = prices.GetPriceSnapshot(currentDate + datetime.timedelta(days=-60))
+			psnap = prices.GetPriceSnapshot(AddDays(currentDate, -60))
 			hp2mo = psnap.fiveDayAverage
-			psnap = prices.GetPriceSnapshot(currentDate + datetime.timedelta(days=-30))
+			psnap = prices.GetPriceSnapshot(AddDays(currentDate, -30))
 			hp1mo = psnap.fiveDayAverage
 			psnap = prices.GetCurrentPriceSnapshot()
 			currentPrice = psnap.twoDayAverage	

@@ -2,6 +2,8 @@ import pandas, os
 from pandas.tseries.offsets import BDay
 from _classes.PriceTradeAnalyzer import PricingData, PlotHelper
 from _classes.SeriesPrediction import StockPredictionNN
+from _classes.Utility import *
+
 dataFolder = 'experiment/'
 
 def CreateFolder(p:str):

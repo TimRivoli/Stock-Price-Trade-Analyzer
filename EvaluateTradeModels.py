@@ -5,8 +5,24 @@
 #than has been lost in corrections themselves." - Peter Lynch.
 import pandas as pd
 from _classes.PriceTradeAnalyzer import TradingModel, PlotHelper, PriceSnapshot, Position
+from _classes.Utility import *
 
 #------------------------------------------- Global model functions  ----------------------------------------------		
+def RecordPerformance(ModelName, StartDate, EndDate, StartValue, EndValue, TradeCount):
+	#Record trade performance to output file, each model run will append to the same files so you can easily compare the results
+	filename = 'data/trademodel/PerfomanceComparisons.csv'
+	try:
+		if FileExists(filename):
+			f = open(filename,"a")
+		else:
+			f = open(filename,"w+")
+			f.write('ModelName, StartDate, EndDate, StartValue, EndValue, TotalPercentageGain, TradeCount\n')
+		TotalPercentageGain = (EndValue/StartValue)-1
+		f.write(ModelName + ',' + str(StartDate) + ',' + str(EndDate) + ',' + str(StartValue) + ',' + str(EndValue) + ',' + str(TotalPercentageGain) + ',' + str(TradeCount) + '\n')
+		f.close() 
+	except:
+		print('Unable to write performance report to ' + filename)
+
 def RunModel(modelName:str, modelFunction, ticker:str, startDate:str, durationInYears:int, portfolioSize:int, saveHistoryToFile:bool=True, returndailyValues:bool=False, verbose:bool=False):	
 	#Performs the logic of the given model over a period of time to evaluate the performance
 	modelName = modelName + '_' + ticker
@@ -25,6 +41,10 @@ def RunModel(modelName:str, modelFunction, ticker:str, startDate:str, durationIn
 				tm.PositionSummary()
 				#tm.PrintPositions()
 				break
+		cash, asset = tm.Value()
+		#print('Ending Value: ', cash + asset, '(Cash', cash, ', Asset', asset, ')')
+		tradeCount = len(tm.tradeHistory)
+		RecordPerformance(ModelName=modelName, StartDate=startDate, EndDate=tm.currentDate, StartValue=portfolioSize, EndValue=(cash + asset), TradeCount=tradeCount)
 		if returndailyValues:
 			tm.CloseModel(verbose, saveHistoryToFile)
 			return tm.GetDailyValue()   							#return daily value for model comparisons
