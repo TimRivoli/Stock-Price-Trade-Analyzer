@@ -10,3 +10,5 @@ class TickerLists:
 		return r
 	def Indexes():return ['^SPX','^DJI','^NDQ']
 	def TopPerformers(): return ['CHTR','PG','MA','AVGO','MSFT','HD','QCOM','T','TXN','COST','V','TMO','FB','LMT','POR','PYPL','CMCSA','INTC','PEP','ABT','CAT','NKE','JPM','MRK','HON','BAC','MDT','TM','ACN','UNP','AES','WMT']
+
+	

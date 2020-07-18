@@ -454,6 +454,3 @@ class StockPickerNN(SeriesPredictionNN): #Series prediction: Predicts future pri
 		y = y.values	
 		if self.predictClasses: y = keras.utils.to_categorical(y, num_classes=self.number_of_classes)
 		self.y = y
-
-	
-
