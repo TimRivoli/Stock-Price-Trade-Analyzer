@@ -1,4 +1,5 @@
-import os, configparser, ast
+import os, configparser, ast, time, datetime
+from datetime import datetime, timedelta
 
 def ReadConfig(sectionName:str, valueName:str):
 	settingsFile = os.path.join(os.path.abspath(os.path.dirname(os.path.dirname(__file__)))) + '/config.ini'
@@ -40,3 +41,63 @@ def CreateFolder(p:str):
 	return r
 	
 def FileExists(f): return 	os.path.isfile(f)
+
+def GetMyDateFormat(): return '%m/%d/%Y'
+
+def DateFormatDatabase(givenDate):
+	#returns datetime object
+	if type(givenDate) == str:
+		if givenDate.find('-') > 0 :
+			r = datetime.strptime(givenDate, '%Y-%m-%d')
+		else:
+			r = datetime.strptime(givenDate, GetMyDateFormat())
+	#elif type(givenDate) == datetime:
+		#r = datetime.fromtimestamp(givenDate).date() TCR may need to detect timestamp
+	#	r = givenDate.date()
+	else:
+		r = givenDate
+	return r
+
+def ToDate(givenDate):
+#returns datetime, converting from string if necessary
+	if type(givenDate) == str:
+		if givenDate.find('-') > 0 :
+			r = datetime.strptime(givenDate, '%Y-%m-%d')
+		else:
+			r = datetime.strptime(givenDate, GetMyDateFormat())
+	else:
+		r = givenDate
+	return r
+
+def GetDateTimeStamp():
+	d = datetime.now()
+	return d.strftime('%Y%m%d%H%M')
+
+def GetTodaysDate():
+	d = datetime.now()
+	#return d.strftime('%m/%d/%Y')
+	return d.date()
+
+def DateDiffDays(startDate:datetime, endDate:datetime):
+	delta = endDate-startDate
+	return delta.days
+		
+def DateDiffHours(startDate:datetime, endDate:datetime):
+	delta = endDate-startDate
+	return int(delta.total_seconds() / 3600)
+
+def AddDays(startDate, days:int):
+	startDate = ToDate(startDate)
+	return startDate + timedelta(days=days) 
+
+def CreateFolder(p:str):
+	r = True
+	if not os.path.exists(p):
+		try:
+			os.mkdir(p)	
+		except Exception as e:
+			print('Unable to create folder: ' + p)
+			f = False
+	return r
+	
+	

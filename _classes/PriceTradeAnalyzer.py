@@ -6,6 +6,7 @@ suspendPriceLoads = False
 #pip install any of these if they are missing
 import time, datetime, random, os, ssl, matplotlib
 import numpy as np, pandas as pd
+from datetime import datetime, timedelta
 from pandas.tseries.offsets import BDay
 import urllib.request as webRequest
 from _classes.Utility import *
@@ -34,60 +35,7 @@ def PandaIsInIndex(df:pd.DataFrame, value):
 		r = False
 	return r
 
-#datetime.datetime.fromtimestamp(dt).date()
-def GetMyDateFormat(): return '%m/%d/%Y'
 
-def DateFormatDatabase(givenDate:datetime):
-#returns datetime object
-	if type(givenDate) == str:
-		if givenDate.find('-') > 0 :
-			r = datetime.datetime.strptime(givenDate, '%Y-%m-%d')
-		else:
-			r = datetime.datetime.strptime(givenDate, GetMyDateFormat())
-	elif type(givenDate) == datetime:
-		r = datetime.datetime.fromtimestamp(givenDate).date()
-	else:
-		r = givenDate
-	return r
-
-def ToDateTime(givenDate):
-#returns datetime, converting from string if necessary
-	if type(givenDate) == str:
-		if givenDate.find('-') > 0 :
-			r = datetime.datetime.strptime(givenDate, '%Y-%m-%d')
-		else:
-			r = datetime.datetime.strptime(givenDate, GetMyDateFormat())
-	else:
-		r = givenDate
-	return r
-
-def GetDateTimeStamp():
-	d = datetime.datetime.now()
-	return d.strftime('%Y%m%d%H%M')
-
-def GetTodaysDate():
-	d = datetime.datetime.now()
-	#return d.strftime('%m/%d/%Y')
-	return d.date()
-
-def DateDiffDays(startDate:datetime, endDate:datetime):
-	delta = endDate-startDate
-	return delta.days
-
-def DateDiffHours(startDate:datetime, endDate:datetime):
-	delta = endDate-startDate
-	return int(delta.total_seconds() / 3600)
-
-def CreateFolder(p:str):
-	r = True
-	if not os.path.exists(p):
-		try:
-			os.mkdir(p)	
-		except Exception as e:
-			print('Unable to create folder: ' + p)
-			f = False
-	return r
-	
 def PlotSetDefaults():
 	#params = {'legend.fontsize': 4, 'axes.labelsize': 4,'axes.titlesize':4,'xtick.labelsize':4,'ytick.labelsize':4}
 	#plt.rcParams.update(params)
@@ -294,30 +242,30 @@ class PricingData:
 			f.close()
 
 	def _LoadHistory(self, refreshPrices:bool=False,verbose:bool=False):
+		self.pricesLoaded = False
 		filePath = self._dataFolderhistoricalPrices + self.stockTicker + '.csv'
 		if not os.path.isfile(filePath) or refreshPrices: self._DownloadPriceData(verbose=verbose)
-
-		if not os.path.isfile(filePath):
-			print(' No data found for ' + self.stockTicker)
-			self.pricesLoaded = False
-		else:
+		if os.path.isfile(filePath):
 			df = pd.read_csv(filePath, index_col=0, parse_dates=True, na_values=['nan'])
-			df = df[BaseFieldList]
-			df['Average'] = df.loc[:,BaseFieldList].mean(axis=1) #select those rows, calculate the mean value
-			if (df['Open'] < df['Low']).any() or (df['Close'] < df['Low']).any() or (df['High'] < df['Low']).any() or (df['Open'] > df['High']).any() or (df['Close'] > df['High']).any(): 
-				if verbose:
-					print(self.stockTicker)
-					print(df.loc[df['Low'] > df['High']])
-					print(' Data validation error, Low > High.  Dropping values..')
-				df = df.loc[df['Low'] <= df['High']]
-				df = df.loc[df['Low'] <= df['Open']]
-				df = df.loc[df['Low'] <= df['Close']]
-				df = df.loc[df['High'] >= df['Open']]
-				df = df.loc[df['High'] >= df['Close']]
-			self.historicalPrices = df
-			self.historyStartDate = self.historicalPrices.index.min()
-			self.historyEndDate = self.historicalPrices.index.max()
-			self.pricesLoaded = True
+			if (df.shape[0] > 0) and all([item in df.columns for item in BaseFieldList]): #Rows more than zero and base fields all exist
+				df = df[BaseFieldList]
+				df['Average'] = df.loc[:,BaseFieldList].mean(axis=1) #select those rows, calculate the mean value
+				if (df['Open'] < df['Low']).any() or (df['Close'] < df['Low']).any() or (df['High'] < df['Low']).any() or (df['Open'] > df['High']).any() or (df['Close'] > df['High']).any(): 
+					if verbose:
+						print(self.stockTicker)
+						print(df.loc[df['Low'] > df['High']])
+						print(' Data validation error, Low > High.  Dropping values..')
+					df = df.loc[df['Low'] <= df['High']]
+					df = df.loc[df['Low'] <= df['Open']]
+					df = df.loc[df['Low'] <= df['Close']]
+					df = df.loc[df['High'] >= df['Open']]
+					df = df.loc[df['High'] >= df['Close']]
+				self.historicalPrices = df
+				self.historyStartDate = self.historicalPrices.index.min()
+				self.historyEndDate = self.historicalPrices.index.max()
+				self.pricesLoaded = True
+		if not self.pricesLoaded:
+			print(' No data found for ' + self.stockTicker)
 		return self.pricesLoaded 
 		
 	def LoadHistory(self, requestedStartDate:datetime=None, requestedEndDate:datetime=None, verbose:bool=False):
@@ -325,13 +273,13 @@ class PricingData:
 		if self.pricesLoaded:
 			requestNewData = False
 			filePath = self._dataFolderhistoricalPrices + self.stockTicker + '.csv'
-			lastUpdated = datetime.datetime.fromtimestamp(os.path.getmtime(filePath))
-			if DateDiffHours(lastUpdated, datetime.datetime.now()) > 12 and not suspendPriceLoads:	#Limit how many times per hour we refresh the data to prevent abusing the source
+			lastUpdated = datetime.fromtimestamp(os.path.getmtime(filePath))
+			if DateDiffHours(lastUpdated, datetime.now()) > 12 and not suspendPriceLoads:	#Limit how many times per hour we refresh the data to prevent abusing the source
 				if not(requestedStartDate==None): requestNewData = (requestedStartDate < self.historyStartDate)
 				if not(requestedEndDate==None): requestNewData = (requestNewData or (self.historyEndDate < requestedEndDate))
 				if requestNewData and verbose: print(' Requesting new data for ' + self.stockTicker + ' (requestedStart, historyStart, historyEnd, requestedEnd)', requestedStartDate, self.historyStartDate, self.historyEndDate, requestedEndDate)
 				if (requestedStartDate==None and requestedEndDate==None):
-					requestNewData = (DateDiffDays(startDate=lastUpdated, endDate=datetime.datetime.now()) > 1)
+					requestNewData = (DateDiffDays(startDate=lastUpdated, endDate=datetime.now()) > 1)
 				if verbose: print(' Requesting new data ' + self.stockTicker + ' reason stale data ', lastUpdated)
 			if requestNewData: self._LoadHistory(refreshPrices=True, verbose=verbose)
 			if not(requestedStartDate==None): 
@@ -340,9 +288,9 @@ class PricingData:
 		return(self.pricesLoaded)
 
 	def TrimToDateRange(self,startDate:datetime, endDate:datetime):
-		startDate = DateFormatDatabase(startDate)
-		startDate -= datetime.timedelta(days=45) #If we do not include earlier dates we can not calculate all the stats
-		endDate = DateFormatDatabase(endDate)
+		startDate = ToDate(startDate)
+		startDate -= timedelta(days=45) #If we do not include earlier dates we can not calculate all the stats
+		endDate = ToDate(endDate)
 		self.historicalPrices = self.historicalPrices[(self.historicalPrices.index >= startDate) & (self.historicalPrices.index <= endDate)]
 		self.historyStartDate = self.historicalPrices.index.min()
 		self.historyEndDate = self.historicalPrices.index.max()
@@ -630,14 +578,11 @@ class PricingData:
 
 	def GetPrice(self,forDate:datetime, verbose:bool=False):
 		forDate = DateFormatDatabase(forDate)
-		i = 0
-		#TCR: idx = df.index[df.index.get_loc(dt, method='nearest')] this would be better
-		while i < 6 and not PandaIsInIndex(self.historicalPrices, forDate):
-			forDate -= datetime.timedelta(days=1)
-			i+=1
 		try:
+			i = self.historicalPrices.index.get_loc(forDate, method='ffill')
+			forDate = self.historicalPrices.index[i]
 			r = self.historicalPrices.loc[forDate]['Average']
-		except:			
+		except:
 			if verbose: print('Unable to get price for ' + self.stockTicker + ' on ' + str(forDate))	
 			r = 0
 		return r
@@ -646,34 +591,35 @@ class PricingData:
 		forDate = DateFormatDatabase(forDate)
 		sn = PriceSnapshot()
 		sn.ticker = self.stockTicker
-		i = 0
-		while i < 30 and not PandaIsInIndex(self.historicalPrices, forDate):
-			forDate -= datetime.timedelta(days=1)
-			i+=1
-		sn.snapShotDate = forDate 
 		try:
-			sn.high,sn.low,sn.open,sn.close,sn.oneDayAverage,sn.twoDayAverage,sn.fiveDayAverage,sn.shortEMA,sn.shortEMASlope,sn.longEMA,sn.longEMASlope,sn.channelHigh,sn.channelLow,sn.oneDayApc,sn.oneDayDeviation,sn.fiveDayDeviation,sn.fifteenDayDeviation,sn.dailyGain,sn.monthlyGain,sn.monthlyLossStd =self.historicalPrices.loc[forDate,['High','Low','Open','Close','Average','2DayAv','5DayAv','shortEMA','shortEMASlope','longEMA','longEMASlope','channelHigh', 'channelLow','1DayApc','1DayDeviation','5DavDeviation','15DavDeviation','dailyGain','monthlyGain','monthlyLossStd']]
+			i = self.historicalPrices.index.get_loc(forDate, method='ffill')
+			forDate = self.historicalPrices.index[i]
 		except:
+			i = 0
 			sn.high, sn.low, sn.open,sn.close = 0,0,0,0
 			if verbose: print('Unable to get price snapshot for ' + self.stockTicker + ' on ' + str(forDate))	
-		if sn.high > 0:
-			if sn.longEMASlope < 0:
-				if sn.shortEMASlope > 0:	#bounce or early recovery
-					sn.nextDayTarget = min(sn.oneDayAverage, sn.twoDayAverage)
-				else:
-					sn.nextDayTarget = min(sn.low, sn.twoDayAverage)			
+		sn.snapShotDate = forDate 
+		if i > 0:
+			if not self.statsLoaded:
+				sn.high,sn.low,sn.open,sn.close,sn.oneDayAverage =self.historicalPrices.loc[forDate,['High','Low','Open','Close','Average']]
 			else:
-				if sn.shortEMASlope < 0:	#correction or early downturn
-					sn.nextDayTarget = max(sn.oneDayAverage, (sn.twoDayAverage*2)-sn.oneDayAverage) + (sn.oneDayAverage * (sn.longEMASlope))
+				sn.high,sn.low,sn.open,sn.close,sn.oneDayAverage,sn.twoDayAverage,sn.fiveDayAverage,sn.shortEMA,sn.shortEMASlope,sn.longEMA,sn.longEMASlope,sn.channelHigh,sn.channelLow,sn.oneDayApc,sn.oneDayDeviation,sn.fiveDayDeviation,sn.fifteenDayDeviation,sn.dailyGain,sn.monthlyGain,sn.monthlyLossStd =self.historicalPrices.loc[forDate,['High','Low','Open','Close','Average','2DayAv','5DayAv','shortEMA','shortEMASlope','longEMA','longEMASlope','channelHigh', 'channelLow','1DayApc','1DayDeviation','5DavDeviation','15DavDeviation','dailyGain','monthlyGain','monthlyLossStd']]
+				if sn.longEMASlope < 0:
+					if sn.shortEMASlope > 0:	#bounce or early recovery
+						sn.nextDayTarget = min(sn.oneDayAverage, sn.twoDayAverage)
+					else:
+						sn.nextDayTarget = min(sn.low, sn.twoDayAverage)			
 				else:
-					sn.nextDayTarget = max(sn.oneDayAverage, sn.twoDayAverage) + (sn.oneDayAverage * sn.longEMASlope)
-
-			sn.nextDayTarget = max(sn.oneDayAverage, sn.twoDayAverage) + (sn.oneDayAverage * sn.longEMASlope)
-			if not self.predictionsLoaded or forDate >= self.historyEndDate:
-				sn.estLow,sn.estHigh= self.PredictFuturePrice(forDate,1)
-			else:
-				tomorrow =  forDate.date() + datetime.timedelta(days=1) 
-				sn.estLow,sn.estHigh= self.pricePredictions.loc[tomorrow,['estLow','estHigh']]
+					if sn.shortEMASlope < 0:	#correction or early downturn
+						sn.nextDayTarget = max(sn.oneDayAverage, (sn.twoDayAverage*2)-sn.oneDayAverage) + (sn.oneDayAverage * (sn.longEMASlope))
+					else:
+						sn.nextDayTarget = max(sn.oneDayAverage, sn.twoDayAverage) + (sn.oneDayAverage * sn.longEMASlope)
+					#sn.nextDayTarget = max(sn.oneDayAverage, sn.twoDayAverage) + (sn.oneDayAverage * sn.longEMASlope)
+				if not self.predictionsLoaded or forDate >= self.historyEndDate:
+					sn.estLow,sn.estHigh= self.PredictFuturePrice(forDate,1)
+				else:
+					tomorrow =  forDate.date() + timedelta(days=1) 
+					sn.estLow,sn.estHigh= self.pricePredictions.loc[tomorrow,['estLow','estHigh']]
 		return sn
 
 	def GetCurrentPriceSnapshot(self): return self.GetPriceSnapshot(self.historyEndDate)
@@ -1260,22 +1206,22 @@ class TradingModel(Portfolio):
 		#pricesAsPercentages:bool=False would be good but often results in Nan values
 		#expects date format in local format, from there everything will be converted to database format				
 		startDate = DateFormatDatabase(startDate)
-		endDate = startDate + datetime.timedelta(days=365 * durationInYears)
+		endDate = startDate + timedelta(days=365 * durationInYears)
 		self.modelReady = False
 		CreateFolder(self._dataFolderTradeModel)
 		p = PricingData(startingTicker)
 		if p.LoadHistory(requestedStartDate=startDate, requestedEndDate=endDate, verbose=verbose): 
 			if verbose: print(' Loading ' + startingTicker)
 			p.CalculateStats()
-			p.TrimToDateRange(startDate - datetime.timedelta(days=60), endDate + datetime.timedelta(days=10))
+			p.TrimToDateRange(startDate - timedelta(days=60), endDate + timedelta(days=10))
 			self.priceHistory = [p]
 			#idx = df.index[df.index.get_loc(dt, method='nearest')]  TCR: This would be better
-			if not PandaIsInIndex(p.historicalPrices, startDate): startDate += datetime.timedelta(days=1)
-			if not PandaIsInIndex(p.historicalPrices, startDate): startDate += datetime.timedelta(days=1)
-			if not PandaIsInIndex(p.historicalPrices, startDate): startDate += datetime.timedelta(days=1)
-			if not PandaIsInIndex(p.historicalPrices, endDate): endDate -= datetime.timedelta(days=1)
-			if not PandaIsInIndex(p.historicalPrices, endDate): endDate -= datetime.timedelta(days=1)
-			if not PandaIsInIndex(p.historicalPrices, endDate): endDate -= datetime.timedelta(days=1)
+			if not PandaIsInIndex(p.historicalPrices, startDate): startDate += timedelta(days=1)
+			if not PandaIsInIndex(p.historicalPrices, startDate): startDate += timedelta(days=1)
+			if not PandaIsInIndex(p.historicalPrices, startDate): startDate += timedelta(days=1)
+			if not PandaIsInIndex(p.historicalPrices, endDate): endDate -= timedelta(days=1)
+			if not PandaIsInIndex(p.historicalPrices, endDate): endDate -= timedelta(days=1)
+			if not PandaIsInIndex(p.historicalPrices, endDate): endDate -= timedelta(days=1)
 			self.modelStartDate = startDate
 			self.modelEndDate = endDate
 			self.currentDate = self.modelStartDate
@@ -1302,7 +1248,7 @@ class TradingModel(Portfolio):
 			if self.verbose: print(' Loading price history for ' + ticker)
 			if p.LoadHistory(requestedStartDate=self.modelStartDate, requestedEndDate=self.modelEndDate): 
 				p.CalculateStats()
-				p.TrimToDateRange(self.modelStartDate - datetime.timedelta(days=60), self.modelEndDate + datetime.timedelta(days=10))
+				p.TrimToDateRange(self.modelStartDate - timedelta(days=60), self.modelEndDate + timedelta(days=10))
 				if len(p.historicalPrices) > len(self.priceHistory[0].historicalPrices): #first element is used for trading day indexing, replace if this is a better match
 					self.priceHistory.insert(0, p)
 					self._stockTickerList.insert(0, ticker)
@@ -1349,7 +1295,8 @@ class TradingModel(Portfolio):
 	def GetDailyValue(self): return self.dailyValue #returns dataframe with daily value of portfolio
 	def GetValueAt(self, date): 
 		try:
-			r = self.dailyValue['TotalValue'].at[date]
+			i = self.dailyValue.index.get_loc(date, method='nearest')
+			r = self.dailyValue.iloc[i]['TotalValue']
 		except:
 			print('Unable to return value at ', date)
 			r=-1
@@ -1357,7 +1304,7 @@ class TradingModel(Portfolio):
 
 	def GetPrice(self, ticker:str=''): 
 		#returns snapshot object of yesterday's pricing info to help make decisions today
-		forDate = self.currentDate + datetime.timedelta(days=-1)
+		forDate = self.currentDate + timedelta(days=-1)
 		r = None
 		if ticker =='':
 			r = self.priceHistory[0].GetPrice(forDate)
@@ -1370,7 +1317,7 @@ class TradingModel(Portfolio):
 
 	def GetPriceSnapshot(self, ticker:str=''): 
 		#returns snapshot object of yesterday's pricing info to help make decisions today
-		forDate = self.currentDate + datetime.timedelta(days=-1)
+		forDate = self.currentDate + timedelta(days=-1)
 		r = None
 		if ticker =='':
 			r = self.priceHistory[0].GetPriceSnapshot(forDate)
@@ -1438,7 +1385,7 @@ class TradingModel(Portfolio):
 			except:
 				#print(self.priceHistory[0].historicalPrices)
 				print('Unable to find next date in index from ', self.currentDate)
-				self.currentDate += datetime.timedelta(days=1)
+				self.currentDate += timedelta(days=1)
 	
 	def SetCustomValues(self, v1, v2):
 		self.Custom1 = v1
@@ -1583,23 +1530,23 @@ class StockPicker():
 		minDailyGain = minPercentGain/365
 		candidates = pd.DataFrame(columns=list(['Ticker','hp2Year','hp1Year','hp6mo','hp3mo','hp2mo','hp1mo','currentPrice','2yearPriceChange','1yearPriceChange','6moPriceChange','3moPriceChange','2moPriceChange','1moPriceChange','dailyGain','monthlyGain','monthlyLossStd','longHistoricalValue','shortHistoricalValue','percentageChangeLongTerm','percentageChangeShortTerm','pointValue','Comments','latestEntry']))
 		candidates.set_index(['Ticker'], inplace=True)
-		lookBackDateLT = currentDate + datetime.timedelta(days=-longHistoryDays)
-		lookBackDateST = currentDate + datetime.timedelta(days=-shortHistoryDays)
+		lookBackDateLT = currentDate + timedelta(days=-longHistoryDays)
+		lookBackDateST = currentDate + timedelta(days=-shortHistoryDays)
 		for i in range(len(self.priceData)):
 			ticker = self.priceData[i].stockTicker
 			longHistoricalValue = self.priceData[i].GetPrice(lookBackDateLT)
 			shortHistoricalValue = self.priceData[i].GetPrice(lookBackDateST)				
-			s = self.priceData[i].GetPriceSnapshot(currentDate + datetime.timedelta(days=-730))
+			s = self.priceData[i].GetPriceSnapshot(currentDate + timedelta(days=-730))
 			hp2Year = s.fiveDayAverage
-			s = self.priceData[i].GetPriceSnapshot(currentDate + datetime.timedelta(days=-365))
+			s = self.priceData[i].GetPriceSnapshot(currentDate + timedelta(days=-365))
 			hp1Year = s.fiveDayAverage
-			s = self.priceData[i].GetPriceSnapshot(currentDate + datetime.timedelta(days=-180))
+			s = self.priceData[i].GetPriceSnapshot(currentDate + timedelta(days=-180))
 			hp6mo = s.fiveDayAverage
-			s = self.priceData[i].GetPriceSnapshot(currentDate + datetime.timedelta(days=-90))
+			s = self.priceData[i].GetPriceSnapshot(currentDate + timedelta(days=-90))
 			hp3mo = s.fiveDayAverage
-			s = self.priceData[i].GetPriceSnapshot(currentDate + datetime.timedelta(days=-60))
+			s = self.priceData[i].GetPriceSnapshot(currentDate + timedelta(days=-60))
 			hp2mo = s.fiveDayAverage
-			s = self.priceData[i].GetPriceSnapshot(currentDate + datetime.timedelta(days=-30))
+			s = self.priceData[i].GetPriceSnapshot(currentDate + timedelta(days=-30))
 			hp1mo = s.fiveDayAverage
 			s = self.priceData[i].GetPriceSnapshot(currentDate)
 			#currentPrice = s.oneDayAverage	
