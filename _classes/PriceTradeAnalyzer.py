@@ -573,6 +573,7 @@ class PricingData:
 		return futureLow, futureHigh	
 
 	def GetDateFromIndex(self,indexLocation:int):
+		if indexLocation >= self.historicalPrices.shape[0]: indexLocation = self.historicalPrices.shape[0]-1
 		d = self.historicalPrices.index.values[indexLocation]
 		return DateFormatDatabase(str(d)[:10])
 
