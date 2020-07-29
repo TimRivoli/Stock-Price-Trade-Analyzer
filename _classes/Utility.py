@@ -1,5 +1,5 @@
-import os, configparser, ast, time, datetime
-from datetime import datetime, timedelta
+import os, configparser, ast
+from datetime import datetime, timedelta, date
 
 def ReadConfig(sectionName:str, valueName:str):
 	settingsFile = os.path.join(os.path.abspath(os.path.dirname(os.path.dirname(__file__)))) + '/config.ini'
@@ -45,24 +45,32 @@ def FileExists(f): return 	os.path.isfile(f)
 def GetMyDateFormat(): return '%m/%d/%Y'
 
 def ToDate(givenDate):
-#returns datetime, converting from string if necessary
+#returns date object, converting from string or datetime if necessary
 	if type(givenDate) == str:
 		if givenDate.find('-') > 0 :
-			r = datetime.strptime(givenDate, '%Y-%m-%d')
+			r = datetime.strptime(givenDate, '%Y-%m-%d').date()
 		else:
-			r = datetime.strptime(givenDate, GetMyDateFormat())
+			r = datetime.strptime(givenDate, GetMyDateFormat()).date()
+	elif isinstance(givenDate, datetime):
+		r = givenDate.date()
 	else:
 		r = givenDate
 	return r
 
 def ToDateTime(givenDate):
 	#returns datetime object
-	r = datetime.combine(ToDate(givenDate), datetime.min.time())
+	if type(givenDate) == str: givenDate = ToDate(givenDate)
+	if isinstance(givenDate, datetime):
+		r = givenDate
+	elif isinstance(givenDate, date): 
+		r = datetime.combine(givenDate, datetime.min.time())
+	else:
+		r = givenDate
 	return r
 
 def DateFormatDatabase(givenDate):
-	#returns datetime object
-	r = datetime.combine(ToDate(givenDate), datetime.min.time())
+	#returns datetime object, technically should be numpy.datetime64
+	r = ToDateTime(givenDate)
 	return r
 
 def GetDateTimeStamp():
