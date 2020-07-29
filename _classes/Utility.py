@@ -44,20 +44,6 @@ def FileExists(f): return 	os.path.isfile(f)
 
 def GetMyDateFormat(): return '%m/%d/%Y'
 
-def DateFormatDatabase(givenDate):
-	#returns datetime object
-	if type(givenDate) == str:
-		if givenDate.find('-') > 0 :
-			r = datetime.strptime(givenDate, '%Y-%m-%d')
-		else:
-			r = datetime.strptime(givenDate, GetMyDateFormat())
-	#elif type(givenDate) == datetime:
-		#r = datetime.fromtimestamp(givenDate).date() TCR may need to detect timestamp
-	#	r = givenDate.date()
-	else:
-		r = givenDate
-	return r
-
 def ToDate(givenDate):
 #returns datetime, converting from string if necessary
 	if type(givenDate) == str:
@@ -67,6 +53,16 @@ def ToDate(givenDate):
 			r = datetime.strptime(givenDate, GetMyDateFormat())
 	else:
 		r = givenDate
+	return r
+
+def ToDateTime(givenDate):
+	#returns datetime object
+	r = datetime.combine(ToDate(givenDate), datetime.min.time())
+	return r
+
+def DateFormatDatabase(givenDate):
+	#returns datetime object
+	r = datetime.combine(ToDate(givenDate), datetime.min.time())
 	return r
 
 def GetDateTimeStamp():
