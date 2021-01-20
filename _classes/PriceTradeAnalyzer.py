@@ -4,8 +4,9 @@ nonGUIEnvironment = False	#hosted environments often have no GUI so matplotlib w
 suspendPriceLoads = False
 
 #pip install any of these if they are missing
-import time, datetime, random, os, ssl, matplotlib
+import time, random, os, ssl, matplotlib
 import numpy as np, pandas as pd
+from math import floor
 from datetime import datetime, timedelta
 from pandas.tseries.offsets import BDay
 import urllib.request as webRequest
@@ -123,7 +124,7 @@ class PlotHelper:
 	def PlotDataFrameDateRange(self, df:pd.DataFrame, endDate:datetime=None, historyDays:int=90, title:str='', xlabel:str='', ylabel:str='', fileName:str = '', dpi:int=600):
 		if df.shape[0] > 10: 
 			if endDate==None: endDate=df.index[-1] 	#The latest date in the dataframe assuming ascending order				
-			endDate = DateFormatDatabase(endDate)
+			endDate = ToDateTime(endDate)
 			startDate = endDate - BDay(historyDays)
 			df = df[df.index >= startDate]
 			df = df[df.index <= endDate]
@@ -288,13 +289,13 @@ class PricingData:
 		return(self.pricesLoaded)
 
 	def TrimToDateRange(self,startDate:datetime, endDate:datetime):
-		startDate = ToDate(startDate)
+		startDate = ToDateTime(startDate)
 		startDate -= timedelta(days=45) #If we do not include earlier dates we can not calculate all the stats
-		endDate = ToDate(endDate)
+		endDate = ToDateTime(endDate)
 		self.historicalPrices = self.historicalPrices[(self.historicalPrices.index >= startDate) & (self.historicalPrices.index <= endDate)]
 		self.historyStartDate = self.historicalPrices.index.min()
 		self.historyEndDate = self.historicalPrices.index.max()
-		#print(self.stockTicker, 'trim to ', startDate, endDate, self.historyStartDate, self.historyEndDate, len(self.historicalPrices))
+		#rint(self.stockTicker, 'trim to ', startDate, endDate, self.historyStartDate, self.historyEndDate, len(self.historicalPrices))
 		
 	def ConvertToPercentages(self):
 		if self.pricesInPercentages:
@@ -561,7 +562,7 @@ class PricingData:
 		return True
 	
 	def PredictFuturePrice(self,fromDate:datetime, daysForward:int=1,method:int=1):
-		fromDate=DateFormatDatabase(fromDate)
+		fromDate=ToDateTime(fromDate)
 		low,high,price,momentum,deviation = self.historicalPrices.loc[fromDate, ['Low','High','Average', '3DayMomentum','15DavDeviation']]
 		#print(p,m,s)
 		if method==0:
@@ -578,7 +579,7 @@ class PricingData:
 		return d
 
 	def GetPrice(self,forDate:datetime, verbose:bool=False):
-		forDate = DateFormatDatabase(forDate)
+		forDate = ToDateTime(forDate)
 		try:
 			i = self.historicalPrices.index.get_loc(forDate, method='ffill')
 			forDate = self.historicalPrices.index[i]
@@ -589,15 +590,15 @@ class PricingData:
 		return r
 		
 	def GetPriceSnapshot(self,forDate:datetime, verbose:bool=False):
-		forDate = DateFormatDatabase(forDate)
+		forDate = ToDateTime(forDate)
 		sn = PriceSnapshot()
 		sn.ticker = self.stockTicker
+		sn.high, sn.low, sn.open,sn.close = 0,0,0,0
 		try:
 			i = self.historicalPrices.index.get_loc(forDate, method='ffill')
 			forDate = self.historicalPrices.index[i]
 		except:
 			i = 0
-			sn.high, sn.low, sn.open,sn.close = 0,0,0,0
 			if verbose: print('Unable to get price snapshot for ' + self.stockTicker + ' on ' + str(forDate))	
 		sn.snapShotDate = forDate 
 		if i > 0:
@@ -642,7 +643,7 @@ class PricingData:
 		if includePredictions:
 			if not self.predictionsLoaded: self.PredictPrices()
 			if endDate == None: endDate = self.pricePredictions.index.max()
-			endDate = DateFormatDatabase(endDate)
+			endDate = ToDateTime(endDate)
 			startDate = endDate - BDay(daysToGraph) 
 			fieldSet = ['High','Low', 'channelHigh', 'channelLow', 'estHigh','estLow', 'shortEMA','longEMA']
 			if trimHistoricalPredictions: 
@@ -654,7 +655,7 @@ class PricingData:
 			if daysToGraph > 1800:	fieldSet = ['Average', 'estHigh','estLow']
 		else:
 			if endDate == None: endDate = self.historyEndDate
-			endDate = DateFormatDatabase(endDate)
+			endDate = ToDateTime(endDate)
 			startDate = endDate - BDay(daysToGraph) 
 			fieldSet = ['High','Low', 'channelHigh', 'channelLow','shortEMA','longEMA']
 			if daysToGraph > 1800: fieldSet = ['Average']
@@ -744,7 +745,7 @@ class Tranche: #interface for handling actions on a chunk of funds
 			self.marketOrder = marketOrder
 			self.dateBuyOrderPlaced = datePlaced
 			self.buyOrderPrice=price
-			self.units = round(self.size/price)
+			self.units = floor(self.size/price)
 			self.purchased = False
 			self.expireAfterDays=expireAfterDays
 			r=(price*self.units)
@@ -872,7 +873,7 @@ class Portfolio:
 		self._cash = totalFunds
 		self._fundsCommittedToOrders = 0
 		self._verbose = verbose
-		self._tranchCount = round(totalFunds/tranchSize)
+		self._tranchCount = floor(totalFunds/tranchSize)
 		self._tranches = [Tranche(tranchSize) for x in range(self._tranchCount)]
 		self.dailyValue = pd.DataFrame([[startDate,totalFunds,0,totalFunds]], columns=list(['Date','CashValue','AssetValue','TotalValue']))
 		self.dailyValue.set_index(['Date'], inplace=True)
@@ -1122,7 +1123,7 @@ class Portfolio:
 							actualCost = t.units*price
 							if self._verbose: print(t.ticker, " purchased for ",price)
 							if (fundsavailable - actualCost - self._commisionCost) < 25:	#insufficient funds
-								unitsCanAfford = max(round((fundsavailable - self._commisionCost)/price)-1, 0)
+								unitsCanAfford = max(floor((fundsavailable - self._commisionCost)/price)-1, 0)
 								if self._verbose:
 									print(' Ajusting units on market order for ' + ticker + ' Price: ', price, ' Requested Units: ', t.units,  ' Can afford:', unitsCanAfford)
 									print(' Cash: ', self._cash, ' Committed Funds: ', self._fundsCommittedToOrders, ' Available: ', fundsavailable)
@@ -1206,7 +1207,7 @@ class TradingModel(Portfolio):
 	def __init__(self, modelName:str, startingTicker:str, startDate:datetime, durationInYears:int, totalFunds:int, tranchSize:int=1000,verbose:bool=False, trackHistory:bool=True):
 		#pricesAsPercentages:bool=False would be good but often results in Nan values
 		#expects date format in local format, from there everything will be converted to database format				
-		startDate = DateFormatDatabase(startDate)
+		startDate = ToDateTime(startDate)
 		endDate = startDate + timedelta(days=365 * durationInYears)
 		self.modelReady = False
 		CreateFolder(self._dataFolderTradeModel)
@@ -1216,7 +1217,10 @@ class TradingModel(Portfolio):
 			p.CalculateStats()
 			p.TrimToDateRange(startDate - timedelta(days=60), endDate + timedelta(days=10))
 			self.priceHistory = [p]
-			#idx = df.index[df.index.get_loc(dt, method='nearest')]  TCR: This would be better
+			i = p.historicalPrices.index.get_loc(startDate, method='nearest')
+			startDate = p.historicalPrices.index[i]
+			i = p.historicalPrices.index.get_loc(endDate, method='nearest')
+			endDate = p.historicalPrices.index[i]
 			if not PandaIsInIndex(p.historicalPrices, startDate): startDate += timedelta(days=1)
 			if not PandaIsInIndex(p.historicalPrices, startDate): startDate += timedelta(days=1)
 			if not PandaIsInIndex(p.historicalPrices, startDate): startDate += timedelta(days=1)
@@ -1379,13 +1383,13 @@ class TradingModel(Portfolio):
 				loc = self.priceHistory[0].historicalPrices.index.get_loc(self.currentDate) + 1
 				if loc < self.priceHistory[0].historicalPrices.shape[0]:
 					nextDay = self.priceHistory[0].historicalPrices.index.values[loc]
-					self.currentDate = DateFormatDatabase(str(nextDay)[:10])
+					self.currentDate = ToDateTime(str(nextDay)[:10])
 				else:
 					print('The end: ' + str(self.modelEndDate))
 					self.currentDate=self.modelEndDate		
 			except:
 				#print(self.priceHistory[0].historicalPrices)
-				print('Unable to find next date in index from ', self.currentDate)
+				print('Unable to find next date in index from ', self.currentDate,  self.priceHistory[0].historicalPrices.stockTicker)
 				self.currentDate += timedelta(days=1)
 	
 	def SetCustomValues(self, v1, v2):
@@ -1416,7 +1420,7 @@ class ForcastModel():	#used to forecast the effect of a series of trade actions,
 			self.savedModel.dailyValue.set_index(['Date'], inplace=True)
 
 			if len(self.savedModel._tranches) != len(self.mirroredModel._tranches):
-				print(len(self.savedModel._tranches), len(self.mirroredModel._tranches))
+				#print(len(self.savedModel._tranches), len(self.mirroredModel._tranches))
 				tranchSize = self.mirroredModel._tranches[0].size
 				tc = len(self.mirroredModel._tranches)
 				while len(self.savedModel._tranches) < tc:
@@ -1450,7 +1454,7 @@ class ForcastModel():	#used to forecast the effect of a series of trade actions,
 		self.tm.dailyValue = pd.DataFrame([[self.savedModel.currentDate,c,a,c+a]], columns=list(['Date','CashValue','AssetValue','TotalValue']))
 		self.tm.dailyValue.set_index(['Date'], inplace=True)
 		if len(self.tm._tranches) != len(self.savedModel._tranches):
-			print(len(self.tm._tranches), len(self.savedModel._tranches))
+			#print(len(self.tm._tranches), len(self.savedModel._tranches))
 			tranchSize = self.savedModel._tranches[0].size
 			tc = len(self.savedModel._tranches)
 			while len(self.tm._tranches) < tc:
@@ -1572,8 +1576,10 @@ class StockPicker():
 				pointValue = round((10*pc1yr) + (10*pc6mo) + (10*pc3mo) + (10*pc1mo) - (3-10*s.monthlyLossStd))
 				candidates.loc[ticker] = [hp2Year,hp1Year,hp6mo,hp3mo,hp2mo,hp1mo,currentPrice,(currentPrice/hp2Year)-1,(currentPrice/hp1Year)-1,(currentPrice/hp6mo)-1,(currentPrice/hp3mo)-1,(currentPrice/hp2mo)-1,(currentPrice/hp1mo)-1,s.dailyGain, s.monthlyGain, s.monthlyLossStd,longHistoricalValue,shortHistoricalValue,percentageChangeLongTerm, percentageChangeShortTerm, pointValue, Comments, self.priceData[i].historyEndDate]
 			else:
-				if currentPrice > 0 and verbose or True: 
-					if len(self.priceData[i].historicalPrices) > 0: print('Price load failed for ticker: ' + ticker, currentDate, self.priceData[i].historyStartDate, self.priceData[i].historyEndDate, hp2Year,hp1Year,hp6mo,hp2mo,hp1mo)
+				if currentPrice > 0 and verbose or True:
+					if len(self.priceData[i].historicalPrices) > 0:
+						print('Price load failed for ticker: ' + ticker, 'requested, history start, history end', currentDate, self.priceData[i].historyStartDate, self.priceData[i].historyEndDate, hp2Year,hp1Year,hp6mo,hp2mo,hp1mo)
+
 		if filterOption ==1: #high performer, recently at a discount or slowing down but not negative
 			filter = (candidates['percentageChangeLongTerm'] > candidates['percentageChangeShortTerm']) & (candidates['percentageChangeLongTerm'] > minDailyGain) & (candidates['percentageChangeShortTerm'] > 0) 
 			candidates.sort_values('percentageChangeLongTerm', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last') #Most critical factor, sorting by largest long term gain

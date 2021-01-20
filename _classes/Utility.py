@@ -1,3 +1,4 @@
+import numpy, pandas
 import os, configparser, ast
 from datetime import datetime, timedelta, date
 
@@ -53,6 +54,8 @@ def ToDate(givenDate):
 			r = datetime.strptime(givenDate, GetMyDateFormat()).date()
 	elif isinstance(givenDate, datetime):
 		r = givenDate.date()
+	elif isinstance(givenDate, numpy.datetime64):
+		r = pandas.Timestamp(givenDate).date()
 	else:
 		r = givenDate
 	return r
@@ -62,6 +65,8 @@ def ToDateTime(givenDate):
 	if type(givenDate) == str: givenDate = ToDate(givenDate)
 	if isinstance(givenDate, datetime):
 		r = givenDate
+	elif isinstance(givenDate, numpy.datetime64):
+		r = pandas.Timestamp(givenDate).date()
 	elif isinstance(givenDate, date): 
 		r = datetime.combine(givenDate, datetime.min.time())
 	else:
