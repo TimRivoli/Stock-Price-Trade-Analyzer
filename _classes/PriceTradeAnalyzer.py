@@ -1,24 +1,45 @@
+#PriceSnapshot, PricingData, Portfolio, TradingModel, ForcastModel, StockPicker, and PTADatabase are the intended exportable classes
+#user input dates are expected to be in local format
 #These settings can be configured in a global config.ini in the program root directory under [Settings]
-useWebProxyServer = False	#If you need a web proxy to browse the web
-nonGUIEnvironment = False	#hosted environments often have no GUI so matplotlib won't be outputting to display
-suspendPriceLoads = False
+#There are also optional settings for using a database
+suspendPriceLoads = True	#Use to prevent over burdening of provider with requests while testing
+globalUseDatabase=False 	#The global default option for using a database instead of CSV files, to enable populate database settings in the .ini file
+displayPythonWarnings = False #Sometimes these are important, sometimes just annoying
+useWebProxyServer = False	#Turn on and populate proxy settings if you need a web proxy to browse the web
+nonGUIEnvironment = False	#Turn on for hosted environments often have no GUI to prevent matplotlib load fail
 
 #pip install any of these if they are missing
-import time, random, os, ssl, matplotlib
+import time, random, os, ssl, matplotlib, warnings, requests, pyodbc
 import numpy as np, pandas as pd
+import urllib.error, urllib.request as webRequest
 from math import floor
 from datetime import datetime, timedelta
 from pandas.tseries.offsets import BDay
-import urllib.request as webRequest
+from sqlalchemy import create_engine
 from _classes.Utility import *
 
-#pricingData and TradingModel are the two intended exportable classes
-#user input dates are expected to be in local format, after that they should be in database format
 #-------------------------------------------- Global settings -----------------------------------------------
 nonGUIEnvironment = ReadConfigBool('Settings', 'nonGUIEnvironment')
 if nonGUIEnvironment: matplotlib.use('agg',warn=False, force=True)
 from matplotlib import pyplot as plt
 import matplotlib.dates as mdates
+if not displayPythonWarnings: warnings.filterwarnings("ignore")
+BaseFieldList = ['Open','Close','High','Low']
+DatabaseServer = ReadConfigString('Database', 'DatabaseServer')
+DatabaseName = ReadConfigString('Database', 'DatabaseName')
+if DatabaseServer != '' and DatabaseName !='' and DatabaseServer != None and DatabaseName !=None:
+	globalUseDatabase=True
+	UseSQLDriver = ReadConfigBool('Database', 'UseSQLDriver')
+	DatabaseUsername = ReadConfigString('Database', 'DatabaseUsername')
+	DatabasePassword = ReadConfigString('Database', 'DatabasePassword')
+	DatabaseConstring = 'DRIVER={ODBC Driver 17 for SQL Server};SERVER=' + DatabaseServer + ';DATABASE=' + DatabaseName 
+	if UseSQLDriver:
+		DatabaseConstring = 'DRIVER={SQL Server Native Client 11.0};SERVER=' + DatabaseServer + ';DATABASE=' + DatabaseName 
+	if DatabaseUsername !="" and DatabaseUsername != None:
+		DatabaseConstring += ';UID=' + DatabaseUsername + ';PWD=' + DatabasePassword
+	else:
+		DatabaseConstring += ';Trusted_Connection=yes;' #';Integrated Security=true;'
+	print(DatabaseConstring)
 currentProxyServer = None
 proxyList = ['173.232.228.25:8080']
 useWebProxyServer = ReadConfigBool('Settings', 'useWebProxyServer')
@@ -26,7 +47,6 @@ if useWebProxyServer:
 	x =  ReadConfigList('Settings', 'proxyList')
 	if not x == None: proxyList = x		
 
-BaseFieldList = ['Open','Close','High','Low']
 #-------------------------------------------- General Utilities -----------------------------------------------
 def PandaIsInIndex(df:pd.DataFrame, value):
 	try:
@@ -93,29 +113,90 @@ def PlotDataFrame(df:pd.DataFrame, title:str, xlabel:str, ylabel:str, adjustScal
 		plt.close('all')
 
 def GetProxiedOpener():
-	testURL = 'https://stooq.com'
-	userName, password = 'mUser', 'SecureAccess'
+	#testURL = 'https://stooq.com'
+	testURL = 'https://www.google.com'
+	#userName, password = 'mUser', 'SecureAccess'
+	userName, password = '', ''
+	
 	context = ssl._create_unverified_context()
-	handler = webRequest.HTTPSHandler(context=context)
+	#context2 = ssl.create_default_context()
+	#context2.check_hostname = False
+	#context2.verify_mode = ssl.CERT_NONE
+	https_handler = webRequest.HTTPSHandler(context=context)
 	i = -1
 	functioning = False
 	global currentProxyServer
 	while not functioning and i < len(proxyList):
 		if i >=0 or currentProxyServer==None: currentProxyServer = proxyList[i]
-		proxy = webRequest.ProxyHandler({'https': r'http://' + userName + ':' + password + '@' + currentProxyServer})
-		auth = webRequest.HTTPBasicAuthHandler()
-		opener = webRequest.build_opener(proxy, auth, handler) 
+		if userName != '':
+			proxySet = {'http':userName + ':' + password + '@' + currentProxyServer, 'https':userName + ':' + password + '@' + currentProxyServer}
+		else:
+			proxySet = {'http':currentProxyServer, 'https':currentProxyServer}
+		proxy_handler = webRequest.ProxyHandler(proxySet)
+		authHandler = webRequest.HTTPBasicAuthHandler()
+		#opener = webRequest.build_opener(proxy_handler, https_handler, authHandler) 		
+		opener = webRequest.build_opener(proxy_handler) 		
 		opener.addheaders = [('User-agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_4) AppleWebKit/603.1.30 (KHTML, like Gecko) Version/10.1 Safari/603.1.30')]
 		#opener.addheaders = [('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/12.1.1 Safari/605.1.15')]	
 		#opener.addheaders = [('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/64.0.3282.140 Safari/537.36 Edge/18.17763')]
+		#opener.addheaders = [('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.5112.102 Safari/537.36 Edg/104.0.1293.63')]
 		try:
+			print(' Testing Proxy ' + currentProxyServer + '...')
+			#response = webRequest.urlopen(req)
+			requests.get(testURL, proxies=proxies)
 			conn = opener.open(testURL)
-			print('Proxy ' + currentProxyServer + ' is functioning')
+#			r = requests.get(testURL, proxies=proxySet)
+			print(' Proxy ' + currentProxyServer + ' is functioning')
 			functioning = True
-		except:
+		except urllib.error.URLError as e:
 			print('Proxy ' + currentProxyServer + ' is not responding')
+			print(e.reason)
+			conn.close()
 		i+=1
+	assert(False)
 	return opener
+
+def GetWorkingProxy():
+	#testURL = 'https://stooq.com'
+	testURL = 'https://www.google.com'
+	#userName, password = 'mUser', 'SecureAccess'
+	userName, password = '', ''
+	i = -1
+	functioning = False
+	headerSet ={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.5112.102 Safari/537.36 Edg/104.0.1293.63'}
+	headerSet ={'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/12.1.1 Safari/605.1.15'}	
+	global currentProxyServer
+	while not functioning and i < len(proxyList):
+		if i >=0 or currentProxyServer==None: currentProxyServer = proxyList[i]
+		if userName != '':
+			proxySet = {'https': 'http://' + userName + ':' + password + '@' + currentProxyServer}
+		else:
+			proxySet = {'http':currentProxyServer, 'https': currentProxyServer}
+			#proxySet = {'https': currentProxyServer}
+		try:
+			print(' Testing Proxy ' + currentProxyServer + '...')
+			requests.get(testURL, headers=headerSet, proxies=proxySet)
+			requests.raise_for_status()
+			print(' Proxy ' + currentProxyServer + ' is functioning')
+			functioning = True
+		except requests.exceptions.HTTPError as errh:
+			print (" Http Error:",errh)
+			print(' Proxy ' + currentProxyServer + ' is not responding')
+			proxySet = {}
+		except requests.exceptions.ConnectionError as errc:
+			print (" Error Connecting:",errc)
+			print(' Proxy ' + currentProxyServer + ' is not responding')
+			proxySet = {}
+		except requests.exceptions.Timeout as errt:
+			print (" Timeout Error:",errt)
+			print(' Proxy ' + currentProxyServer + ' is not responding')
+			proxySet = {}
+		except requests.exceptions.RequestException as err:
+			print (" ", err)		
+			print(' Proxy ' + currentProxyServer + ' is not responding')
+			proxySet = {}
+		i+=1
+	return proxySet, headerSet
 
 #-------------------------------------------- Classes -----------------------------------------------
 class PlotHelper:
@@ -174,7 +255,7 @@ class PricingData:
 	_dataFolderCharts = 'data/charts/'
 	_dataFolderDailyPicks = 'data/dailypicks/'
 	
-	def __init__(self, ticker:str, dataFolderRoot:str=''):
+	def __init__(self, ticker:str, dataFolderRoot:str='', useDatabase:bool=None):
 		self.stockTicker = ticker
 		if not dataFolderRoot =='':
 			if CreateFolder(dataFolderRoot):
@@ -193,6 +274,15 @@ class PricingData:
 		self.pricePredictions = None
 		self.historyStartDate = None
 		self.historyEndDate = None
+		if useDatabase==None and globalUseDatabase:
+			useDatabase = globalUseDatabase
+			self.database = PTADatabase()
+			if not self.database.Open():
+				print("Default option to use database failed, database connection failed.")
+				assert(False)
+		elif useDatabase:
+			self.database = PTADatabase()
+		self.useDatabase = useDatabase	
 
 	def __del__(self):
 		self.pricesLoaded = False
@@ -211,29 +301,40 @@ class PricingData:
 		
 	def _DownloadPriceData(self,verbose:bool=False):
 		url = "https://stooq.com/q/d/l/?i=d&s=" + self.stockTicker + '.us'
-		if self.stockTicker[0] == '^': url = "https://stooq.com/q/d/l/?i=d&s=" + self.stockTicker 
+		if self.stockTicker[0] == '^': 
+			url = "https://stooq.com/q/d/l/?i=d&s=" + self.stockTicker 
+		elif self.stockTicker == '.INX': 
+			url = "https://stooq.com/q/d/l/?i=d&s=^SPX" #This isn't available anymore
+		elif self.stockTicker == '.DJI': 
+			url = "https://stooq.com/q/d/l/?i=d&s=^DJI"
+		elif self.stockTicker == '.IXIC': 
+			url = "https://stooq.com/q/d/l/?i=d&s=^ndq"
+		elif "." in self.stockTicker:
+			url = "https://stooq.com/q/d/l/?i=d&s=" + self.stockTicker.replace(".", "-") + '.us'
 		filePath = self._dataFolderhistoricalPrices + self.stockTicker + '.csv'
 		s1 = ''
 		if CreateFolder(self._dataFolderhistoricalPrices): filePath = self._dataFolderhistoricalPrices + self.stockTicker + '.csv'
 		try:
 			if useWebProxyServer:
-				opener = GetProxiedOpener()
-				openUrl = opener.open(url)
+				#opener = GetProxiedOpener()
+				#openUrl = opener.open(url)
+				proxySet, headerSet = GetWorkingProxy()
+				openUrl = requests.get(url, headers=headerSet, proxy=proxySet)
 			else:
-				openUrl = webRequest.urlopen(url) 
+				openUrl = webRequest.urlopen(url, timeout=45) 
 			r = openUrl.read()
 			openUrl.close()
 			s1 = r.decode()
 			s1 = s1.replace(chr(13),'')
 		except Exception as e:
-			if verbose: print('Web connection error: ', e)
+			if verbose: print(' Web connection error: ', e)
 		if len(s1) < 1024:
 			if verbose: print(' No data found online for ticker ' + self.stockTicker, url)
 			if useWebProxyServer:
 				global currentProxyServer
 				global proxyList
 				if not currentProxyServer==None and len(proxyList) > 3: 
-					if verbose: print( 'Removing proxy: ', currentProxyServer)
+					if verbose: print( ' Removing proxy: ', currentProxyServer)
 					proxyList.remove(currentProxyServer)
 					currentProxyServer = None
 		else:
@@ -244,29 +345,40 @@ class PricingData:
 
 	def _LoadHistory(self, refreshPrices:bool=False,verbose:bool=False):
 		self.pricesLoaded = False
-		filePath = self._dataFolderhistoricalPrices + self.stockTicker + '.csv'
-		if not os.path.isfile(filePath) or refreshPrices: self._DownloadPriceData(verbose=verbose)
-		if os.path.isfile(filePath):
-			df = pd.read_csv(filePath, index_col=0, parse_dates=True, na_values=['nan'])
-			if (df.shape[0] > 0) and all([item in df.columns for item in BaseFieldList]): #Rows more than zero and base fields all exist
-				df = df[BaseFieldList]
-				df['Average'] = df.loc[:,BaseFieldList].mean(axis=1) #select those rows, calculate the mean value
-				if (df['Open'] < df['Low']).any() or (df['Close'] < df['Low']).any() or (df['High'] < df['Low']).any() or (df['Open'] > df['High']).any() or (df['Close'] > df['High']).any(): 
-					if verbose:
-						print(self.stockTicker)
-						print(df.loc[df['Low'] > df['High']])
-						print(' Data validation error, Low > High.  Dropping values..')
-					df = df.loc[df['Low'] <= df['High']]
-					df = df.loc[df['Low'] <= df['Open']]
-					df = df.loc[df['Low'] <= df['Close']]
-					df = df.loc[df['High'] >= df['Open']]
-					df = df.loc[df['High'] >= df['Close']]
-				self.historicalPrices = df
-				self.historyStartDate = self.historicalPrices.index.min()
-				self.historyEndDate = self.historicalPrices.index.max()
-				self.pricesLoaded = True
+		if self.useDatabase:
+			if self.database.Open():
+				df = self.database.DataFrameFromSQL("SELECT [Date], [Open], [High], [Low], [Close], [Volume] FROM PricesDaily WHERE ticker='" + self.stockTicker + "' ORDER BY Date", indexName='Date')
+				self.pricesLoaded = len(df) > 1
+				self.database.Close()
+		else:
+			filePath = self._dataFolderhistoricalPrices + self.stockTicker + '.csv'
+			if not suspendPriceLoads and (not os.path.isfile(filePath) or refreshPrices): self._DownloadPriceData(verbose=verbose)
+			if os.path.isfile(filePath):
+				df = pd.read_csv(filePath, index_col=0, parse_dates=True, na_values=['nan'])
+				if (df.shape[0] > 0) and all([item in df.columns for item in BaseFieldList]): #Rows more than zero and base fields all exist
+					df = df[BaseFieldList]
+				self.pricesLoaded = len(df) > 1
+		if self.pricesLoaded:
+			df['Average'] = df.loc[:,BaseFieldList].mean(axis=1) #select those rows, calculate the mean value
+			if (df['Open'] < df['Low']).any() or (df['Close'] < df['Low']).any() or (df['High'] < df['Low']).any() or (df['Open'] > df['High']).any() or (df['Close'] > df['High']).any(): 
+				if verbose and False:
+					print(self.stockTicker)
+					print(df.loc[df['Low'] > df['High']])
+					print(' Data validation error, Low > High.  Dropping values..')
+				df = df.loc[df['Low'] <= df['High']]
+				df = df.loc[df['Low'] <= df['Open']]
+				df = df.loc[df['Low'] <= df['Close']]
+				df = df.loc[df['High'] >= df['Open']]
+				df = df.loc[df['High'] >= df['Close']]
+			self.historicalPrices = df
+			self.historyStartDate = self.historicalPrices.index.min()
+			self.historyEndDate = self.historicalPrices.index.max()
+			self.pricesLoaded = True
 		if not self.pricesLoaded:
 			print(' No data found for ' + self.stockTicker)
+			#badTickerLog = open(self._dataFolderhistoricalPrices + "badTickerLog.txt","a")
+			#badTickerLog.write("'" + self.stockTicker + "',\n")
+			#badTickerLog.close() 
 		return self.pricesLoaded 
 		
 	def LoadHistory(self, requestedStartDate:datetime=None, requestedEndDate:datetime=None, verbose:bool=False):
@@ -274,15 +386,20 @@ class PricingData:
 		if self.pricesLoaded:
 			requestNewData = False
 			filePath = self._dataFolderhistoricalPrices + self.stockTicker + '.csv'
-			lastUpdated = datetime.fromtimestamp(os.path.getmtime(filePath))
+			lastUpdated = datetime.now() - timedelta(days=10950)
+			if os.path.isfile(filePath): lastUpdated = datetime.fromtimestamp(os.path.getmtime(filePath))
 			if DateDiffHours(lastUpdated, datetime.now()) > 12 and not suspendPriceLoads:	#Limit how many times per hour we refresh the data to prevent abusing the source
-				if not(requestedStartDate==None): requestNewData = (requestedStartDate < self.historyStartDate)
 				if not(requestedEndDate==None): requestNewData = (requestNewData or (self.historyEndDate < requestedEndDate))
-				if requestNewData and verbose: print(' Requesting new data for ' + self.stockTicker + ' (requestedStart, historyStart, historyEnd, requestedEnd)', requestedStartDate, self.historyStartDate, self.historyEndDate, requestedEndDate)
 				if (requestedStartDate==None and requestedEndDate==None):
 					requestNewData = (DateDiffDays(startDate=lastUpdated, endDate=datetime.now()) > 1)
-				if verbose: print(' Requesting new data ' + self.stockTicker + ' reason stale data ', lastUpdated)
-			if requestNewData: self._LoadHistory(refreshPrices=True, verbose=verbose)
+			if requestNewData: 
+				if verbose: print(' Requesting new data for ' + self.stockTicker + ' (requestedStart, historyStart, historyEnd, requestedEnd)', requestedStartDate, self.historyStartDate, self.historyEndDate, requestedEndDate)
+				self._LoadHistory(refreshPrices=True, verbose=verbose)
+				refreshSuccessfull = self.pricesLoaded
+				if not(requestedStartDate==None): refreshSuccessfull = (requestedStartDate >= self.historyStartDate)
+				if not(requestedEndDate==None): refreshSuccessfull = (refreshSuccessfull and (self.historyEndDate >= requestedEndDate))
+				self.pricesLoaded = refreshSuccessfull
+				if not(refreshSuccessfull) and True: print(' Data refresh failed for requested date range (requestedStart, historyStart, historyEnd, requestedEnd)' + self.stockTicker + ' (requestedStart, historyStart, historyEnd, requestedEnd)', requestedStartDate, self.historyStartDate, self.historyEndDate, requestedEndDate)
 			if not(requestedStartDate==None): 
 				if (requestedEndDate==None): requestedEndDate = self.historyEndDate
 				self.TrimToDateRange(requestedStartDate, requestedEndDate)
@@ -295,7 +412,7 @@ class PricingData:
 		self.historicalPrices = self.historicalPrices[(self.historicalPrices.index >= startDate) & (self.historicalPrices.index <= endDate)]
 		self.historyStartDate = self.historicalPrices.index.min()
 		self.historyEndDate = self.historicalPrices.index.max()
-		#rint(self.stockTicker, 'trim to ', startDate, endDate, self.historyStartDate, self.historyEndDate, len(self.historicalPrices))
+		#print(self.stockTicker, 'trim to ', startDate, endDate, self.historyStartDate, self.historyEndDate, len(self.historicalPrices))
 		
 	def ConvertToPercentages(self):
 		if self.pricesInPercentages:
@@ -383,7 +500,7 @@ class PricingData:
 		self.historicalPrices['3DayApc'] = self.historicalPrices['1DayApc'].rolling(window=3, center=False).mean()
 		self.historicalPrices['dailyGain'] = (self.historicalPrices['5DayAv'] / self.historicalPrices['5DayAv'].shift(1))-1
 		self.historicalPrices['monthlyGain'] = (self.historicalPrices['5DayAv'] / self.historicalPrices['5DayAv'].shift(20))-1
-		#self.historicalPrices['monthlyGainStd'] = self.historicalPrices['monthlyGain'].rolling(window=253, center=False).std()
+		self.historicalPrices['monthlyGain'] = self.historicalPrices['monthlyGain'].replace(np.NaN, 0) #test not sure what getting NaN here
 		self.historicalPrices['monthlyLosses'] = self.historicalPrices['monthlyGain']
 		self.historicalPrices['monthlyLosses'].loc[self.historicalPrices['monthlyLosses'] > 0] = 0 #zero out the positives
 		self.historicalPrices['monthlyLossStd'] = self.historicalPrices['monthlyLosses'].rolling(window=253, center=False).std()	#Stdev of negative values, these are the negative monthly price drops in the past year
@@ -401,14 +518,25 @@ class PricingData:
 	def MonthyReturnVolatility(self): return self.historicalPrices['MonthlyGain'].rolling(window=253, center=False).std() #of the past year
 
 	def SaveStatsToFile(self, includePredictions:bool=False, verbose:bool=False):
+		fileName = self.stockTicker + '_stats.csv'
+		tableName = 'PricesWithStats'
+		r = self.historicalPrices
 		if includePredictions:
-			filePath = self._dataFolderhistoricalPrices + self.stockTicker + '_stats_predictions.csv'
-			r = self.historicalPrices.join(self.pricePredictions, how='outer') #, rsuffix='_Predicted'
+			fileName = self.stockTicker + '_stats_predictions.csv'
+			tableName = 'PricesWithPredictions'
+			r = self.historicalPrices.join(self.pricePredictions, how='outer') #, rsuffix='_Predicted'		
+
+		if self.useDatabase:
+			if self.database.Open():
+				self.database.ExecSQL("if OBJECT_ID('" + tableName + "') is not null Delete FROM " + tableName + " WHERE Ticker='" + self.stockTicker + "'")
+				r['Ticker'] = self.stockTicker
+				self.database.DataFrameToSQL(r, tableName)
+				self.database.Close()
+				print('Statistics saved database')
+		else:			
+			filePath = self._dataFolderhistoricalPrices + fileName
 			r.to_csv(filePath)
-		else:
-			filePath = self._dataFolderhistoricalPrices + self.stockTicker + '_stats.csv'
-			self.historicalPrices.to_csv(filePath)
-		print('Statistics saved to: ' + filePath)
+			print('Statistics saved to: ' + filePath)
 		
 	def PredictPrices(self, method:int=1, daysIntoFuture:int=1, NNTrainingEpochs:int=0):
 		#Predict current prices from previous days info
@@ -509,11 +637,11 @@ class PricingData:
 				temporarilyNormalize = True
 				self.NormalizePrices()
 			model = StockPredictionNN(baseModelName='Prices', UseLSTM=True)
-			FieldList = None
+			FieldList = ['Average']
 			#FieldList = BaseFieldList
 			model.LoadSource(sourceDF=self.historicalPrices, FieldList=FieldList, window_size=1)
 			model.LoadTarget(targetDF=None, prediction_target_days=daysIntoFuture)
-			model.MakeBatches(batch_size=64, train_test_split=.93)
+			model.MakeBatches(batch_size=32, train_test_split=.93)
 			model.BuildModel()
 			if (not model.Load() and NNTrainingEpochs == 0): NNTrainingEpochs = 250
 			if (NNTrainingEpochs > 0): 
@@ -538,7 +666,7 @@ class PricingData:
 			FieldList = BaseFieldList
 			model.LoadSource(sourceDF=self.historicalPrices, FieldList=FieldList, window_size=daysIntoFuture*16)
 			model.LoadTarget(targetDF=None, prediction_target_days=daysIntoFuture)
-			model.MakeBatches(batch_size=64, train_test_split=.93)
+			model.MakeBatches(batch_size=32, train_test_split=.93)
 			model.BuildModel()
 			if (not model.Load() and NNTrainingEpochs == 0): NNTrainingEpochs = 250
 			if (NNTrainingEpochs > 0): 
@@ -581,11 +709,13 @@ class PricingData:
 	def GetPrice(self,forDate:datetime, verbose:bool=False):
 		forDate = ToDateTime(forDate)
 		try:
-			i = self.historicalPrices.index.get_loc(forDate, method='ffill')
+			i = self.historicalPrices.index.get_loc(forDate, method='ffill') #ffill will effectively look backwards for the first instance
 			forDate = self.historicalPrices.index[i]
 			r = self.historicalPrices.loc[forDate]['Average']
 		except:
-			if verbose: print('Unable to get price for ' + self.stockTicker + ' on ' + str(forDate))	
+			if verbose or True: 
+				print(' Unable to get price for ' + self.stockTicker + ' on ' + str(forDate))	
+				print(' ', self.historyStartDate, self.historyEndDate)
 			r = 0
 		return r
 		
@@ -593,7 +723,7 @@ class PricingData:
 		forDate = ToDateTime(forDate)
 		sn = PriceSnapshot()
 		sn.ticker = self.stockTicker
-		sn.high, sn.low, sn.open,sn.close = 0,0,0,0
+		sn.high, sn.low, sn.open, sn.close = 0,0,0,0
 		try:
 			i = self.historicalPrices.index.get_loc(forDate, method='ffill')
 			forDate = self.historicalPrices.index[i]
@@ -605,7 +735,7 @@ class PricingData:
 			if not self.statsLoaded:
 				sn.high,sn.low,sn.open,sn.close,sn.oneDayAverage =self.historicalPrices.loc[forDate,['High','Low','Open','Close','Average']]
 			else:
-				sn.high,sn.low,sn.open,sn.close,sn.oneDayAverage,sn.twoDayAverage,sn.fiveDayAverage,sn.shortEMA,sn.shortEMASlope,sn.longEMA,sn.longEMASlope,sn.channelHigh,sn.channelLow,sn.oneDayApc,sn.oneDayDeviation,sn.fiveDayDeviation,sn.fifteenDayDeviation,sn.dailyGain,sn.monthlyGain,sn.monthlyLossStd =self.historicalPrices.loc[forDate,['High','Low','Open','Close','Average','2DayAv','5DayAv','shortEMA','shortEMASlope','longEMA','longEMASlope','channelHigh', 'channelLow','1DayApc','1DayDeviation','5DavDeviation','15DavDeviation','dailyGain','monthlyGain','monthlyLossStd']]
+				sn.high,sn.low,sn.open,sn.close,sn.oneDayAverage,sn.twoDayAverage,sn.fiveDayAverage,sn.shortEMA,sn.shortEMASlope,sn.longEMA,sn.longEMASlope,sn.channelHigh,sn.channelLow,sn.oneDayApc,sn.oneDayDeviation,sn.fiveDayDeviation,sn.fifteenDayDeviation,sn.dailyGain,sn.monthlyGain,sn.monthlyLossStd = self.historicalPrices.loc[forDate,['High','Low','Open','Close','Average','2DayAv','5DayAv','shortEMA','shortEMASlope','longEMA','longEMASlope','channelHigh', 'channelLow','1DayApc','1DayDeviation','5DavDeviation','15DavDeviation','dailyGain','monthlyGain','monthlyLossStd']]
 				if sn.longEMASlope < 0:
 					if sn.shortEMASlope > 0:	#bounce or early recovery
 						sn.nextDayTarget = min(sn.oneDayAverage, sn.twoDayAverage)
@@ -659,7 +789,7 @@ class PricingData:
 			startDate = endDate - BDay(daysToGraph) 
 			fieldSet = ['High','Low', 'channelHigh', 'channelLow','shortEMA','longEMA']
 			if daysToGraph > 1800: fieldSet = ['Average']
-			x = self.historicalPrices
+			x = self.historicalPrices.copy()
 		if fileNameSuffix == None: fileNameSuffix = str(endDate)[:10] + '_' + str(daysToGraph) + 'days'
 		if graphTitle==None: graphTitle = self.stockTicker + ' ' + fileNameSuffix
 		x = x[(x.index >= startDate) & (x.index <= endDate)]
@@ -682,6 +812,58 @@ class PricingData:
 			else:
 				plt.show()
 			plt.close('all')
+			
+	def LoadTickerFromCSVToSQL(self):
+		print(" Loading " + self.stockTicker + " CSV into SQL...")
+		csvFile = self._dataFolderhistoricalPrices + self.stockTicker + '.CSV'
+		if not os.path.isfile(csvFile):
+			print(" File doesn't exist: " + csvFile)
+		elif self.database != None:
+			if self.database.Open():
+				data = pd.read_csv(csvFile)# , index_col=0, parse_dates=True, na_values=['NaN']
+				df = pd.DataFrame(data)	
+				df.fillna(method='ffill', inplace=True)
+				df.fillna(method='bfill', inplace=True)
+				sourceRecordCount = len(df)
+				cursor = self.database.GetCursor()
+				cursor.execute("DELETE FROM PricesDaily WHERE Ticker=?", self.stockTicker)
+				if True:
+					df['Ticker'] = self.stockTicker
+					quoted = urllib.parse.quote_plus(DatabaseConstring)
+					engine = create_engine('mssql+pyodbc:///?odbc_connect={}'.format(quoted))
+					df.to_sql('PricesDaily', schema='dbo', con = engine, if_exists='append', index=False)
+				else:
+					for row in df.itertuples():
+						cursor.execute("INSERT INTO PricesDaily ([Ticker],[Date],[Open],[High],[Low],[Close],[Volume]) Values(?,?,?,?,?,?,?)", self.stockTicker, row.Date,row.Open,row.High, row.Low, row.Close, row.Volume)
+				cursor.execute("SELECT COUNT(*) AS RecordCount FROM PricesDaily WHERE Ticker=?", self.stockTicker)
+				for row in cursor.fetchall():
+					destRecordCount = row.RecordCount
+				self.database.Close()
+				print("Imported source records: " + str(sourceRecordCount) + " Destination records: " + str(destRecordCount))
+				if destRecordCount != sourceRecordCount:
+					print("Import to SQL failed. Counts don't match")
+					assert(False)
+			else:
+				print('No database connection')
+
+	def ExportFromSQLToCSV(self):
+		needsUpdating = True
+		csvFile = self._dataFolderhistoricalPrices + self.stockTicker + '.csv'
+		if os.path.isfile(csvFile):
+			minAgeToRefresh = datetime.now() - timedelta(hours=12)
+			needsUpdating = (datetime.fromtimestamp(os.path.getmtime(csvFile)) < minAgeToRefresh)
+		if needsUpdating:
+			print('Updating CSV for ' + self.stockTicker)
+			if self.database != None:	
+				if self.database.Open():
+					cursor = self.database.GetCursor()
+					SQL = "select [Date], [Open], [High], [Low], [Close], [Volume] from PricesDaily WHERE Ticker='" + self.stockTicker + "' ORDER By Date"
+					print("Exporting " + self.stockTicker + " to " + csvFile + " ...")
+					df = self.database.DataFrameFromSQL(SQL)
+					print(df)
+					df.to_csv(csvFile, index=False)
+				else:
+					print('No database connection')
 
 class Tranche: #interface for handling actions on a chunk of funds
 	ticker = ''
@@ -855,8 +1037,8 @@ class Position:	#Simple interface for open positions
 	
 class Portfolio:
 	portfolioName = ''
-	tradeHistory = [] #DataFrame of trades.  Note: though you can trade more than once a day it is only going to keep one entry per day per stock
-	dailyValue = []	  #DataFrame for the value at the end of each day
+	tradeHistory = None #DataFrame of trades.  Note: though you can trade more than once a day it is only going to keep one entry per day per stock
+	dailyValue = None	  #DataFrame for the value at the end of each day
 	_cash=0
 	_fundsCommittedToOrders=0
 	_commisionCost = 0
@@ -868,15 +1050,24 @@ class Portfolio:
 		self._cash = 0
 		self._tranches = None
 
-	def __init__(self, portfolioName:str, startDate:datetime, totalFunds:int=10000, tranchSize:int=1000, trackHistory:bool=True, verbose:bool=True):
+	def __init__(self, portfolioName:str, startDate:datetime, totalFunds:int=10000, tranchSize:int=1000, trackHistory:bool=True, useDatabase:bool=None, verbose:bool=True):
 		self.portfolioName = portfolioName
 		self._cash = totalFunds
 		self._fundsCommittedToOrders = 0
 		self._verbose = verbose
 		self._tranchCount = floor(totalFunds/tranchSize)
 		self._tranches = [Tranche(tranchSize) for x in range(self._tranchCount)]
-		self.dailyValue = pd.DataFrame([[startDate,totalFunds,0,totalFunds]], columns=list(['Date','CashValue','AssetValue','TotalValue']))
+		self.dailyValue = pd.DataFrame([[startDate,totalFunds,0,totalFunds,'','','','','','','','','','','']], columns=list(['Date','CashValue','AssetValue','TotalValue','Stock00','Stock01','Stock02','Stock03','Stock04','Stock05','Stock06','Stock07','Stock08','Stock09','Stock10']))
 		self.dailyValue.set_index(['Date'], inplace=True)
+		if useDatabase==None and globalUseDatabase:
+			useDatabase = globalUseDatabase
+			self.database = PTADatabase()
+			if not self.database.Open():
+				print("Default option to use database failed, database connection failed.")
+				assert(False)
+		elif useDatabase:
+			self.database = PTADatabase()
+		self.useDatabase = useDatabase
 		self.trackHistory = trackHistory
 		if trackHistory: 
 			self.tradeHistory = pd.DataFrame(columns=['dateBuyOrderPlaced','ticker','dateBuyOrderFilled','dateSellOrderPlaced','dateSellOrderFilled','units','buyOrderPrice','purchasePrice','sellOrderPrice','sellPrice','NetChange'])
@@ -928,6 +1119,8 @@ class Portfolio:
 			r = pd.DataFrame(y,columns=list(['Ticker']))
 			r = r.groupby(['Ticker']).size().reset_index(name='CurrentHoldings')
 			r.set_index(['Ticker'], inplace=True)
+			TotalHoldings = r['CurrentHoldings'].sum()
+			r['Percentage'] = r['CurrentHoldings']/TotalHoldings
 		return r
 
 	def PositionSummary(self):
@@ -1031,9 +1224,9 @@ class Portfolio:
 		if units == 0 or availableCash < cost:
 			if verbose: 
 				if price==0:
-					print( 'Unable to purchase ' + ticker + '.  Price lookup failed.')
+					print( 'Unable to purchase ' + ticker + '.  Price lookup failed.', datePlaced)
 				else:
-					print( 'Unable to purchase ' + ticker + '.  Price (' + str(price) + ') exceeds available funds', availableCash)
+					print( 'Unable to purchase ' + ticker + '.  Price (' + str(price) + ') exceeds available funds ' + str(availableCash) + ' Traunche Size: ' + str(self._tranches[0].size))
 		else:	
 			for t in self._tranches: #Find available 
 				if t.available :	#Place new order
@@ -1088,28 +1281,29 @@ class Portfolio:
 					break					
 		return r
 
-	def SellAllPositions(self, datePlaced:datetime, ticker:str='', verbose:bool=False):
+	def SellAllPositions(self, datePlaced:datetime, ticker:str='', verbose:bool=False, allowWeekEnd:bool=False):
 		for t in self._tranches:
 			if t.purchased and (t.ticker==ticker or ticker==''): 
 				t.PlaceSell(price=t.latestPrice, datePlaced=datePlaced, marketOrder=True, expireAfterDays=5, verbose=verbose)
-		self.ProcessDay(withIncrement=False)
+		self.ProcessDay(withIncrement=False, allowWeekEnd=allowWeekEnd)
 
 	#--------------------------------------  Order Processing ---------------------------------------
 	def _CheckOrders(self, ticker, price, dateChecked):
 		#check if there was action on any pending orders and update current price of tranche
 		price = round(price, 3)
+		self._verbose = True
 		for t in self._tranches:
 			if t.ticker == ticker:
 				r = t.UpdateStatus(price, dateChecked)
 				if r:	#Order was filled, update account
 					if t.expired:
-						if self._verbose: print(t.ticker, " expired ")
+						if self._verbose: print(t.ticker, " expired ", dateChecked)
 						if not t.purchased: 
 							self._fundsCommittedToOrders -= (t.units*t.buyOrderPrice)	#return funds committed to order
 							self._fundsCommittedToOrders -= self._commisionCost
 						t.Expire()
 					elif t.sold:
-						if self._verbose: print(t.ticker, " sold for ",t.sellPrice)
+						if self._verbose: print(t.ticker, " sold for ",t.sellPrice, dateChecked)
 						self._cash = self._cash + (t.units*t.sellPrice) - self._commisionCost
 						if self._verbose and self._commisionCost > 0: print(' Commission charged for Sell: ' + str(self._commisionCost))
 						if self.trackHistory:
@@ -1121,7 +1315,7 @@ class Portfolio:
 						fundsavailable = self._cash - abs(self._fundsCommittedToOrders)
 						if t.marketOrder:
 							actualCost = t.units*price
-							if self._verbose: print(t.ticker, " purchased for ",price)
+							if self._verbose: print(t.ticker, " purchased for ",price, dateChecked)
 							if (fundsavailable - actualCost - self._commisionCost) < 25:	#insufficient funds
 								unitsCanAfford = max(floor((fundsavailable - self._commisionCost)/price)-1, 0)
 								if self._verbose:
@@ -1132,7 +1326,7 @@ class Portfolio:
 								else:
 									t.AdjustBuyUnits(unitsCanAfford)
 						if t.units == 0:
-							if self._verbose: print( 'Can not afford any ' + ticker + ' at market ' + str(price) + ' canceling Buy')
+							if self._verbose: print( 'Can not afford any ' + ticker + ' at market ' + str(price) + ' canceling Buy', dateChecked)
 							t.Recycle()
 						else:
 							self._cash = self._cash - (t.units*price) - self._commisionCost 
@@ -1169,20 +1363,39 @@ class Portfolio:
 		else:
 			self._CheckOrders(ticker, close, dateChecked)	#No open orders but still need to update last prices
 		self.ValidateFundsCommittedToOrders(True)
+
+	def UpdateDailyValue(self):
 		_cashValue, assetValue = self.Value()
-		self.dailyValue.loc[dateChecked]=[_cashValue,assetValue,_cashValue + assetValue] 
+		positions = self.GetPositions(asDataFrame=True)
+		x = positions.index.to_numpy() + ':' + positions['Percentage'].to_numpy(dtype=str)
+		for i in range(len(x)): x[i] = x[i][:12]
+		while len(x) < 11: x = numpy.append(x, [''])
+		self.dailyValue.loc[self.currentDate]=[_cashValue,assetValue,_cashValue + assetValue, x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7], x[8], x[9], x[10]]
+		#print(self.dailyValue)
 
 	#--------------------------------------  Closing Reporting ---------------------------------------
 	def SaveTradeHistoryToFile(self, foldername:str, addTimeStamp:bool = False):
-		if CreateFolder(foldername):
-			filePath = foldername + self.portfolioName 
-			if addTimeStamp: filePath += '_' + GetDateTimeStamp()
-			filePath += '_trades.csv'
-			if self.trackHistory:
+		if self.trackHistory:
+			if self.useDatabase:
+				if self.database.Open():
+					df = self.tradeHistory
+					df['TradeModel'] = self.portfolioName 
+					self.database.DataFrameToSQL(df, 'TradeModel_Trades', indexAsColumn=True)
+					self.database.Close()
+			elif CreateFolder(foldername):
+				filePath = foldername + self.portfolioName 
+				if addTimeStamp: filePath += '_' + GetDateTimeStamp()
+				filePath += '_trades.csv'
 				self.tradeHistory.to_csv(filePath)
 
 	def SaveDailyValueToFile(self, foldername:str, addTimeStamp:bool = False):
-		if CreateFolder(foldername):
+		if self.useDatabase:
+			if self.database.Open():
+				df = self.dailyValue.copy()
+				df['TradeModel'] = self.portfolioName 
+				self.database.DataFrameToSQL(df, 'TradeModel_DailyValue', indexAsColumn=True)
+				self.database.Close()
+		elif CreateFolder(foldername):
 			filePath = foldername + self.portfolioName 
 			if addTimeStamp: filePath += '_' + GetDateTimeStamp()
 			filePath+= '_dailyvalue.csv'
@@ -1204,19 +1417,28 @@ class TradingModel(Portfolio):
 	Custom2 = None
 	_NormalizePrices = False
 
-	def __init__(self, modelName:str, startingTicker:str, startDate:datetime, durationInYears:int, totalFunds:int, tranchSize:int=1000,verbose:bool=False, trackHistory:bool=True):
-		#pricesAsPercentages:bool=False would be good but often results in Nan values
+	def __init__(self, modelName:str, startingTicker:str, startDate:datetime, durationInYears:int, totalFunds:int, tranchSize:int=1000, trackHistory:bool=True, useDatabase:bool=None, verbose:bool=False):
+		#pricesAsPercentages:bool=False would be good but often results in NaN values
 		#expects date format in local format, from there everything will be converted to database format				
 		startDate = ToDateTime(startDate)
 		endDate = startDate + timedelta(days=365 * durationInYears)
 		self.modelReady = False
 		CreateFolder(self._dataFolderTradeModel)
-		p = PricingData(startingTicker)
+		if useDatabase==None and globalUseDatabase:
+			useDatabase = globalUseDatabase
+			self.database = PTADatabase()
+			if not self.database.Open():
+				print("Default option to use database failed, database connection failed.")
+				assert(False)
+		elif useDatabase:
+			self.database = PTADatabase()
+		self.useDatabase = useDatabase
+		p = PricingData(startingTicker, useDatabase=self.useDatabase)
 		if p.LoadHistory(requestedStartDate=startDate, requestedEndDate=endDate, verbose=verbose): 
 			if verbose: print(' Loading ' + startingTicker)
 			p.CalculateStats()
 			p.TrimToDateRange(startDate - timedelta(days=60), endDate + timedelta(days=10))
-			self.priceHistory = [p]
+			self.priceHistory = [p] #add to list
 			i = p.historicalPrices.index.get_loc(startDate, method='nearest')
 			startDate = p.historicalPrices.index[i]
 			i = p.historicalPrices.index.get_loc(endDate, method='nearest')
@@ -1232,11 +1454,10 @@ class TradingModel(Portfolio):
 			self.currentDate = self.modelStartDate
 			modelName += '_' + str(startDate)[:10] + '_' + str(durationInYears) + 'year'
 			self.modelName = modelName
-			super
 			self._stockTickerList = [startingTicker]
 			self.startingValue = totalFunds
 			self.modelReady = not(pd.isnull(self.modelStartDate))
-		super(TradingModel, self).__init__(portfolioName=modelName, startDate=startDate, totalFunds=totalFunds, tranchSize=tranchSize, trackHistory=trackHistory, verbose=verbose)
+		super(TradingModel, self).__init__(portfolioName=modelName, startDate=startDate, totalFunds=totalFunds, tranchSize=tranchSize, trackHistory=trackHistory, useDatabase=useDatabase, verbose=verbose)
 		
 	def __del__(self):
 		self._stockTickerList = None
@@ -1249,7 +1470,7 @@ class TradingModel(Portfolio):
 	def AddStockTicker(self, ticker:str):
 		r = False
 		if not ticker in self._stockTickerList:
-			p = PricingData(ticker)
+			p = PricingData(ticker, useDatabase=self.useDatabase)
 			if self.verbose: print(' Loading price history for ' + ticker)
 			if p.LoadHistory(requestedStartDate=self.modelStartDate, requestedEndDate=self.modelEndDate): 
 				p.CalculateStats()
@@ -1261,6 +1482,7 @@ class TradingModel(Portfolio):
 					self.priceHistory.append(p)
 					self._stockTickerList.append(ticker)
 				r = True
+				print(' Added ticker ' + ticker)
 			else:
 				print( 'Unable to download price history for ticker ' + ticker)
 		return r
@@ -1270,7 +1492,8 @@ class TradingModel(Portfolio):
 	def CloseModel(self, plotResults:bool=True, saveHistoryToFile:bool=True, folderName:str='data/trademodel/', dpi:int=600):	
 		cashValue, assetValue = self.Value()
 		if assetValue > 0:
-			self.SellAllPositions(self.currentDate)
+			self.SellAllPositions(self.currentDate, allowWeekEnd=True)
+		self.UpdateDailyValue()
 		cashValue, assetValue = self.Value()
 		netChange = cashValue + assetValue - self.startingValue 		
 		if saveHistoryToFile:
@@ -1297,7 +1520,9 @@ class TradingModel(Portfolio):
 		return gain, percentageGain
 			
 	def GetCustomValues(self): return self.Custom1, self.Custom2
-	def GetDailyValue(self): return self.dailyValue #returns dataframe with daily value of portfolio
+	def GetDailyValue(self): 
+		return self.dailyValue.copy() #returns dataframe with daily value of portfolio
+
 	def GetValueAt(self, date): 
 		try:
 			i = self.dailyValue.index.get_loc(date, method='nearest')
@@ -1369,14 +1594,16 @@ class TradingModel(Portfolio):
 		dfTemp = dfTemp.join(sells)
 		PlotDataFrame(dfTemp, modelName, 'Date', 'Value')
 
-	def ProcessDay(self, withIncrement:bool=True):
-		#Process current day and increment the current date
+	def ProcessDay(self, withIncrement:bool=True, allowWeekEnd:bool=False):
+		#Process current day and increment the current date, allowWeekEnd is for model closing only
 		if self.verbose: 
 			c, a = self.Value()
 			if self.verbose: print(str(self.currentDate) + ' model: ' + self.modelName + ' _cash: ' + str(c) + ' Assets: ' + str(a))
-		for ph in self.priceHistory:
-			p = ph.GetPriceSnapshot(self.currentDate)
-			self.ProcessDaysOrders(ph.stockTicker, p.open, p.high, p.low, p.close, self.currentDate)
+		if self.currentDate.weekday() < 5 or allowWeekEnd:
+			for ph in self.priceHistory:
+				p = ph.GetPriceSnapshot(self.currentDate)
+				self.ProcessDaysOrders(ph.stockTicker, p.open, p.high, p.low, p.close, self.currentDate)
+		self.UpdateDailyValue()
 		self.ReEvaluateTrancheCount()
 		if withIncrement and self.currentDate <= self.modelEndDate: #increment the date
 			try:
@@ -1389,7 +1616,7 @@ class TradingModel(Portfolio):
 					self.currentDate=self.modelEndDate		
 			except:
 				#print(self.priceHistory[0].historicalPrices)
-				print('Unable to find next date in index from ', self.currentDate,  self.priceHistory[0].historicalPrices.stockTicker)
+				print('Unable to find next date in index from ', self.currentDate,  self.priceHistory[0].stockTicker)
 				self.currentDate += timedelta(days=1)
 	
 	def SetCustomValues(self, v1, v2):
@@ -1495,11 +1722,21 @@ class ForcastModel():	#used to forecast the effect of a series of trade actions,
 		return endingValue - self.startingValue
 		
 class StockPicker():
-	def __init__(self, startDate:datetime=None, endDate:datetime=None): 
+	def __init__(self, startDate:datetime=None, endDate:datetime=None, useDatabase:bool=None): 
+		if startDate!=None:
+			startDate = ToDate(startDate)
+			startDate -= timedelta(days=750) #We will use past two years data for statistics, so make sure that is in the range
 		self.priceData = []
 		self._stockTickerList = []
 		self._startDate = startDate
 		self._endDate = endDate
+		if useDatabase==None and globalUseDatabase:
+			useDatabase = globalUseDatabase
+			temp = PTADatabase()
+			if not temp.Open():
+				print("Default option to use database failed, database connection failed.")
+				assert(False)
+		self.useDatabase = useDatabase
 		
 	def __del__(self): 
 		self.priceData = None
@@ -1507,11 +1744,29 @@ class StockPicker():
 		
 	def AddTicker(self, ticker:str):
 		if not ticker in self._stockTickerList:
-			p = PricingData(ticker)
-			if p.LoadHistory(self._startDate, self._endDate, verbose=False): 
+			p = PricingData(ticker, useDatabase=self.useDatabase)
+			if p.LoadHistory(self._startDate, self._endDate, verbose=True): 
 				p.CalculateStats()
 				self.priceData.append(p)
 				self._stockTickerList.append(ticker)
+
+	def GetTickerList(self):
+		return self._stockTickerList
+
+	def RemoveTicker(self, ticker:str):
+		if ticker in self._stockTickerList:
+			for i in range(len(self.priceData)):
+				if ticker == self.priceData[i].stockTicker:
+					print(" Removing ticker " + ticker)
+					self.priceData.remove(i)
+					self._stockTickerList.remove(ticker)	
+		assert(not ticker in self._stockTickerList)
+
+	def TickerExists(self, ticker:str):
+		return ticker in self._stockTickerList
+	
+	def TickerCount(self):
+		return len(self._stockTickerList)
 
 	def NormalizePrices(self):
 		for i in range(len(self.priceData)):
@@ -1533,53 +1788,73 @@ class StockPicker():
 
 	def GetHighestPriceMomentum(self, currentDate:datetime, longHistoryDays:int = 365, shortHistoryDays:int = 30, stocksToReturn:int = 5, filterOption:int = 3, minPercentGain=0.05, maxVolatility=.1, verbose:bool=False): 
 		minDailyGain = minPercentGain/365
-		candidates = pd.DataFrame(columns=list(['Ticker','hp2Year','hp1Year','hp6mo','hp3mo','hp2mo','hp1mo','currentPrice','2yearPriceChange','1yearPriceChange','6moPriceChange','3moPriceChange','2moPriceChange','1moPriceChange','dailyGain','monthlyGain','monthlyLossStd','longHistoricalValue','shortHistoricalValue','percentageChangeLongTerm','percentageChangeShortTerm','pointValue','Comments','latestEntry']))
+		candidates = pd.DataFrame(columns=list(['Ticker','hp2Year','hp1Year','hp6mo','hp3mo','hp2mo','hp1mo','currentPrice','2yearPriceChange','1yearPriceChange','6moPriceChange','3moPriceChange','2moPriceChange','1moPriceChange','dailyGain','monthlyGain','monthlyLossStd','longHistoricalValue','shortHistoricalValue','percentageChangeLongTerm','percentageChangeShortTerm','pointValue','Comments','latestEntry','pcaverage']))
 		candidates.set_index(['Ticker'], inplace=True)
 		lookBackDateLT = currentDate + timedelta(days=-longHistoryDays)
 		lookBackDateST = currentDate + timedelta(days=-shortHistoryDays)
 		for i in range(len(self.priceData)):
-			ticker = self.priceData[i].stockTicker
-			longHistoricalValue = self.priceData[i].GetPrice(lookBackDateLT)
-			shortHistoricalValue = self.priceData[i].GetPrice(lookBackDateST)				
-			s = self.priceData[i].GetPriceSnapshot(currentDate + timedelta(days=-730))
-			hp2Year = s.fiveDayAverage
-			s = self.priceData[i].GetPriceSnapshot(currentDate + timedelta(days=-365))
-			hp1Year = s.fiveDayAverage
-			s = self.priceData[i].GetPriceSnapshot(currentDate + timedelta(days=-180))
-			hp6mo = s.fiveDayAverage
-			s = self.priceData[i].GetPriceSnapshot(currentDate + timedelta(days=-90))
-			hp3mo = s.fiveDayAverage
-			s = self.priceData[i].GetPriceSnapshot(currentDate + timedelta(days=-60))
-			hp2mo = s.fiveDayAverage
-			s = self.priceData[i].GetPriceSnapshot(currentDate + timedelta(days=-30))
-			hp1mo = s.fiveDayAverage
-			s = self.priceData[i].GetPriceSnapshot(currentDate)
-			#currentPrice = s.oneDayAverage	
-			currentPrice = s.twoDayAverage	
-			Comments = ''
-			if s.low > s.channelHigh: 
-				Comments += 'Overbought; '
-			if s.high < s.channelLow: 
-				Comments += 'Oversold; '
-			if s.fiveDayDeviation > .0275: 
-				Comments += 'HighDeviation; '
-			percentageChangeShortTerm = 0
-			percentageChangeLongTerm = 0
-			if (longHistoricalValue > 0 and currentPrice > 0 and shortHistoricalValue > 0 and hp2Year > 0 and hp1Year > 0 and hp6mo > 0 and hp2mo > 0 and hp1mo > 0): #values were loaded
-				percentageChangeLongTerm = ((currentPrice/longHistoricalValue)-1)/longHistoryDays
-				percentageChangeShortTerm = ((currentPrice/shortHistoricalValue)-1)/shortHistoryDays
-				pc1yr=((currentPrice/hp1Year)-1) 
-				pc6mo=((currentPrice/hp6mo)-1) 
-				pc3mo=((currentPrice/hp3mo)-1) 
-				pc2mo=((currentPrice/hp2mo)-1) 
-				pc1mo=((currentPrice/hp1mo)-1) 
-				pointValue = round((10*pc1yr) + (10*pc6mo) + (10*pc3mo) + (10*pc1mo) - (3-10*s.monthlyLossStd))
-				candidates.loc[ticker] = [hp2Year,hp1Year,hp6mo,hp3mo,hp2mo,hp1mo,currentPrice,(currentPrice/hp2Year)-1,(currentPrice/hp1Year)-1,(currentPrice/hp6mo)-1,(currentPrice/hp3mo)-1,(currentPrice/hp2mo)-1,(currentPrice/hp1mo)-1,s.dailyGain, s.monthlyGain, s.monthlyLossStd,longHistoricalValue,shortHistoricalValue,percentageChangeLongTerm, percentageChangeShortTerm, pointValue, Comments, self.priceData[i].historyEndDate]
-			else:
-				if currentPrice > 0 and verbose or True:
-					if len(self.priceData[i].historicalPrices) > 0:
-						print('Price load failed for ticker: ' + ticker, 'requested, history start, history end', currentDate, self.priceData[i].historyStartDate, self.priceData[i].historyEndDate, hp2Year,hp1Year,hp6mo,hp2mo,hp1mo)
-
+			#print(self.priceData[i].stockTicker, lookBackDateLT, currentDate, self.priceData[i].historyStartDate, self.priceData[i].historyEndDate)
+			if lookBackDateLT >= self.priceData[i].historyStartDate and currentDate <= self.priceData[i].historyEndDate + timedelta(days=3):
+				ticker = self.priceData[i].stockTicker
+				longHistoricalValue = self.priceData[i].GetPrice(lookBackDateLT)
+				shortHistoricalValue = self.priceData[i].GetPrice(lookBackDateST)
+				s = self.priceData[i].GetPriceSnapshot(currentDate + timedelta(days=-730))
+				hp2Year = s.fiveDayAverage #Looking at 30/90/365 day prices, recent changes are just noise
+				s = self.priceData[i].GetPriceSnapshot(currentDate + timedelta(days=-547))
+				hp1Year6mo = s.fiveDayAverage
+				s = self.priceData[i].GetPriceSnapshot(currentDate + timedelta(days=-365))
+				hp1Year = s.fiveDayAverage
+				s = self.priceData[i].GetPriceSnapshot(currentDate + timedelta(days=-180))
+				hp6mo = s.fiveDayAverage
+				s = self.priceData[i].GetPriceSnapshot(currentDate + timedelta(days=-90))
+				hp3mo = s.fiveDayAverage
+				s = self.priceData[i].GetPriceSnapshot(currentDate + timedelta(days=-60))
+				hp2mo = s.fiveDayAverage
+				s = self.priceData[i].GetPriceSnapshot(currentDate + timedelta(days=-30))
+				hp1mo = s.fiveDayAverage
+				s = self.priceData[i].GetPriceSnapshot(currentDate)
+				currentPrice = s.fiveDayAverage #Looking at 30/90/365 day prices, recent changes are just noise
+				Comments = ''
+				if s.low > s.channelHigh: 
+					Comments += 'Overbought; '
+				if s.high < s.channelLow: 
+					Comments += 'Oversold; '
+				if s.fiveDayDeviation > .0275: 
+					Comments += 'HighDeviation; '
+				percentageChangeShortTerm = 0
+				percentageChangeLongTerm = 0
+				pointValue  = 0
+				if (longHistoricalValue > 0 and currentPrice > 0 and shortHistoricalValue > 0 and hp2Year > 0 and hp1Year > 0 and hp6mo > 0 and hp2mo > 0 and hp1mo > 0): #values were loaded
+					percentageChangeLongTerm = ((currentPrice/longHistoricalValue)-1)/longHistoryDays
+					percentageChangeShortTerm = ((currentPrice/shortHistoricalValue)-1)/shortHistoryDays
+					pc2yr=((currentPrice/hp2Year)-1) 
+					pc1yr6mo=((currentPrice/hp1Year6mo)-1) 
+					pc1yr=((currentPrice/hp1Year)-1) 
+					pc6mo=((currentPrice/hp6mo)-1) 
+					pc3mo=((currentPrice/hp3mo)-1) 
+					pc2mo=((currentPrice/hp2mo)-1) 
+					pc1mo=((currentPrice/hp1mo)-1)
+					pcaverage = (pc1yr + pc6mo*2.02776 + pc3mo*4.05553 + pc2mo*6.0833 + pc1mo*12.1666)/5 #Average annual rate of return for these 5 periods
+					if pd.isna(s.monthlyLossStd):
+						print(ticker, pc1yr, pc6mo, pc3mo, pc1mo, s.monthlyLossStd)
+						pointValue = 0
+						s.monthlyLossStd = 0
+					else:
+						pointValue = round((10*pc1yr) + (10*pc6mo) + (10*pc3mo) + (10*pc1mo) - (3-10*s.monthlyLossStd))
+					#Parameter Testing, these all decrease performance by about 5%
+					#pointValue = round((10*pc2yr) + (10*pc1yr6mo) + (10*pc1yr) + (10*pc6mo) + (10*pc3mo) + (10*pc1mo) - (3-10*s.monthlyLossStd)) #-5% average yield
+					#if (pc2yr < 0 or pc1yr6mo < 0): pointValue = round((5*pc2yr) + (5*pc1yr6mo) + (10*pc1yr) + (10*pc6mo) + (10*pc3mo) + (10*pc1mo) - (3-10*s.monthlyLossStd))  #-5% average yield
+					#if (pc2yr > 0 and pc1yr6mo > 0): pointValue = round((5*pc2yr) + (5*pc1yr6mo) + (10*pc1yr) + (10*pc6mo) + (10*pc3mo) + (10*pc1mo) - (3-10*s.monthlyLossStd))  #-5% average yield
+					#if (pc1yr > .3 and pc2mo*6.0833 > .1 and pc1mo*12.1666 > .12):# This does NOT improve performance
+					#	pointValue = round((5*pc1yr) + (5*pc6mo) + (7*pc3mo) + (13*pc2mo) + (15*pc1mo) - (3-10*s.monthlyLossStd))# This does NOT improve performance
+					candidates.loc[ticker] = [hp2Year,hp1Year,hp6mo,hp3mo,hp2mo,hp1mo,currentPrice,(currentPrice/hp2Year)-1,(currentPrice/hp1Year)-1,(currentPrice/hp6mo)-1,(currentPrice/hp3mo)-1,(currentPrice/hp2mo)-1,(currentPrice/hp1mo)-1,s.dailyGain, s.monthlyGain, s.monthlyLossStd,longHistoricalValue,shortHistoricalValue,percentageChangeLongTerm, percentageChangeShortTerm, pointValue, Comments, self.priceData[i].historyEndDate, pcaverage]
+				else:
+					if currentPrice > 0 and verbose:
+						if len(self.priceData[i].historicalPrices) > 0:
+							print('Price load failed for ticker: ' + ticker, 'requested, history start, history end', currentDate, self.priceData[i].historyStartDate, self.priceData[i].historyEndDate, hp2Year,hp1Year,hp6mo,hp2mo,hp1mo)
+		#More complex filters that I have tried have all decreased performance which is why these are simple
+		#Greatest factors for improvement are high 1yr return and a very low selection of stocks, like 1-3
+		#Best way to compensate for few stocks is to blend filters of different strengths
 		if filterOption ==1: #high performer, recently at a discount or slowing down but not negative
 			filter = (candidates['percentageChangeLongTerm'] > candidates['percentageChangeShortTerm']) & (candidates['percentageChangeLongTerm'] > minDailyGain) & (candidates['percentageChangeShortTerm'] > 0) 
 			candidates.sort_values('percentageChangeLongTerm', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last') #Most critical factor, sorting by largest long term gain
@@ -1591,20 +1866,23 @@ class StockPicker():
 			candidates.sort_values('percentageChangeLongTerm', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last') #Most critical factor, sorting by largest long term gain
 		elif filterOption ==4: #Short term gain meets min requirements
 			filter =  (candidates['percentageChangeShortTerm'] > minDailyGain) 
-			candidates.sort_values('percentageChangeShortTerm', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last') #Most critical factor, sorting by largest short term gain, not effective
+			candidates.sort_values('percentageChangeShortTerm', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last') #Most critical factor, sorting by largest short term gain which is not effective
 		elif filterOption ==44: #Short term gain meets min requirements, sort long value
 			filter =  (candidates['percentageChangeShortTerm'] > minDailyGain) 
 			candidates.sort_values('percentageChangeLongTerm', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last') #Most critical factor, sorting by largest long term gain
 		elif filterOption ==5: #Point Value
 			filter = (candidates['1yearPriceChange'] > minDailyGain) & (candidates['pointValue'] > 0)
 			candidates.sort_values('pointValue', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last') 
+		elif filterOption ==6: #pcaverage sort, at 5 stocks this is about the same, slightly worse than PV
+			filter =  (candidates['percentageChangeShortTerm'] > minDailyGain) # & (candidates['monthlyLossStd'] < .065) #monthlyLossStd <.065 reduces average annual return by 6%, < .095 doesn't have much affect
+			candidates.sort_values('pcaverage', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last') #Most critical factor, sorting by largest average gain
 		else: #no filter
 			filter = (candidates['currentPrice'] > 0)
 			candidates.sort_values('percentageChangeLongTerm', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last') #Most critical factor, sorting by largest long term gain
 		candidates = candidates[filter]
-		candidates.drop(columns=['longHistoricalValue','shortHistoricalValue','percentageChangeLongTerm','percentageChangeShortTerm'], inplace=True, axis=1)
+		candidates.drop(columns=['longHistoricalValue','shortHistoricalValue','percentageChangeLongTerm','percentageChangeShortTerm','pcaverage'], inplace=True, axis=1)
 		candidates = candidates[:stocksToReturn]
-		return candidates
+		return candidates.copy()
 
 	def ToDataFrame(self, intervalInWeeks:int = 1, pivotOnTicker:bool = False, showGain:bool = True):
 		r = pd.DataFrame()
@@ -1635,3 +1913,79 @@ class StockPicker():
 		r.fillna(value=0, inplace=True)
 		r.sort_index
 		return r
+
+	def LoadTickerFromCSVToSQL(self, ticker:str):
+		for i in range(len(self.priceData)):
+			if ticker == self.priceData[i].stockTicker: self.priceData[i].LoadTickerFromCSVToSQL()
+			
+		
+#-------------------------------------------- SQL Utilities -----------------------------------------------
+class PTADatabase():
+	def __init__(self, verbose:bool = False):
+		self.databaseConnected = False
+		self.cursor = None	
+		self.verbose = verbose
+		self.pyEngine = None
+		
+	def __del__(self):
+		if self.databaseConnected: self.Close()
+		self.cursor = None
+
+	def Open(self):
+		result = False
+		self.databaseConnected = False
+		try:
+			self.conn = pyodbc.connect(DatabaseConstring)
+			self.conn.autocommit = True
+			self.cursor = self.conn.cursor()
+			self.databaseConnected = True
+			if self.verbose: print("Database connection established")
+			result = True
+		except Exception as e:
+			self.databaseConnected = False
+			print("Database connection attempt failed")
+			print(e)
+		return result
+
+	def Close(self):
+		self.cursor = None
+		self.conn.close()
+		self.databaseConnected = False
+		if self.pyEngine != None: self.pyEngine.dispose()
+		if self.verbose: print("Database connection closed")
+		
+	def Connected(self):
+		result = False
+		try:
+			cursor = conn.cursor()
+			result = True
+		except e:
+			if e.__class__ == pyodbc.ProgrammingError:        
+				conn == reinit()
+				cursor = conn.cursor()
+		return result
+
+	def ExecSQL(self, sqlStatement:str):
+		self.cursor.execute(sqlStatement)
+
+	def GetCursor(self):
+		return self.cursor
+	
+	def DataFrameToSQL(self, df:pd.DataFrame, tableName:str, indexAsColumn:bool=False, clearExistingData:bool=False):
+		if clearExistingData:
+			sqlStatement = "if OBJECT_ID('" + tableName + "') is not null Delete FROM " + tableName 
+			if not self.databaseConnected: self.Open()
+			if self.databaseConnected: 	self.cursor.execute(sqlStatement)
+		if self.pyEngine == None:
+			quoted = urllib.parse.quote_plus(DatabaseConstring)
+			self.pyEngine = create_engine('mssql+pyodbc:///?odbc_connect={}'.format(quoted))
+		if indexAsColumn: df.reset_index(drop=False, inplace=True)
+		df.to_sql(tableName, schema='dbo', con = self.pyEngine, if_exists='append', index=False)
+
+	def DataFrameFromSQL(self, SQL:str, indexName:str=None):
+		if indexName==None:
+			df = pd.read_sql_query(SQL, self.conn)
+		else:
+			df = pd.read_sql_query(SQL, self.conn, index_col=indexName)
+		return df
+

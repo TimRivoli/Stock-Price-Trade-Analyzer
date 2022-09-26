@@ -98,11 +98,14 @@ class SeriesPredictionNN(object):
 		if self.targetDF.isnull().values.any(): 
 			print('Nan values in target input.  This will break the training.\n')
 			assert(False)
-		if not len(self.X) ==  len(self.y):
+		if len(self.X)==0 or len(self.y) ==0:
 			print('SourceDF',  self.sourceDF.index.min(), self.sourceDF.index.max())
 			print('TargetDF',  self.targetDF.index.min(), self.targetDF.index.max())
 			print('X shape: ', len(self.X))
 			print('y shape: ', len(self.y))
+			print('Empty data sets given.')
+			assert(False)
+		if not len(self.X) ==  len(self.y):
 			print('X and Y should have the same number of rows')
 			print('Missing target dates')
 			print(self.sourceDF.index.difference(self.targetDF.index))
@@ -135,13 +138,14 @@ class SeriesPredictionNN(object):
 		print('Batching data...')
 		daysOfData=len(self.X)
 		train_start_offset = daysOfData % batch_size
-		train_test_cuttoff = round((daysOfData // batch_size) * train_test_split) * batch_size + batch_size + train_start_offset
+		#train_test_cuttoff = round((daysOfData // batch_size) * train_test_split) * batch_size + batch_size + train_start_offset
+		train_test_cuttoff = round((daysOfData // batch_size) * train_test_split) * batch_size + train_start_offset
 		self.X_train  = numpy.array(self.X[:train_test_cuttoff]) #to train_test_cuttoff
 		self.y_train = numpy.array(self.y[:train_test_cuttoff])  #to train_test_cuttoff
 		self.X_test = numpy.array(self.X[train_test_cuttoff:])   #after train_test_cuttoff
 		self.y_test = numpy.array(self.y[train_test_cuttoff:])   #after train_test_cuttoff, can be used for accuracy validation
 		self.train_start_date = self.sourceDF.index.min()
-		self.test_start_date = self.sourceDF.index[-len(self.X_test)]
+		self.test_start_date = self.sourceDF.index[train_test_cuttoff-1]
 		self.test_end_date = self.sourceDF.index.max()
 		print('(train, test, end)', self.train_start_date, self.test_start_date, self.test_end_date)
 		print('train_test_cuttoff: ', train_test_cuttoff)
@@ -212,9 +216,10 @@ class SeriesPredictionNN(object):
 		if self.model is None: self.BuildModel()		
 		if self.model is not None: 
 			if not self.batchesCreated: self.MakeBatches()
-			callBacks = [keras.callbacks.EarlyStopping(monitor='val_loss', patience=3)]
+			#callBacks = [keras.callbacks.EarlyStopping(monitor='val_loss', patience=3)]
+			callBacks = [keras.callbacks.EarlyStopping(monitor='loss', patience=3)]
 			if useTensorBoard: 	callBacks.append(TensorBoard(log_dir="data/tensorboard/{}".format(time()), histogram_freq=0, write_graph=True, write_images=True))
-			hist = self.model.fit(self.X_train, self.y_train, batch_size=self.batch_size, epochs=epochs, callbacks=callBacks)
+			hist = self.model.fit(self.X_train, self.y_train, batch_size=self.batch_size, epochs=epochs, callbacks=callBacks) 
 			self.trainStartAccuracy = hist.history['accuracy'][0]
 			self.trainAccuracy = hist.history['accuracy'][-1]
 			self.trainStartLoss = hist.history['loss'][0]

@@ -11,8 +11,9 @@ def ReadConfig(sectionName:str, valueName:str):
 		try: 
 			r = ast.literal_eval(config.get(sectionName, valueName))
 		except Exception as e:
-			print('Unable to read value ', valueName, ' from settings file.')
-			print(e)
+			print()
+		#	print('Unable to read value ', valueName, ' from settings file.')
+		#	print(e)
 	return r
 
 def ReadConfigBool(sectionName:str, valueName:str):
@@ -109,4 +110,34 @@ def CreateFolder(p:str):
 			f = False
 	return r
 	
-	
+def CleanOldTickerLists():
+	errorFile = 'data/historical/badTickerLog.txt' 
+	dataFile = '_classes/TickerLists.py'
+	if os.path.isfile(errorFile):
+		print("Purging bad tickers from tickerlists")
+		df = open(dataFile,'r')
+		buffer = df.read()
+		df.close()
+		ef = open(errorFile,'r')
+		badEntries = ef.readlines()
+		ef.close()
+		for badTicker in badEntries:
+			badTicker = badTicker.replace("\n","")
+			print("Deleting " + badTicker)
+			buffer = buffer.replace(badTicker, "")
+			buffer = buffer.replace(badTicker, "")
+			buffer = buffer.replace(badTicker, "")
+			buffer = buffer.replace(badTicker, "")
+		df = open(dataFile,'w')
+		df.write(buffer)
+		df.close()
+		os.remove(errorFile)
+		print("Completed purging")
+
+def ListToString(l:list):
+	r = "['"
+	for i in l:
+		r += i + "','"
+	r += "']"
+	r = r.replace(",''","")
+	return r
