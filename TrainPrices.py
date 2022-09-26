@@ -8,9 +8,9 @@ def TestPredictionModels(ticker:str='^SPX', numberOfLearningPasses:int = 300):
 	plot = PlotHelper()
 	prices = PricingData(ticker)
 	if prices.LoadHistory():
-		prices.TrimToDateRange('1/1/2000', '3/1/2018')
+		prices.TrimToDateRange('1/1/2000', '3/1/2022')
 		print('Loading ' + ticker)
-		for daysForward in [4,20,60]: 
+		for daysForward in [4,15,25]: 
 			for predictionMethod in range(0,5):
 				modelDescription = ticker + '_method' + str(predictionMethod) + '_epochs' + str(numberOfLearningPasses) + '_daysforward' + str(daysForward) 
 				print('Predicting ' + str(daysForward) + ' days using method ' + modelDescription)
@@ -24,12 +24,12 @@ def TestPredictionModels(ticker:str='^SPX', numberOfLearningPasses:int = 300):
 				plot.PlotDataFrameDateRange(predDF[['Average','estAverage']], None, 160, modelDescription + '_last160ays', 'Date', 'Price', dataFolder + modelDescription + '_last160Days') 
 				plot.PlotDataFrameDateRange(predDF[['Average','estAverage']], None, 500, modelDescription + '_last500Days', 'Date', 'Price', dataFolder + modelDescription + '_last500Days') 
 			
-def TrainTickerRaw(ticker:str = '^SPX', UseLSTM:bool=True, useGenericModel:bool=True, prediction_target_days:int = 5, epochs:int = 300, usePercentages:bool=False, hidden_layer_size:int=512, dropout:bool=True, dropout_rate:float=0.01, learning_rate:float=2e-5):
+def TrainTickerRaw(ticker:str = '.INX', UseLSTM:bool=True, useGenericModel:bool=True, prediction_target_days:int = 5, epochs:int = 300, usePercentages:bool=False, hidden_layer_size:int=512, dropout:bool=True, dropout_rate:float=0.01, learning_rate:float=2e-5):
 	plot = PlotHelper()
 	prices = PricingData(ticker)
 	print('Loading ' + ticker)
 	if prices.LoadHistory():
-		prices.TrimToDateRange('1/1/2000', '3/1/2018')
+		#prices.TrimToDateRange('1/1/2000', '10/1/2021')
 		if usePercentages: 
 			prices.ConvertToPercentages() #Percentages don't work well I suspect because small errors have a huge impact when you revert back to the original prices and they roll forward
 		else:
@@ -49,7 +49,7 @@ def TrainTickerRaw(ticker:str = '^SPX', UseLSTM:bool=True, useGenericModel:bool=
 		if usePercentages: modelDescription += '_percentages'
 		model.LoadSource(sourceDF=prices.GetPriceHistory(), FieldList=FieldList, window_size=window_size)
 		model.LoadTarget(targetDF=None, prediction_target_days=prediction_target_days)
-		model.MakeBatches(batch_size=64, train_test_split=.93)
+		model.MakeBatches(batch_size=32, train_test_split=.93)
 		model.BuildModel(hidden_layer_size=hidden_layer_size, dropout=dropout, dropout_rate=dropout_rate, learning_rate=learning_rate)
 		if epochs == 0:
 			if (not model.Load()): epochs=300
@@ -80,13 +80,8 @@ def TrainTickerRaw(ticker:str = '^SPX', UseLSTM:bool=True, useGenericModel:bool=
 			model.PredictionResultsPlot(ticker + '_' + modelDescription, True, False)
 		
 if __name__ == '__main__':
-	TrainTickerRaw('BAC', UseLSTM=False, useGenericModel=False, prediction_target_days = 5, epochs = 400)
-	TrainTickerRaw('BAC', UseLSTM=True, useGenericModel=True, prediction_target_days = 5, epochs = 400)
 	TrainTickerRaw('MSFT', UseLSTM=True, useGenericModel=True, prediction_target_days = 5, epochs = 400)
 	TrainTickerRaw('XOM', UseLSTM=True, useGenericModel=True, prediction_target_days = 5, epochs = 400)	
-	TrainTickerRaw('^SPX', UseLSTM=True, prediction_target_days = 5, epochs = 4)
-	TrainTickerRaw('^SPX', UseLSTM=False, prediction_target_days = 5, epochs = 4)
-	TestPredictionModels('^SPX', numberOfLearningPasses=400)
+	TestPredictionModels('.INX', numberOfLearningPasses=400)
 	TestPredictionModels('MSFT', numberOfLearningPasses=100)
 	TestPredictionModels('TSLA', numberOfLearningPasses=400)
-	TestPredictionModels('BAC', numberOfLearningPasses=400)
