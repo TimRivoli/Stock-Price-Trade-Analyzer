@@ -8,7 +8,6 @@ def TestPredictionModels(ticker:str='^SPX', numberOfLearningPasses:int = 300):
 	plot = PlotHelper()
 	prices = PricingData(ticker)
 	if prices.LoadHistory():
-		prices.TrimToDateRange('1/1/2000', '3/1/2022')
 		print('Loading ' + ticker)
 		for daysForward in [4,15,25]: 
 			for predictionMethod in range(0,5):
@@ -29,7 +28,6 @@ def TrainTickerRaw(ticker:str = '.INX', UseLSTM:bool=True, useGenericModel:bool=
 	prices = PricingData(ticker)
 	print('Loading ' + ticker)
 	if prices.LoadHistory():
-		#prices.TrimToDateRange('1/1/2000', '10/1/2021')
 		if usePercentages: 
 			prices.ConvertToPercentages() #Percentages don't work well I suspect because small errors have a huge impact when you revert back to the original prices and they roll forward
 		else:
@@ -84,4 +82,3 @@ if __name__ == '__main__':
 	TrainTickerRaw('XOM', UseLSTM=True, useGenericModel=True, prediction_target_days = 5, epochs = 400)	
 	TestPredictionModels('.INX', numberOfLearningPasses=400)
 	TestPredictionModels('MSFT', numberOfLearningPasses=100)
-	TestPredictionModels('TSLA', numberOfLearningPasses=400)
