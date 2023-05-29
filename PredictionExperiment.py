@@ -76,7 +76,7 @@ def PredictPrices(prices:PricingData, predictionMethod:int=0, daysForward:int = 
 	plot = PlotHelper()
 	if predictionMethod ==0:		#Linear projection
 		print('Running Linear Projection model predicting ' + str(daysForward) + ' days...')
-		modelDescription = prices.stockTicker + '_Linear_daysforward' + str(daysForward) 
+		modelDescription = prices.ticker + '_Linear_daysforward' + str(daysForward) 
 		predDF = prices.GetPriceHistory()
 		predDF['Average'] = (predDF['Open'] + predDF['High'] + predDF['Low'] + predDF['Close'])/4
 		d = predDF.index[-1]  
@@ -86,22 +86,22 @@ def PredictPrices(prices:PricingData, predictionMethod:int=0, daysForward:int = 
 		predDF['Average_Predicted'] = predDF['Average'].shift(daysForward) * predDF['PastSlope'] 
 		predDF['PercentageDeviation'] = abs((predDF['Average']-predDF['Average_Predicted'])/predDF['Average'])
 	else:
-		SourceFieldList = ['High','Low','Open','Close']
+		source_field_list = ['High','Low','Open','Close']
 		if predictionMethod ==1:	#LSTM learning
 			print('Running LSTM model predicting ' + str(daysForward) + ' days...')
-			SourceFieldList = None
-			UseLSTM = True
+			source_field_list = None
+			model_type = 'LSTM'
 			window_size = 10
-			modelDescription = prices.stockTicker + '_LSTM' + '_epochs' + str(numberOfLearningPasses) + '_histwin' + str(window_size) + '_daysforward' + str(daysForward) 
+			modelDescription = prices.ticker + '_LSTM' + '_epochs' + str(numberOfLearningPasses) + '_histwin' + str(window_size) + '_daysforward' + str(daysForward) 
 		elif predictionMethod ==2: 	#CNN Learning
 			print('Running CNN model predicting ' + str(daysForward) + ' days...')
-			UseLSTM = False
+			model_type = 'CNN'
 			window_size = 16 * daysForward
-			modelDescription = prices.stockTicker + '_CNN' + '_epochs' + str(numberOfLearningPasses) + '_histwin' + str(window_size) + '_daysforward' + str(daysForward) 
-		learningModule = StockPredictionNN(baseModelName=prices.stockTicker, UseLSTM=UseLSTM)
-		learningModule.LoadSource(prices.GetPriceHistory(), FieldList=SourceFieldList, window_size=window_size)
+			modelDescription = prices.ticker + '_CNN' + '_epochs' + str(numberOfLearningPasses) + '_histwin' + str(window_size) + '_daysforward' + str(daysForward) 
+		learningModule = StockPredictionNN(baseModelName=prices.ticker, model_type=model_type)
+		learningModule.LoadSource(prices.GetPriceHistory(), field_list=source_field_list, window_size=window_size)
 		learningModule.LoadTarget(targetDF=None, prediction_target_days=daysForward)
-		learningModule.MakeBatches(batch_size=32, train_test_split=.93)
+		learningModule.MakeTrainTest(batch_size=32, train_test_split=.93)
 		learningModule.Train(epochs=numberOfLearningPasses)
 		learningModule.Predict(True)
 		predDF = learningModule.GetTrainingResults(True, True)
@@ -139,11 +139,11 @@ def CreateAdditionalGraph():
 				
 CreateFolder(dataFolder)
 CreateFolder(dataFolder + '\samples')
-StockTicker='NFLX' #'NFLX', 'AMZN', 'GOOGL', '^SPX'
+ticker='NFLX' #'NFLX', 'AMZN', 'GOOGL', '^SPX'
 SampleGraphs('^SPX', 15)
 SampleLSTM('^SPX')
 SampleCNN('^SPX')
 print('Sample data has been placed in ' + dataFolder)
-RunPredictions(StockTicker, numberOfLearningPasses=450)
+RunPredictions(ticker, numberOfLearningPasses=450)
 print('Output put in ' + dataFolder)
 CreateAdditionalGraph()

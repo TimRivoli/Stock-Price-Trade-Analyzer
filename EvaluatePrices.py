@@ -168,16 +168,16 @@ if __name__ == '__main__': #Choose your adventure.
 		ticker = sys.argv[1:][2]
 		PriceCheck(startDate, ticker)
 	else:
-		#CalculatePriceCorrelation(TickerLists.SPTop70())
-		#PlotAnnualPerformance('TSLA')
-		#PlotAnnualPerformance('VIGRX')
-		#PlotPrediction('.INX', 1, 120, 15)
-		#for year in range(1930,1980,2):	GraphTimePeriod('.INX', '1/3/' + str(year), 600)
-		#for year in range(1980,2020,2): GraphTimePeriod('.INX', '1/3/' + str(year), 600)
-		#GraphTimePeriod('NVDA', '1/1/2003',400)
-		#OpportunityFinder(TickerLists.SPTop70())
-		#CalculatePriceCorrelation(TickerLists.SPTop70())
-		#PlotPrediction('.INX', predictionMethod=3, daysToGraph=60, daysForward=5, learnhingEpochs=750) #LSTM
-		#PlotPrediction('.INX', predictionMethod=4, daysToGraph=60, daysForward=5, learnhingEpochs=750) #CNN
+		CalculatePriceCorrelation(TickerLists.SPTop70())
+		PlotAnnualPerformance('TSLA')
+		PlotAnnualPerformance('VIGRX')
+		PlotPrediction('.INX', 1, 120, 15)
+		for year in range(1930,1980,2):	GraphTimePeriod('.INX', '1/3/' + str(year), 600)
+		for year in range(1980,2020,2): GraphTimePeriod('.INX', '1/3/' + str(year), 600)
+		GraphTimePeriod('NVDA', '1/1/2003',400)
+		OpportunityFinder(TickerLists.SPTop70())
+		CalculatePriceCorrelation(TickerLists.SPTop70())
+		PlotPrediction('.INX', predictionMethod=3, daysToGraph=60, daysForward=5, learnhingEpochs=750) #LSTM
+		PlotPrediction('.INX', predictionMethod=4, daysToGraph=60, daysForward=5, learnhingEpochs=750) #CNN
 		DownloadAndSaveStocksWithStats(['TSLA'])
 		

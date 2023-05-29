@@ -44,7 +44,7 @@ def RunModel(modelName:str, modelFunction, ticker:str, startDate:str, durationIn
 		cash, asset = tm.Value()
 		#print('Ending Value: ', cash + asset, '(Cash', cash, ', Asset', asset, ')')
 		tradeCount = len(tm.tradeHistory)
-		ticker = tm.priceHistory[0].stockTicker
+		ticker = tm.priceHistory[0].ticker
 		RecordPerformance(ModelName=modelName, StartDate=startDate, EndDate=tm.currentDate, StartValue=portfolioSize, EndValue=(cash + asset), TradeCount=tradeCount, Ticker=ticker)
 
 		if returndailyValues:
@@ -390,22 +390,26 @@ def TestAllModels(tickerList:str, startDate:str, duration:int, portfolioSize:int
 	for ticker in tickerList:
 		RunModel('BuyAndHold', RunTradingModelBuyHold, ticker, startDate, duration, portfolioSize, verbose=False)
 		RunModel('RunTradingTestTrading', RunTradingTestTrading, ticker, startDate, duration, portfolioSize, verbose=False)
-		RunModel('Seasonal', RunTradingModelSeasonal, ticker, startDate, duration, portfolioSize, verbose=False)
-		RunModel('FirstHalfOfMonth', RunTradingModelFirstHalfOfMonth, ticker, startDate, duration, portfolioSize, verbose=False)
-		RunModel('Trending', RunTradingModelTrending, ticker, startDate, duration, portfolioSize, verbose=False)
+		#RunModel('Seasonal', RunTradingModelSeasonal, ticker, startDate, duration, portfolioSize, verbose=False)
+		#RunModel('FirstHalfOfMonth', RunTradingModelFirstHalfOfMonth, ticker, startDate, duration, portfolioSize, verbose=False)
+		#RunModel('Trending', RunTradingModelTrending, ticker, startDate, duration, portfolioSize, verbose=False)
 
 def TestAllTickers(tickerList:list, startDate:str, duration:int, portfolioSize:int=30000):
 	for ticker in tickerList:
-		RunModel('Trending', RunTradingModelTrending, ticker, startDate, duration, portfolioSize, verbose=False)
+		#RunModel('Trending', RunTradingModelTrending, ticker, startDate, duration, portfolioSize, verbose=False)
 		RunModel('Swing', RunTradingModelSwingTrade, ticker, startDate, duration, portfolioSize, verbose=False)
 
 		
 if __name__ == '__main__':
+	#tickerList=['GOOGL']
 	startDate = '1/1/1999'
-	duration = 15
+	duration = 20
 	tickerList=['BAC','XOM','JNJ','GOOGL','F','MSFT'] 
 	TestAllModels(tickerList, startDate, duration)
 	TestAllTickers(tickerList, startDate, duration)
 	CompareModels('BuyHold',RunTradingModelBuyHold,'Trending', RunTradingModelTrending, '.INX','1/1/1987',20)
 	PlotModeldailyValue('Trending',RunTradingModelTrending, 'GOOGL','1/1/2005',15)
 	RunModel('BuyAndHold', RunTradingModelBuyHold, '.INX', '1/1/2020', 1, 100000, verbose=False)
+
+
+
