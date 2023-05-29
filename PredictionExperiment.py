@@ -53,20 +53,20 @@ def SampleCNN(ticker:str):
 	print('Loading ' + ticker)
 	if prices.LoadHistory():
 		prices.NormalizePrices()
-		window_size = 80
+		time_steps = 80
 		target_size = 10
 		daysInTraining = 800
 		sampleData = prices.GetPriceHistory()
 		endDate  = sampleData.index.max()
-		cuttoffDate = endDate - BDay(window_size)
+		cuttoffDate = endDate - BDay(time_steps)
 		startDate = cuttoffDate - BDay(daysInTraining)
 		print(dataFolder + 'samples\CNNsampleLearning', startDate, cuttoffDate, endDate)
 		for i in range(0,10):
-			ii = i * window_size
+			ii = i * time_steps
 			d1 = startDate + BDay(ii)
 			d2 = d1 + BDay(target_size)
-			print(d1, d2, window_size, target_size)
-			plot.PlotDataFrameDateRange(sampleData[['Average']], d1, window_size, 'Sample image ' + str(i), 'Date', 'Price', dataFolder + 'samples/CNN' + str(i) + 'Sample') 
+			print(d1, d2, time_steps, target_size)
+			plot.PlotDataFrameDateRange(sampleData[['Average']], d1, time_steps, 'Sample image ' + str(i), 'Date', 'Price', dataFolder + 'samples/CNN' + str(i) + 'Sample') 
 			plot.PlotDataFrameDateRange(sampleData[['Average']], d2, target_size, 'Target image ' + str(i), 'Date', 'Price', dataFolder + 'samples/CNN' + str(i) + 'Target') 
 
 def PredictPrices(prices:PricingData, predictionMethod:int=0, daysForward:int = 5, numberOfLearningPasses:int = 500):
@@ -91,15 +91,15 @@ def PredictPrices(prices:PricingData, predictionMethod:int=0, daysForward:int = 
 			print('Running LSTM model predicting ' + str(daysForward) + ' days...')
 			source_field_list = None
 			model_type = 'LSTM'
-			window_size = 10
-			modelDescription = prices.ticker + '_LSTM' + '_epochs' + str(numberOfLearningPasses) + '_histwin' + str(window_size) + '_daysforward' + str(daysForward) 
+			time_steps = 10
+			modelDescription = prices.ticker + '_LSTM' + '_epochs' + str(numberOfLearningPasses) + '_histwin' + str(time_steps) + '_daysforward' + str(daysForward) 
 		elif predictionMethod ==2: 	#CNN Learning
 			print('Running CNN model predicting ' + str(daysForward) + ' days...')
 			model_type = 'CNN'
-			window_size = 16 * daysForward
-			modelDescription = prices.ticker + '_CNN' + '_epochs' + str(numberOfLearningPasses) + '_histwin' + str(window_size) + '_daysforward' + str(daysForward) 
+			time_steps = 16 * daysForward
+			modelDescription = prices.ticker + '_CNN' + '_epochs' + str(numberOfLearningPasses) + '_histwin' + str(time_steps) + '_daysforward' + str(daysForward) 
 		learningModule = StockPredictionNN(baseModelName=prices.ticker, model_type=model_type)
-		learningModule.LoadSource(prices.GetPriceHistory(), field_list=source_field_list, window_size=window_size)
+		learningModule.LoadSource(prices.GetPriceHistory(), field_list=source_field_list, time_steps=time_steps)
 		learningModule.LoadTarget(targetDF=None, prediction_target_days=daysForward)
 		learningModule.MakeTrainTest(batch_size=32, train_test_split=.93)
 		learningModule.Train(epochs=numberOfLearningPasses)
