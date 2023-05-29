@@ -482,7 +482,6 @@ class PricingData:
 					df = df[base_field_list]
 				self.pricesLoaded = len(df) > 1			
 		if self.pricesLoaded:
-			df['Average'] = df.loc[:,base_field_list].mean(axis=1) #select those rows, calculate the mean value
 			if (df['Open'] < df['Low']).any() or (df['Close'] < df['Low']).any() or (df['High'] < df['Low']).any() or (df['Open'] > df['High']).any() or (df['Close'] > df['High']).any(): 
 				if verbose and False:
 					print(self.ticker)
@@ -493,6 +492,8 @@ class PricingData:
 				df = df.loc[df['Low'] <= df['Close']]
 				df = df.loc[df['High'] >= df['Open']]
 				df = df.loc[df['High'] >= df['Close']]
+			df['Average'] = (df['Open'] + df['Close'] + df['High'] + df['Low'])/4
+			#df['Average'] = df.loc[:,base_field_list].mean(axis=1) #select those rows, calculate the mean value
 			self.historicalPrices = df
 			self.historyStartDate = self.historicalPrices.index.min()
 			self.historyEndDate = self.historicalPrices.index.max()
