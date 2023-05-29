@@ -88,6 +88,10 @@ def GetTodaysDate():
 	#return d.strftime('%m/%d/%Y')
 	return d.date()
 
+def GetTodaysDateString():
+	d = datetime.now() #--1980-01-01
+	return d.strftime('%Y-%m-%d')
+
 def DateDiffDays(startDate:datetime, endDate:datetime):
 	delta = endDate-startDate
 	return delta.days
