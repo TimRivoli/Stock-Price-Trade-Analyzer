@@ -13,7 +13,7 @@ Classes Portfolio and TradingModel are used to test emulations of trading strate
 Class ForcastModel has been added to forecast the effect of a series of potential actions on a TradingModel.  I'm using this to create a "best actions" sequence for supervised machine learning in another project.  Given a market state and a sequence of actions (or every possible action) which one produces the best result after X days.  This can then be used to train a robotic trainer with supervised learning.
 
 Module: SeriesPrediction
-Class StockPredictionNN uses LSTM (Long Short Term Memory) and CNN (Convolutional Neural Network) learning functions to predict future prices.  These use Google TensorFlow (tested 1.5.0-2.1.0). The LSTM and CNN models have been updated to use Keras which greatly simplifies the code.  
+Class StockPredictionNN uses LSTM (Long Short Term Memory) and CNN (Convolutional Neural Network) learning functions to predict future prices.  These use Google TensorFlow (tested 1.5.0-2.1.0). The LSTM and CNN models have been updated to use Keras which greatly simplifies the code.  I've also added models for BilateralLSTM, GRU, Flat Dense, and combination CNN/LSTM.  These models don't learn very well; the results mimic what I've seen done elsewhere which is that they simply push the predicted output to the right with a minimal variance, giving good accuracy but not a very useful tool.  A simple SMA extension is more accurate.  I was hoping I could get some deep learning going.  Sadly not so much.
 
 TrainPrices.py shows samples of using the StockPredictionNN class to train and test PricingData using LSTM and CNN machine learning techniques.  
 
