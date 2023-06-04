@@ -40,10 +40,10 @@ def TrainTickerRaw(ticker:str = '.INX', model_type:str='LSTM', use_generic_model
 		model = StockPredictionNN(baseModelName=baseModelName, model_type=model_type)
 		#time_steps = 16 * prediction_target_days
 		if model_type =='CNN': #For CNN the field order is significant since it is treated as an image
-			field_list = ['Average','EMA_Short','EMA_Long','Deviation_5DayAvg','Deviation_15DayAvg','LossStd_Monthly','PC_1Month','PC_6Month','PC_1Year','PC_2Year']
+			field_list = ['Average','EMA_Short','EMA_Long','Deviation_5DayAvg','Deviation_15DayAvg','LossStd_1Year','PC_1Month','PC_6Month','PC_1Year','PC_2Year']
 		else:
 			#field_list = ['Average']
-			field_list = ['Average','EMA_Short','EMA_Long','Deviation_5DayAvg','Deviation_15DayAvg','LossStd_Monthly','PC_1Month','PC_6Month','PC_1Year','PC_2Year']
+			field_list = ['Average','EMA_Short','EMA_Long','Deviation_5DayAvg','Deviation_15DayAvg','LossStd_1Year','PC_1Month','PC_6Month','PC_1Year','PC_2Year']
 		df = prices.GetPriceHistory()
 		df['Average']=df['Average_5Day'] #Too much noise in the daily
 		model.LoadSource(sourceDF=prices.GetPriceHistory(), field_list=field_list, time_steps=time_steps, use_percentage_change=use_percentage_change)

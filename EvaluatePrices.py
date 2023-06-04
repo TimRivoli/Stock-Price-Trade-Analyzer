@@ -105,7 +105,7 @@ def CalculatePriceCorrelation(tickerList:list):
 def OpportunityFinder(tickerList:list):
 	outputFolder = 'data/dailypicks/'
 	summaryFile = '_DailyPicks.csv'
-	candidates = pd.DataFrame(columns=list(['Ticker','hp2Year','hp1Year','hp6mo','hp3mo','hp2mo','hp1mo','price_current','Channel_High','Channel_Low','EMA_Short','EMA_Long','2yearPriceChange','1yearPriceChange','6moPriceChange','3moPriceChange','2moPriceChange','1moPriceChange','PC_1Day','Gain_Monthly','LossStd_Monthly','Comments']))
+	candidates = pd.DataFrame(columns=list(['Ticker','hp2Year','hp1Year','hp6mo','hp3mo','hp2mo','hp1mo','price_current','Channel_High','Channel_Low','EMA_Short','EMA_Long','2yearPriceChange','1yearPriceChange','6moPriceChange','3moPriceChange','2moPriceChange','1moPriceChange','PC_1Day','Gain_Monthly','LossStd_1Year','Comments']))
 	candidates.set_index(['Ticker'], inplace=True)
 	for root, dirs, files in os.walk(outputFolder):
 		for f in files:
@@ -142,7 +142,7 @@ def OpportunityFinder(tickerList:list):
 				titleStatistics =' 5/15 dev: ' + str(round(psnap.Deviation_5Day*100, 2)) + '/' + str(round(psnap.Deviation_15Day*100, 2)) + '% ' + str(psnap.low) + '/' + str(psnap.Target_1Day) + '/' + str(psnap.high) + str(psnap.Snapshot_Date)
 				prices.GraphData(None, 60, ticker + ' 60d ' + titleStatistics, False, True, '60d', outputFolder)
 				if (price_current > 0 and hp2Year > 0 and hp1Year > 0 and hp6mo > 0 and hp2mo > 0 and hp1mo > 0): #values were loaded
-					candidates.loc[ticker] = [hp2Year,hp1Year,hp6mo,hp3mo,hp2mo,hp1mo,price_current,psnap.Channel_High,psnap.Channel_Low,psnap.EMA_Short,psnap.EMA_Long,(price_current/hp2Year)-1,(price_current/hp1Year)-1,(price_current/hp6mo)-1,(price_current/hp3mo)-1,(price_current/hp2mo)-1,(price_current/hp1mo)-1,psnap.PC_1Day, psnap.Gain_Monthly, psnap.LossStd_Monthly,Comments]
+					candidates.loc[ticker] = [hp2Year,hp1Year,hp6mo,hp3mo,hp2mo,hp1mo,price_current,psnap.Channel_High,psnap.Channel_Low,psnap.EMA_Short,psnap.EMA_Long,(price_current/hp2Year)-1,(price_current/hp1Year)-1,(price_current/hp6mo)-1,(price_current/hp3mo)-1,(price_current/hp2mo)-1,(price_current/hp1mo)-1,psnap.PC_1Day, psnap.Gain_Monthly, psnap.LossStd_1Year,Comments]
 				else:
 					print(ticker, price_current,hp2Year,hp1Year, hp6mo, hp2mo ,hp1mo )
 	print(candidates)
