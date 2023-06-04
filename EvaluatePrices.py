@@ -41,7 +41,7 @@ def DownloadAndSaveStocksWithStats(tickerList:list):
 	for ticker in tickerList:
 		prices = PricingData(ticker)
 		print('Loading ' + ticker)
-		if prices.LoadHistory():
+		if prices.LoadHistory(requestedEndDate=GetTodaysDate()):
 			print('Calcualting stats ' + ticker)
 			prices.CalculateStats()
 			prices.SaveStatsToFile(includePredictions=False, verbose=True)
@@ -50,7 +50,7 @@ def DownloadAndGraphStocks(tickerList:list, includePredictions:bool = False):
 	for ticker in tickerList:
 		prices = PricingData(ticker)
 		print('Loading ' + ticker)
-		if prices.LoadHistory():
+		if prices.LoadHistory(requestedEndDate=GetTodaysDate()):
 			print('Calcualting stats ' + ticker)
 			prices.NormalizePrices()
 			prices.CalculateStats()
@@ -58,8 +58,8 @@ def DownloadAndGraphStocks(tickerList:list, includePredictions:bool = False):
 			prices.NormalizePrices()
 			#prices.SaveStatsToFile(includePredictions=True, verbose=True)
 			psnap = prices.GetCurrentPriceSnapshot()
-			titleStatistics =' 5/15 dev: ' + str(round(psnap.fiveDayDeviation*100, 2)) + '/' + str(round(psnap.fifteenDayDeviation*100, 2)) + '% ' + str(psnap.low) + '/' + str(psnap.nextDayTarget) + '/' + str(psnap.high) + ' ' + str(psnap.snapShotDate)[:10]
-			print('Graphing ' + ticker + ' ' + str(psnap.snapShotDate)[:10])
+			titleStatistics =' 5/15 dev: ' + str(round(psnap.Deviation_5Day*100, 2)) + '/' + str(round(psnap.Deviation_15Day*100, 2)) + '% ' + str(psnap.low) + '/' + str(psnap.Target_1Day) + '/' + str(psnap.high) + ' ' + str(psnap.Snapshot_Date)[:10]
+			print('Graphing ' + ticker + ' ' + str(psnap.Snapshot_Date)[:10])
 			for days in [30,90,180,365]: #,2190,4380
 				includePredictions2 = includePredictions and (days < 1000)
 				prices.GraphData(endDate=None, daysToGraph=days, graphTitle=ticker + '_days' + str(days) + ' ' + titleStatistics, includePredictions=includePredictions2, saveToFile=True, fileNameSuffix=str(days).rjust(4, '0') + 'd', trimHistoricalPredictions=False)
@@ -80,7 +80,7 @@ def CalculatePriceCorrelation(tickerList:list):
 	for ticker in tickerList:
 		prices = PricingData(ticker)
 		print('Loading ' + ticker)
-		if prices.LoadHistory():
+		if prices.LoadHistory(requestedEndDate=GetTodaysDate()):
 			prices.TrimToDateRange(startDate, endDate)
 			prices.NormalizePrices()
 			x = prices.GetPriceHistory(['Average'])
@@ -105,7 +105,7 @@ def CalculatePriceCorrelation(tickerList:list):
 def OpportunityFinder(tickerList:list):
 	outputFolder = 'data/dailypicks/'
 	summaryFile = '_DailyPicks.csv'
-	candidates = pd.DataFrame(columns=list(['Ticker','hp2Year','hp1Year','hp6mo','hp3mo','hp2mo','hp1mo','currentPrice','channelHigh','channelLow','shortEMA','longEMA','2yearPriceChange','1yearPriceChange','6moPriceChange','3moPriceChange','2moPriceChange','1moPriceChange','dailyGain','monthlyGain','monthlyLossStd','Comments']))
+	candidates = pd.DataFrame(columns=list(['Ticker','hp2Year','hp1Year','hp6mo','hp3mo','hp2mo','hp1mo','price_current','Channel_High','Channel_Low','EMA_Short','EMA_Long','2yearPriceChange','1yearPriceChange','6moPriceChange','3moPriceChange','2moPriceChange','1moPriceChange','PC_1Day','Gain_Monthly','LossStd_Monthly','Comments']))
 	candidates.set_index(['Ticker'], inplace=True)
 	for root, dirs, files in os.walk(outputFolder):
 		for f in files:
@@ -118,33 +118,33 @@ def OpportunityFinder(tickerList:list):
 		if prices.LoadHistory(requestedEndDate=currentDate):
 			prices.CalculateStats()
 			psnap = prices.GetPriceSnapshot(AddDays(currentDate,-730))
-			hp2Year = psnap.fiveDayAverage
+			hp2Year = psnap.Average_5Day
 			psnap = prices.GetPriceSnapshot(AddDays(currentDate, -365))
-			hp1Year = psnap.fiveDayAverage
+			hp1Year = psnap.Average_5Day
 			psnap = prices.GetPriceSnapshot(AddDays(currentDate, -180))
-			hp6mo = psnap.fiveDayAverage
+			hp6mo = psnap.Average_5Day
 			psnap = prices.GetPriceSnapshot(AddDays(currentDate, -90))
-			hp3mo = psnap.fiveDayAverage
+			hp3mo = psnap.Average_5Day
 			psnap = prices.GetPriceSnapshot(AddDays(currentDate, -60))
-			hp2mo = psnap.fiveDayAverage
+			hp2mo = psnap.Average_5Day
 			psnap = prices.GetPriceSnapshot(AddDays(currentDate, -30))
-			hp1mo = psnap.fiveDayAverage
+			hp1mo = psnap.Average_5Day
 			psnap = prices.GetCurrentPriceSnapshot()
-			currentPrice = psnap.twoDayAverage	
+			price_current = psnap.average	
 			Comments = ''
-			if psnap.low > psnap.channelHigh: 
+			if psnap.low > psnap.Channel_High: 
 				Comments += 'OverBought; '
-			if psnap.high < psnap.channelLow: 
+			if psnap.high < psnap.Channel_Low: 
 				Comments += 'OverSold; '
-			if psnap.fiveDayDeviation > .0275: 
+			if psnap.Deviation_5Day > .0275: 
 				Comments += 'HighDeviation; '
 			if Comments !='': 
-				titleStatistics =' 5/15 dev: ' + str(round(psnap.fiveDayDeviation*100, 2)) + '/' + str(round(psnap.fifteenDayDeviation*100, 2)) + '% ' + str(psnap.low) + '/' + str(psnap.nextDayTarget) + '/' + str(psnap.high) + str(psnap.snapShotDate)
+				titleStatistics =' 5/15 dev: ' + str(round(psnap.Deviation_5Day*100, 2)) + '/' + str(round(psnap.Deviation_15Day*100, 2)) + '% ' + str(psnap.low) + '/' + str(psnap.Target_1Day) + '/' + str(psnap.high) + str(psnap.Snapshot_Date)
 				prices.GraphData(None, 60, ticker + ' 60d ' + titleStatistics, False, True, '60d', outputFolder)
-				if (currentPrice > 0 and hp2Year > 0 and hp1Year > 0 and hp6mo > 0 and hp2mo > 0 and hp1mo > 0): #values were loaded
-					candidates.loc[ticker] = [hp2Year,hp1Year,hp6mo,hp3mo,hp2mo,hp1mo,currentPrice,psnap.channelHigh,psnap.channelLow,psnap.shortEMA,psnap.longEMA,(currentPrice/hp2Year)-1,(currentPrice/hp1Year)-1,(currentPrice/hp6mo)-1,(currentPrice/hp3mo)-1,(currentPrice/hp2mo)-1,(currentPrice/hp1mo)-1,psnap.dailyGain, psnap.monthlyGain, psnap.monthlyLossStd,Comments]
+				if (price_current > 0 and hp2Year > 0 and hp1Year > 0 and hp6mo > 0 and hp2mo > 0 and hp1mo > 0): #values were loaded
+					candidates.loc[ticker] = [hp2Year,hp1Year,hp6mo,hp3mo,hp2mo,hp1mo,price_current,psnap.Channel_High,psnap.Channel_Low,psnap.EMA_Short,psnap.EMA_Long,(price_current/hp2Year)-1,(price_current/hp1Year)-1,(price_current/hp6mo)-1,(price_current/hp3mo)-1,(price_current/hp2mo)-1,(price_current/hp1mo)-1,psnap.PC_1Day, psnap.Gain_Monthly, psnap.LossStd_Monthly,Comments]
 				else:
-					print(ticker, currentPrice,hp2Year,hp1Year, hp6mo, hp2mo ,hp1mo )
+					print(ticker, price_current,hp2Year,hp1Year, hp6mo, hp2mo ,hp1mo )
 	print(candidates)
 	candidates.to_csv(outputFolder + summaryFile)
 	
@@ -154,9 +154,9 @@ def PriceCheck(startDate: str, Ticker:str):
 	prices = PricingData(ticker)
 	prices.LoadHistory()
 	sn = prices.GetPriceSnapshot(startDate, True)
-	startPrice = sn.oneDayAverage
+	startPrice = sn.average
 	sn = prices.GetPriceSnapshot(endDate, True)
-	endPrice = sn.oneDayAverage
+	endPrice = sn.average
 	print('From', startDate, ' to ', endDate)
 	print(ticker, startPrice, endPrice, (endPrice/startPrice-1)*100)
 	
