@@ -2219,7 +2219,7 @@ class StockPicker():
 				PC_LongTerm = sn.PC_1Year/365
 				Point_Value  = sn.Point_Value
 				if (longHistoricalValue > 0 and Price_Current > 0 and shortHistoricalValue > 0 and hp2Year > 0 and hp1Year > 0 and hp6mo > 0 and hp2mo > 0 and hp1mo > 0): #values were loaded
-					print(sn.PC_1Month/30,sn.PC_1Month3WeekEMA/30, ((Price_Current/shortHistoricalValue)-1)/shortHistoricalValue,'PC_1Month','PC_1Month3WeekEMA','((Price_Current/shortHistoricalValue)-1)/shortHistoricalValue')
+					#print(sn.PC_1Month/30,sn.PC_1Month3WeekEMA/30, ((Price_Current/shortHistoricalValue)-1)/shortHistoricalValue,'PC_1Month','PC_1Month3WeekEMA','((Price_Current/shortHistoricalValue)-1)/shortHistoricalValue')
 					pc2mo=((Price_Current/hp2mo)-1) 
 					candidates.loc[ticker] = [hp2Year,hp1Year,hp6mo,hp3mo,hp2mo,hp1mo,Price_Current,sn.PC_2Year,sn.PC_1Year,sn.PC_6Month,sn.PC_3Month,pc2mo,sn.PC_1Month,sn.PC_1Day,sn.Gain_Monthly,sn.LossStd_Monthly,longHistoricalValue,shortHistoricalValue,PC_LongTerm, PC_ShortTerm, sn.Point_Value, sn.Comments, self.priceData[i].historyEndDate]
 				else:
