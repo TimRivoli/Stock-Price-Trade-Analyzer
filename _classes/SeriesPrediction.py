@@ -8,6 +8,7 @@ from keras.models import Sequential, Model
 from keras.layers import Input, Dense, Dropout, MaxPooling1D, Conv1D, LSTM, GRU, Activation, Flatten, MultiHeadAttention, LayerNormalization, Bidirectional, BatchNormalization
 from keras.metrics import RootMeanSquaredError, MeanAbsoluteError
 from keras.callbacks import EarlyStopping
+from keras.optimizers import Adam
 from pandas.tseries.offsets import BDay
 from _classes.PriceTradeAnalyzer import PTADatabase
 from _classes.Utility import *
@@ -31,10 +32,14 @@ class SeriesPredictionNN(object):
 	_dataFolderPredictionResults = 'data/prediction/'
 	source_data_loaded = False
 	target_data_loaded = False
+	model = None
 	batchesCreated = False
 	predictClasses = False
-	model = None
 	use_BatchNormalization = False
+	source_field_list = None
+	target_fields = None
+	prediction_target_days = 0
+	predictionDF = None
 	train_start_accuracy = 0
 	train_end_accuracy = 0
 	train_start_accuracy2 = 0
@@ -42,24 +47,24 @@ class SeriesPredictionNN(object):
 	train_test_accuracy = 0
 	train_start_loss = 0
 	train_end_loss = 0
-
 	pcFieldWatch = [] #These are fields which will automatically be converted to percentage change from prior value
 
-	def __init__(self, baseModelName:str='', model_type:str='', PredictionResultsDataFolder:str='', TensorFlowModelsDataFolder:str=''):	
+	def __init__(self, base_model_name:str='', prediction_target_days:int=0, model_type:str='', prediction_results_folder:str='', model_save_folder:str=''):	
 		if not model_type in ['CNN','LSTM','CNN_LSTM','BiLSTM','GRU','ActorCritic','Attention','Simple']: model_type='LSTM'
 		self.model_type = model_type
-		baseModelName += '_' + model_type
-		self.baseModelName = baseModelName
-		self.modelName = baseModelName
+		base_model_name += '_' + model_type
+		self.base_model_name = base_model_name
+		self.model_name = base_model_name
+		self.prediction_target_days = prediction_target_days
 		keras.backend.clear_session()
-		if not PredictionResultsDataFolder =='':
-			if CreateFolder(PredictionResultsDataFolder):
-				if not PredictionResultsDataFolder[-1] =='/': PredictionResultsDataFolder += '/'
-				self._dataFolderPredictionResults = PredictionResultsDataFolder
-		if not TensorFlowModelsDataFolder =='':
-			if CreateFolder(TensorFlowModelsDataFolder):
-				if not TensorFlowModelsDataFolder[-1] =='/': TensorFlowModelsDataFolder += '/'
-				self._dataFolderTensorFlowModels = TensorFlowModelsDataFolder
+		if not prediction_results_folder =='':
+			if CreateFolder(prediction_results_folder):
+				if not prediction_results_folder[-1] =='/': prediction_results_folder += '/'
+				self._dataFolderPredictionResults = prediction_results_folder
+		if not model_save_folder =='':
+			if CreateFolder(model_save_folder):
+				if not model_save_folder[-1] =='/': model_save_folder += '/'
+				self._dataFolderTensorFlowModels = model_save_folder
 		CreateFolder(self._dataFolderTensorFlowModels)
 		CreateFolder(self._dataFolderPredictionResults)	
 #  ----------------------------------------------------  Model Builds  -----------------------------------------------------------------
@@ -222,8 +227,8 @@ class SeriesPredictionNN(object):
 		self.num_layers = len(model.layers) - len(inputs)
 		self.model = model
 
-	def BuildModel(self, dropout_rate:float=0.01, use_BatchNormalization:bool=False):
-		#hidden_layer_size:int=256, dropout_rate:float=0.01, optimizer:str='adam', learning_rate:float=0.00001, metrics:list=['accuracy'], dropout:bool=True
+	def BuildModel(self, learning_rate:float=0.00001, dropout_rate:float=0.01, use_BatchNormalization:bool=False):
+		#hidden_layer_size:int=256, dropout_rate:float=0.01, optimizer:str='adam', metrics:list=['accuracy'], dropout:bool=True
 		#0.01 dropout rate is low, could be closer to .2
 		#0.000020 learning rate is low, 0.001 is considered deep, current implementations use adaptive
 		self.dropout_rate = dropout_rate
@@ -232,7 +237,8 @@ class SeriesPredictionNN(object):
 			print('Source data needs to be loaded before building model.')
 			assert(False)
 		if not self.batchesCreated: self.MakeTrainTest()
-		self.optimizer_function='adam' #adaptive learning rate, starts at 0.001 
+		#self.optimizer_function='adam' #adaptive learning rate, starts at 0.001 
+		self.optimizer_function=Adam(learning_rate=learning_rate)
 		if self.predictClasses:
 			self.loss_function = 'categorical_crossentropy'
 			self.output_activation = 'softmax'
@@ -246,11 +252,11 @@ class SeriesPredictionNN(object):
 			if self.model_type == "LSTM":
 				self._Build_LSTM_Model() 
 			elif self.model_type == "BiLSTM":
-				self._Build_BiLSTM_Model()				
+				self._Build_BiLSTM_Model()
 			elif self.model_type == "CNN":
 				self._Build_CNN_Model()
 			elif self.model_type == "GRU":
-				self._Build_GRU_Model()			
+				self._Build_GRU_Model()		
 			elif self.model_type == "ActorCritic":
 				self._Build_ActorCritic_Model()
 			elif self.model_type == "Attention":
@@ -261,20 +267,27 @@ class SeriesPredictionNN(object):
 				self._Build_Simple_Model()
 		
 	def DisplayModel(self, IncludeDetail:bool=False):
-		print(self.modelName +  'Model')
+		print(self.model_name +  'Model')
 		if self.model is None: self.BuildModel()
 		if self.model is not None: print(self.model.summary())
 		if IncludeDetail: print(self.model.to_json())
 
 	def Load(self):
-		filename = self._dataFolderTensorFlowModels + self.modelName 
+		self.Setmodel_name()
+		filename = self._dataFolderTensorFlowModels + self.model_name 
 		print('Restoring model from ' + filename + '.h5')
 		if FileExists(filename + '.h5'):
 			keras.backend.clear_session()
 			self.model = keras.models.load_model(filename + '.h5')
 			self.model.load_weights(filename + 'weights.h5')	#This is redundant but if verifies the restore
+			#self.model.summary()
+			self.feature_count = ReadConfigInt(self.model_name, 'feature_count')
+			self.num_classes = ReadConfigInt(self.model_name, 'num_classes')
+			self.time_steps = ReadConfigInt(self.model_name, 'time_steps')
+			self.prediction_target_days = ReadConfigInt(self.model_name, 'prediction_target_days')
+			self.source_field_list = ReadConfigList(self.model_name, 'source_field_list')
+			self.target_fields = ReadConfigList(self.model_name, 'target_fields') 
 			print('Model restored from disk')
-			self.model.summary()
 			r = True
 		else:
 			print('Model backup not found: ', filename + '.ht5')
@@ -285,16 +298,23 @@ class SeriesPredictionNN(object):
 		if self.model is None:
 			print('No model loaded.')
 		else:
-			filename = self._dataFolderTensorFlowModels + self.modelName
+			filename = self._dataFolderTensorFlowModels + self.model_name
 			self.model.save(filename + '.h5')
 			self.model.save_weights(filename + 'weights.h5')
 			j = self.model.to_json()
 			with open(filename + '.json', "w") as json_file:
 				json_file.write(j)
+			section_name = self.model_name
+			WriteConfig(section_name, 'feature_count', self.feature_count)
+			WriteConfig(section_name, 'num_classes', self.num_classes)
+			WriteConfig(section_name, 'time_steps', self.time_steps)
+			WriteConfig(section_name, 'prediction_target_days', self.prediction_target_days)
+			WriteConfig(section_name, 'source_field_list', self.source_field_list)
+			WriteConfig(section_name, 'target_fields', self.target_fields)
 
 	def SavedModelDelete(self):
 		r = True
-		filename = self._dataFolderTensorFlowModels + self.modelName 
+		filename = self._dataFolderTensorFlowModels + self.model_name 
 		print('Deleting saved model... ' + filename)
 		if FileExists(filename + '.h5'):
 			keras.backend.clear_session()
@@ -309,17 +329,8 @@ class SeriesPredictionNN(object):
 			print('Model backup not found: ', filename + '.ht5')
 		return r
 
-	def SetModelName(self): #used for backups, restores, and logging generated automatically when you load target data
-		self.modelName = self.baseModelName + '_win' + str(self.time_steps) + '_days' + str(self.prediction_target_days) + '_feat' + str(self.feature_count) + '_class' + str(self.num_classes)
-
-	def SetModelParams(self, feature_count:int=0, num_classes:int=0, time_steps:int=0, prediction_target_days:int=0):
-		#These are normally set when you load data, but if you want to restore a model and do some PredictOne operations then you will need set these parameters before Load
-		if (feature_count > 0): self.feature_count = feature_count
-		if (num_classes > 0): self.num_classes = num_classes
-		if (time_steps > 0): self.time_steps = time_steps
-		if (prediction_target_days > 0): self.prediction_target_days = prediction_target_days
-		self.SetModelName(time_steps, prediction_target_days, feature_count, num_classes)
-
+	def Setmodel_name(self): #used for backups, restores, and logging generated automatically when you load target data
+		self.model_name = self.base_model_name + '_feat' + str(self.feature_count) + '_win' + str(self.time_steps)   + '_days' + str(self.prediction_target_days)
 #  ----------------------------------------------------  Data preparation  -------------------------------------------------------------------
 	def DisplayDataSample(self):
 		print('Source:')
@@ -340,18 +351,21 @@ class SeriesPredictionNN(object):
 		print(self.target_data_test[:1])
 	
 	def _AddTimeSteps(self, d:numpy.array, time_steps:int):
-		# Reshape the array to have timesteps
-		d_reshaped = numpy.zeros((len(d) - time_steps + 1, time_steps))
+		#Reshape the array to have timesteps, input single column of data, output (row_count - time_steps + 1, time_steps)
+		row_count = len(d)
+		result_row_count = row_count - time_steps + 1
+		r = numpy.zeros((result_row_count, time_steps)) 
 		for i in range(time_steps):
-			d_reshaped[:, i] = d[i:len(d) - time_steps + i + 1]
-		return d_reshaped
+			r[:, i] = d[i:result_row_count + i]
+		return r
 
 	def _CustomSourceOperations(self):	pass	
 		#Placeholder to allow custom operations on source data setup for subclasses
 
 	def LoadSource(self, sourceDF:pandas.DataFrame, field_list:list=None, time_steps:int=10, use_percentage_change:bool=False):
-		#X values are set to a window of historical values for each row of sourceDF starting at row time_steps, it has no dates so the row order must match y
-		#sourceDF is trimmed to start at time_steps, which is the beginning of X
+		#input will be converted into a list of arrays for keras, one for each column of input
+		#time steps will be added for each entry to produce a historical window
+		if time_steps < 1: time_steps=1
 		self.source_data_loaded = False
 		self.use_percentage_change = use_percentage_change
 		self.sourceDF = sourceDF.copy()			#Work off a copy just in case it was passed by ref
@@ -370,7 +384,6 @@ class SeriesPredictionNN(object):
 			print('Nan values in source input.  This may break the training.\n')
 			assert(False)
 		self.time_steps = time_steps
-
 		pcFields = [] #Fields we are going to convert to percentage change
 		self.input_data = []
 		for c in self.source_field_list:
@@ -387,12 +400,14 @@ class SeriesPredictionNN(object):
 				x = self.sourceDF[c].values
 				x = self._AddTimeSteps(x, time_steps)
 				self.input_data.append(x)
+		#print(self.input_data[0])
 		self.num_features = len(self.input_data)
+		self.num_source_days = len(self.input_data[0])
+		print('Features in source data: {}'.format(self.num_features))
+		print('Days in the source dataframe: {}'.format(len(self.sourceDF)))
+		print('Timesteps: ', self.time_steps)
+		print('Days in the source data after timestep creation: {}'.format(self.num_source_days))
 		self.sourceDF.drop(self.sourceDF.index[:time_steps-1],inplace=True) #Forget anything that occurs before the history window.  Data is not part of the training source or target
-		self.num_source_days = self.sourceDF.shape[0]
-		print('Features in source dataset: {}'.format(self.num_features))
-		print('Days in the source dataframe: {}'.format(self.num_source_days))
-		print('Timestep Window Size: ', self.time_steps)
 		self.source_data_loaded = True
 		
 	def _CustomTargetOperations(self): pass
@@ -403,7 +418,6 @@ class SeriesPredictionNN(object):
 		#targetDF can be specified or can be derived from the sourceDF, y and y_train/test are derived from it to test accuracy of training
 		#actual training data X and y numpy arrays with no dates so they are aligned by row
 		#shift_target_values=True, since X and y have no dates, they are aligned by rows, the y=X.shift(prediction_target_days) or y.shift(-prediction_target_days) = X
-		#predictionDF is created as empty date index to store prediced values for all values of sourceDF, prediction_target_days are added to the end to hold projections
 		self.prediction_target_days = prediction_target_days
 		if not self.source_data_loaded:
 			print('Load source data before target data.')
@@ -413,17 +427,17 @@ class SeriesPredictionNN(object):
 		else:
 			self.targetDF = targetDF.copy()
 		self._CustomTargetOperations()
-		self.targetDF = self.targetDF[self.sourceDF.index.min():self.sourceDF.index.max()]	#trim any entries outside range of source
+		if isinstance(self.sourceDF.index, pd.DatetimeIndex): self.targetDF = self.targetDF[self.sourceDF.index.min():self.sourceDF.index.max()]	#trim any entries outside range of source
 		if self.targetDF.isnull().values.any(): 
 			print('Nan values in target input.  This will break the training.\n')
 			assert(False)
 		if shift_target_values and prediction_target_days > 0:
 			self.targetDF = self.targetDF.shift(-prediction_target_days)
 			print('Targets have been pushed ' + str(prediction_target_days) + ' backward for prediction.')
-
-		self.num_classes = self.targetDF.shape[1] 
+		self.num_classes = self.targetDF.shape[1]
 		self.target_data = self.targetDF.values
-		if self.num_classes ==1: self.target_data = numpy.squeeze(self.target_data)
+		self.target_fields = self.targetDF.columns.tolist()
+		#if self.num_classes ==1: self.target_data = numpy.squeeze(self.target_data)
 		print('Classes in target values: {}'.format(self.num_classes))
 		print('Days in target dataframe: {}'.format(self.targetDF.shape[0]))
 		if len(self.input_data)==0 or len(self.target_data) ==0:
@@ -433,36 +447,24 @@ class SeriesPredictionNN(object):
 			print('target_data size: ', len(self.target_data))
 			print('Empty data sets given.')
 			assert(False)
-		if not len(self.input_data[0]) ==  len(self.target_data):
+		if len(self.input_data[0]) != len(self.target_data):
 			print('input_data and target_data should have the same number of rows', len(self.input_data[0]), len(self.target_data))
 			#print('Missing target dates')
 			#print(self.sourceDF.index.difference(self.targetDF.index))
 			#print('Missing source dates')
 			#print(self.targetDF.index.difference(self.sourceDF.index))
 			assert(False)
-		#if self.model_type=='CNN' and not self.num_classes == self.num_features and not self.predictClasses:
-		#	print('CNN model requires feature count to equal class count.')
-		#	assert(False)
-		if self.targetDF.shape[1] == 1:
-			self.predictionDF = pandas.DataFrame(index=self.targetDF.index) 
-		else:
-			self.predictionDF = pandas.DataFrame(columns=list(self.targetDF.columns.values), index=self.targetDF.index)
-		self.predictionDF = self.predictionDF[prediction_target_days:]	#drop the first n days, not predicted
-		d = self.predictionDF.index[-1] 
-		for i in range(0,prediction_target_days): 	#Add new days to the end for predictions beyond the date of data provided
-			self.predictionDF.loc[d + BDay(i+1), self.targetDF.columns.values[0]] = numpy.nan	
-		assert(self.predictionDF.shape[0] == self.targetDF.shape[0] and self.predictionDF.shape[0] == self.sourceDF.shape[0])	#This is key to aligning the results since train data has no dates we use rows
-		self.modelFileName = self.SetModelName()
+		self.modelFileName = self.Setmodel_name()
 		self.target_data_loaded = True
 		
-	def MakeTrainTest(self, batch_size=32, train_test_split=.90):
+	def MakeTrainTest(self, batch_size=32, train_test_split=.90, verbose:bool=False):
 		#splits data sets into training and testing
 		if not (self.source_data_loaded):
 			print('Source data needs to be loaded before batching.')
 			assert(False)
-		elif not self.target_data_loaded: 
-			print('Target data not specified.  Initializing with copy of source.')
-			self.LoadTarget()
+		#elif not self.target_data_loaded and train_test_split < 100: 
+		#	print('Target data not specified.  Initializing with copy of source.')
+		#	self.LoadTarget()
 		self.batch_size = batch_size
 		print('Batching data...')
 		days_of_data=len(self.input_data[0])
@@ -470,23 +472,24 @@ class SeriesPredictionNN(object):
 		train_test_cuttoff = round((days_of_data // batch_size) * train_test_split) * batch_size + train_start_offset
 		self.input_data_train = []
 		self.input_data_test = []
-		for l in self.input_data: #for each feature, split it on train_test_cuttoff
-			self.input_data_train.append(l[:train_test_cuttoff]) #to train_test_cuttoff
-			self.input_data_test.append(l[train_test_cuttoff:])   #after train_test_cuttoff			
-		self.target_data_train = self.target_data[:train_test_cuttoff]  #to train_test_cuttoff
-		self.target_data_test = self.target_data[train_test_cuttoff:]   #after train_test_cuttoff
+		for f in self.input_data: #for each feature, split it on train_test_cuttoff
+			self.input_data_train.append(f[:train_test_cuttoff]) #to train_test_cuttoff
+			self.input_data_test.append(f[train_test_cuttoff:])   #after train_test_cuttoff			
+		if self.target_data_loaded:
+			self.target_data_train = self.target_data[:train_test_cuttoff]  #to train_test_cuttoff
+			self.target_data_test = self.target_data[train_test_cuttoff:]   #after train_test_cuttoff
 		self.train_start_date = self.sourceDF.index.min()
 		self.test_start_date = self.sourceDF.index[train_test_cuttoff-1]
 		self.test_end_date = self.sourceDF.index.max()		
-		print('(train, test, end)', self.train_start_date, self.test_start_date, self.test_end_date)
-		print('train_test_cuttoff: ', train_test_cuttoff)
-		print('(Days, Window size, Features)')
-		print('input_data_train size: ', len(self.input_data_train[0]), len(self.input_data_train[0][0]), len(self.input_data_train)) 
-		print('input_data_test size: ',  len(self.input_data_test[0]),  len(self.input_data_test[0][0]),  len(self.input_data_test))
-		print('(Days, Classes)')
-		print('target_data_train size: {}'.format(self.target_data_train.shape))
-		print(self.modelName)
-		print('\n')
+		if verbose: 
+			print('(train, test, end)', self.train_start_date, self.test_start_date, self.test_end_date)
+			print('train_test_cuttoff: ', train_test_cuttoff)
+			print('(Days, Features)')
+			print('input_data_train size: {}'.format(len(self.input_data_train[0]), len(self.input_data_train))) 
+			print('input_data_test size: {}'.format(len(  self.input_data_test[0]), len(self.input_data_test)))
+			print('(Days, Classes)')
+			print('target_data_train size: {}'.format(self.target_data_train.shape))
+			print('\n')
 		self.batchesCreated = True
 
 #  ----------------------------------------------------  Training / Prediction  -----------------------------------------------------------------
@@ -529,28 +532,37 @@ class SeriesPredictionNN(object):
 			self.DisplayTrainingSummary()
 			if self.model_type=='ActorCritic': print(' Critic Accuracy ' + str(self.train_start_accuracy2) + ' -> ' + str(self.train_end_accuracy2) + ' (' + str((self.train_end_accuracy2-self.train_start_accuracy2)*100) + '%)')
 
-			TestResults = pandas.DataFrame(columns=list(['ModelName','train_start_accuracy', 'train_end_accuracy', 'train_start_accuracy2', 'train_end_accuracy2', 'train_start_loss', 'train_end_loss', 'num_features','num_classes','num_layers','prediction_target_days','time_steps','num_source_days','batch_size','epochs','dropout_rate','batch_normalization']))
-			TestResults.set_index(['ModelName'], inplace=True)	
-			TestResults.loc[self.modelName] = [self.train_start_accuracy, self.train_end_accuracy, self.train_start_accuracy2, self.train_end_accuracy2, self.train_start_loss, self.train_end_loss, self.num_features, self.num_classes, self.num_layers, self.prediction_target_days, self.time_steps, self.num_source_days, self.batch_size, epochs_completed, self.dropout_rate, self.use_BatchNormalization]
+			TestResults = pandas.DataFrame(columns=list(['model_name','train_start_accuracy', 'train_end_accuracy', 'train_start_accuracy2', 'train_end_accuracy2', 'train_start_loss', 'train_end_loss', 'num_features','num_classes','num_layers','prediction_target_days','time_steps','num_source_days','batch_size','epochs','dropout_rate','batch_normalization']))
+			TestResults.set_index(['model_name'], inplace=True)	
+			TestResults.loc[self.model_name] = [self.train_start_accuracy, self.train_end_accuracy, self.train_start_accuracy2, self.train_end_accuracy2, self.train_start_loss, self.train_end_loss, self.num_features, self.num_classes, self.num_layers, self.prediction_target_days, self.time_steps, self.num_source_days, self.batch_size, epochs_completed, self.dropout_rate, self.use_BatchNormalization]
 			TestResults['source_field_list'] = str(self.source_field_list)
 			if useSQL:
 				try:
 					ToSQL(TestResults, 'NNTrainingResults')
 				except:
 					print('Unable to write training history to SQL')
-			filename = self._dataFolderTensorFlowModels + self.modelName + '_trainhist.csv'
+			filename = self._dataFolderTensorFlowModels + self.model_name + '_trainhist.csv'
 			try:
 				TestResults.to_csv(filename)
 			except:
 				print('Unable to write training history to ' + filename)
-
+	
 	def Predict(self, use_full_data_set:bool=False):
-		#Populate predictionDF with the models predicted, date is shifted because X value at d is predicted value at d + prediction_target_days
+		#predictionDF is created as empty date index to store prediced values for all values of sourceDF, prediction_target_days are added to the end to hold projections
+		#predictionDF is populated with the models predicted, date is shifted because X value at d is predicted value at d + prediction_target_days
 		#This can either be done on the full data set or just the test portion of it
 		#Aligning the predicted values with the predictionDF is important.  The source was stripped of dates so it is matched by row onto the date indexed dataframe
+		
 		if self.model is None: self.BuildModel()		
 		if self.model is not None: 
 			if not self.batchesCreated: self.MakeTrainTest()
+			self.predictionDF = pandas.DataFrame(columns=list(self.target_fields), index=self.sourceDF.index)
+			self.predictionDF = self.predictionDF[self.prediction_target_days:]	#drop the first n days, not predicted
+			d = self.predictionDF.index[-1] 
+			for i in range(0,self.prediction_target_days): 	#Add new days to the end for predictions beyond the date of data provided
+				self.predictionDF.loc[d + BDay(i+1), self.target_fields] = numpy.nan	
+			assert(self.predictionDF.shape[0] == self.sourceDF.shape[0])	#This is key to aligning the results since train data has no dates we use rows
+
 			print('Running predictions...')
 			d = self.input_data_test
 			if use_full_data_set: d = self.input_data
@@ -558,7 +570,7 @@ class SeriesPredictionNN(object):
 				predictions = self.model.predict_classes(d)	
 			else:
 				predictions = self.model.predict(d)
-				print(len(predictions))
+				predictions = predictions.astype(float)
 				if self.model_type=='ActorCritic': predictions = predictions[1] #results are list [actor, advantage]
 					#print(predictions[0].shape) #(13303, 160, 1)
 					#print(predictions[0][0].shape) #1
@@ -577,33 +589,35 @@ class SeriesPredictionNN(object):
 					self.predictionDF[columnName].iloc[start_index + i] = predictions[i][0]
 				else:
 					self.predictionDF.iloc[start_index + i] = predictions[i]
+			print(self.predictionDF)
 			print('Predictions complete.')
 
-	def PredictOne(self, X):	
-		r = 0
+	def PredictOne(self, data:list):
+		#input sould be a list of arrays, each array is the time_step series for the feature column
+		predictions = None
 		if self.model is None: 
 			print('Model is not ready for predictions')
 		else: 
-			d = numpy.array([X])
 			if self.predictClasses:
-				predictions = self.model.predict_classes(d)	
+				predictions = self.model.predict_classes(data)	
 			else:
-				predictions = self.model.predict(d)	
+				predictions = self.model.predict(data)	
 				if self.model_type=='ActorCritic': predictions = predictions[0] #results are for actor and critic, picked actor
-			r = predictions[0][0]
-		return r
+		return predictions
 
 	def GetTrainingResults(self, include_target:bool = False, include_accuracy:bool=False, include_input:bool = False):
 		if include_input:
-			r = self.sourceDF.join(self.predictionDF, how='outer', rsuffix='_Predicted')
-			if include_target: r = r.join(self.targetDF, how='outer', rsuffix='_Target')
-			if include_accuracy: r['PercentageDeviation'] = abs((r['Average']-r['Average_Predicted'])/r['Average'])
+			if include_target and self.target_data_loaded: 
+				r = self.sourceDF.join(self.targetDF, how='outer', rsuffix='_Target')
+				r = r.join(self.predictionDF, how='outer', rsuffix='_Predicted')
+			else:
+				r = self.sourceDF.join(self.predictionDF, how='outer', rsuffix='_Predicted')
+			if include_accuracy and 'Average' in r.columns: r['PercentageDeviation'] = abs((r['Average']-r['Average_Predicted'])/r['Average'])
 			r = r.reindex(sorted(r.columns), axis=1)
-		elif include_target:
+		elif include_target and self.target_data_loaded:
 			r = self.targetDF.join(self.predictionDF, how='outer', rsuffix='_Predicted')
-			if include_accuracy: r['PercentageDeviation'] = abs((r['Average']-r['Average_Predicted'])/r['Average'])
+			if include_accuracy and 'Average' in r.columns: r['PercentageDeviation'] = abs((r['Average']-r['Average_Predicted'])/r['Average'])
 			r = r.reindex(sorted(r.columns), axis=1)
-
 		else:
 			r = self.predictionDF
 		return r.copy()

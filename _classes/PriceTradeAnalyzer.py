@@ -1,4 +1,5 @@
 #PriceSnapshot, PricingData, Portfolio, TradingModel, ForcastModel, StockPicker, and PTADatabase are the intended exportable classes
+#PriceSnapshot, PricingData, Portfolio, TradingModel, ForcastModel, StockPicker, and PTADatabase are the intended exportable classes
 #user input dates are expected to be in local format
 #These settings can be configured in a global config.ini in the program root directory under [Settings]
 #There are also optional settings for using a database
@@ -115,19 +116,24 @@ class PriceSnapshot:
 	open=0
 	close=0
 	average=0
-	Average_1Day=0
+	average=0
 	Average_2Day=0
 	Average_5Day=0
 	EMA_Short=0
 	EMA_ShortSlope=0
 	EMA_Long=0
 	EMA_LongSlope=0
+	EMA_12Day=0
+	EMA_26Day=0
+	MACD_Line=0
+	MACD_Signal=0
+	MACD_Histogram=0
 	Channel_High=0
 	Channel_Low=0
 	Deviation_1Day=0
 	Deviation_5Day=0
+	Deviation_10Day=0
 	Deviation_15Day=0
-	PC_1Day=0
 	Gain_Monthly=0
 	LossStd_1Year=0
 	Target_1Day=0
@@ -136,13 +142,15 @@ class PriceSnapshot:
 	PC_1Day=0
 	PC_1Month=0
 	PC_1Month3WeekEMA=0
+	PC_2Month=0
 	PC_3Month=0
 	PC_6Month=0
 	PC_1Year=0
+	PC_18Month=0
 	PC_2Year=0
 	Point_Value=0
 	Comments=''
-	Snapshot_Date=None
+	date=None
 	
 class DataDownload:
 	def _DownLoadGoogleFinancePage(self, ticker:str, stockExchange:str ="NYSE"):
@@ -687,8 +695,8 @@ class PricingData:
 
 	def TrimToDateRange(self,startDate:datetime, endDate:datetime):
 		startDate = ToDateTime(startDate)
-		startDate -= timedelta(days=45) #If we do not include earlier dates we can not calculate all the stats
-		endDate = ToDateTime(endDate)
+		startDate -= timedelta(days=750) #If we do not include earlier dates we can not calculate all the stats
+		endDate = ToDateTime(endDate) + timedelta(days=10)
 		self.historicalPrices = self.historicalPrices[(self.historicalPrices.index >= startDate) & (self.historicalPrices.index <= endDate)]
 		self.historyStartDate = self.historicalPrices.index.min()
 		self.historyEndDate = self.historicalPrices.index.max()
@@ -771,10 +779,17 @@ class PricingData:
 		self.historicalPrices['PC_3Day'] = (self.historicalPrices['Average'] / (self.historicalPrices['Average'].shift(3))-1)*83.33  #3 day price change, annualized
 		self.historicalPrices['PC_1Month'] = (self.historicalPrices['Average_5Day'] / (self.historicalPrices['Average_5Day'].shift(20))-1)*12.5  #1 month price change, based on 5 day moving average, annualized
 		self.historicalPrices['PC_1Month3WeekEMA'] = self.historicalPrices['PC_1Month'].ewm(span=15, adjust=True, ignore_na=False).mean() #3 week EMA of PC_1Month, performance degradation of short re-eval periods likely due to noise in PC_1Month
+		self.historicalPrices['PC_2Month'] = (self.historicalPrices['Average_5Day'] / (self.historicalPrices['Average_5Day'].shift(41))-1)*6.097  #2 month price change, annualized
 		self.historicalPrices['PC_3Month'] = (self.historicalPrices['Average_5Day'] / (self.historicalPrices['Average_5Day'].shift(62))-1)*4.03  #3 month price change, annualized
 		self.historicalPrices['PC_6Month'] = (self.historicalPrices['Average_5Day'] / (self.historicalPrices['Average_5Day'].shift(125))-1)*2 #6 month price change, annualized
 		self.historicalPrices['PC_1Year'] = (self.historicalPrices['Average_5Day'] / (self.historicalPrices['Average_5Day'].shift(250))-1)  #1 year price change, 250 periods
+		self.historicalPrices['PC_18Month'] = (self.historicalPrices['Average_5Day'] / (self.historicalPrices['Average_5Day'].shift(375))-1) * 0.667  #1.5 year price change
 		self.historicalPrices['PC_2Year'] = (self.historicalPrices['Average_5Day'] / (self.historicalPrices['Average_5Day'].shift(500))-1)/2  #2 year price change, annualized
+		self.historicalPrices['EMA_12Day'] =  self.historicalPrices['Average'].ewm(span=12, adjust=True, ignore_na=False).mean()
+		self.historicalPrices['EMA_26Day'] =  self.historicalPrices['Average'].ewm(span=26, adjust=True, ignore_na=False).mean()
+		self.historicalPrices['MACD_Line'] =  self.historicalPrices['EMA_12Day'] - self.historicalPrices['EMA_26Day']
+		self.historicalPrices['MACD_Signal'] =  self.historicalPrices['MACD_Line'].ewm(span=9, adjust=True, ignore_na=False).mean()
+		self.historicalPrices['MACD_Histogram'] =  self.historicalPrices['MACD_Line'] - self.historicalPrices['MACD_Signal']
 		self.historicalPrices['EMA_1Month'] =  self.historicalPrices['Average'].ewm(span=21, adjust=True, ignore_na=False).mean()
 		self.historicalPrices['EMA_3Month'] =  self.historicalPrices['Average'].ewm(span=62, adjust=True, ignore_na=False).mean()
 		self.historicalPrices['EMA_6Month'] =  self.historicalPrices['Average'].ewm(span=126, adjust=True, ignore_na=False).mean()
@@ -784,15 +799,16 @@ class PricingData:
 		self.historicalPrices['EMA_Long'] = self.historicalPrices['EMA_1Year']
 		self.historicalPrices['EMA_LongSlope'] = (self.historicalPrices['EMA_Long']/self.historicalPrices['EMA_Long'].shift(1))-1
 		self.historicalPrices['Deviation_1Day'] = (self.historicalPrices['High'] - self.historicalPrices['Low'])/self.historicalPrices['Low']
-		self.historicalPrices['Deviation_5DayAvg'] = self.historicalPrices['Deviation_1Day'].rolling(window=5, center=False).mean()
-		self.historicalPrices['Deviation_15DayAvg'] = self.historicalPrices['Deviation_1Day'].rolling(window=15, center=False).mean()
+		self.historicalPrices['Deviation_5Day'] = self.historicalPrices['Deviation_1Day'].rolling(window=5, center=False).mean()
+		self.historicalPrices['Deviation_10Day'] = self.historicalPrices['Deviation_1Day'].rolling(window=10, center=False).mean()
+		self.historicalPrices['Deviation_15Day'] = self.historicalPrices['Deviation_1Day'].rolling(window=15, center=False).mean()
 		self.historicalPrices['Gain_Monthly'] = (self.historicalPrices['Average_5Day'] / self.historicalPrices['Average_5Day'].shift(20))-1
 		self.historicalPrices['Gain_Monthly'] = self.historicalPrices['Gain_Monthly'].replace(np.NaN, 0) #test not sure what getting NaN here
 		self.historicalPrices['Losses_Monthly'] = self.historicalPrices['Gain_Monthly']
 		self.historicalPrices['Losses_Monthly'].loc[self.historicalPrices['Losses_Monthly'] > 0] = 0 #zero out the positives
 		self.historicalPrices['LossStd_1Year'] = self.historicalPrices['Losses_Monthly'].rolling(window=252, center=False).std()	#Stdev of negative values, these are the negative monthly price drops in the past year
-		self.historicalPrices['Channel_High'] = self.historicalPrices['EMA_Long'] + (self.historicalPrices['Average']*self.historicalPrices['Deviation_15DayAvg'])
-		self.historicalPrices['Channel_Low'] = self.historicalPrices['EMA_Long'] - (self.historicalPrices['Average']*self.historicalPrices['Deviation_15DayAvg'])
+		self.historicalPrices['Channel_High'] = self.historicalPrices['EMA_Long'] + (self.historicalPrices['Average']*self.historicalPrices['Deviation_15Day'])
+		self.historicalPrices['Channel_Low'] = self.historicalPrices['EMA_Long'] - (self.historicalPrices['Average']*self.historicalPrices['Deviation_15Day'])
 		self.historicalPrices.fillna(method='ffill', inplace=True)
 		self.historicalPrices.fillna(method='bfill', inplace=True)
 		self.statsLoaded = True
@@ -835,8 +851,8 @@ class PricingData:
 			elif method==1 :	#Slope plus momentum with some consideration for trend.
 					#++,+-,-+,==
 				bucket = self.historicalPrices.copy()
-				bucket['Predicted_Low']  = bucket['Average'].shift(1) * (1-bucket['Deviation_15DayAvg']/2) + (abs(bucket['PC_1Day'].shift(1)))
-				bucket['Predicted_High'] = bucket['Average'].shift(1) * (1+bucket['Deviation_15DayAvg']/2) + (abs(bucket['PC_1Day'].shift(1)))
+				bucket['Predicted_Low']  = bucket['Average'].shift(1) * (1-bucket['Deviation_15Day']/2) + (abs(bucket['PC_1Day'].shift(1)))
+				bucket['Predicted_High'] = bucket['Average'].shift(1) * (1+bucket['Deviation_15Day']/2) + (abs(bucket['PC_1Day'].shift(1)))
 				bucket = bucket.query('EMA_LongSlope >= -' + str(minActionableSlope) + ' or EMA_ShortSlope >= -' + str(minActionableSlope)) #must filter after rolling calcuations
 				bucket = bucket[['Predicted_Low','Predicted_High']]
 				self.pricePredictions = bucket
@@ -890,7 +906,7 @@ class PricingData:
 			d = self.historicalPrices.index[-1] 
 			ls = self.historicalPrices['EMA_LongSlope'][-1]
 			ss = self.historicalPrices['EMA_ShortSlope'][-1]
-			deviation = self.historicalPrices['Deviation_15DayAvg'][-1]/2
+			deviation = self.historicalPrices['Deviation_15Day'][-1]/2
 			momentum = self.historicalPrices['PC_3Day'][-1]/2 
 			for i in range(0,daysIntoFuture): 	#Add new days to the end for crystal ball predictions
 				momentum = (momentum + ls)/2 * (100+random.randint(-3,4))/100
@@ -919,7 +935,7 @@ class PricingData:
 			if not self.pricesNormalized:
 				temporarilyNormalize = True
 				self.NormalizePrices()
-			model = StockPredictionNN(baseModelName='Prices', model_type='LSTM')
+			model = StockPredictionNN(base_model_name='Prices', model_type='LSTM')
 			field_list = ['Average']
 			#field_list = base_field_list
 			model.LoadSource(sourceDF=self.historicalPrices, field_list=field_list, time_steps=1)
@@ -933,7 +949,7 @@ class PricingData:
 			model.Predict(True)
 			self.pricePredictions = model.GetTrainingResults(False, False)
 			self.pricePredictions = self.pricePredictions.rename(columns={'Average':'estAverage'})
-			deviation = self.historicalPrices['Deviation_15DayAvg'][-1]/2
+			deviation = self.historicalPrices['Deviation_15Day'][-1]/2
 			self.pricePredictions['Predicted_Low'] = self.pricePredictions['estAverage'] * (1 - deviation)
 			self.pricePredictions['Predicted_High'] = self.pricePredictions['estAverage'] * (1 + deviation)
 			if temporarilyNormalize: 
@@ -945,7 +961,7 @@ class PricingData:
 			if not self.pricesNormalized:
 				temporarilyNormalize = True
 				self.NormalizePrices()
-			model = StockPredictionNN(baseModelName='Prices', model_type='CNN')
+			model = StockPredictionNN(base_model_name='Prices', model_type='CNN')
 			field_list = base_field_list
 			model.LoadSource(sourceDF=self.historicalPrices, field_list=field_list, time_steps=daysIntoFuture*16)
 			model.LoadTarget(targetDF=None, prediction_target_days=daysIntoFuture)
@@ -958,7 +974,7 @@ class PricingData:
 			model.Predict(True)
 			self.pricePredictions = model.GetTrainingResults(False, False)
 			self.pricePredictions = self.pricePredictions.rename(columns={'Average':'estAverage'})
-			deviation = self.historicalPrices['Deviation_15DayAvg'][-1]/2
+			deviation = self.historicalPrices['Deviation_15Day'][-1]/2
 			self.pricePredictions['Predicted_Low'] = self.pricePredictions['estAverage'] * (1 - deviation)
 			self.pricePredictions['Predicted_High'] = self.pricePredictions['estAverage'] * (1 + deviation)
 			self.pricePredictions = self.pricePredictions[['Predicted_Low','estAverage','Predicted_High']]
@@ -974,7 +990,7 @@ class PricingData:
 	
 	def PredictFuturePrice(self,fromDate:datetime, daysForward:int=1,method:int=1):
 		fromDate=ToDateTime(fromDate)
-		low,high,price,momentum,deviation = self.historicalPrices.loc[fromDate, ['Low','High','Average', 'PC_3Day','Deviation_15DayAvg']]
+		low,high,price,momentum,deviation = self.historicalPrices.loc[fromDate, ['Low','High','Average', 'PC_3Day','Deviation_15Day']]
 		#print(p,m,s)
 		if method==0:
 			futureLow = low
@@ -994,8 +1010,7 @@ class PricingData:
 		try:
 			i = self.historicalPrices.index.get_loc(forDate, method='ffill') #ffill will effectively look backwards for the first instance
 			forDate = self.historicalPrices.index[i]
-			r = self.historicalPrices.loc[forDate]['Average']
-			
+			r = self.historicalPrices.loc[forDate]['Average']			
 		except Exception as e: 
 			if verbose or True: 
 				print(' Unable to get price for ' + self.ticker + ' on ' + str(forDate))	
@@ -1009,8 +1024,23 @@ class PricingData:
 		#	assert(False)
 		return r
 		
-	def GetPriceSnapshot(self,forDate:datetime, verbose:bool=False):
-	#Returns: high, low, open, close, Average_1Day, Snapshot_Date
+	def GetPriceData(self,forDate:datetime, field_list:list, verbose:bool=False):
+		r = None
+		forDate = ToDateTime(forDate)
+		try:
+			i = self.historicalPrices.index.get_loc(forDate, method='ffill') #ffill will effectively look backwards for the first instance
+			forDate = self.historicalPrices.index[i]
+			r = self.historicalPrices.loc[forDate, field_list]
+		except Exception as e: 
+			if verbose or True: 
+				print(' Unable to get price for ' + self.ticker + ' on ' + str(forDate))	
+				print(' ', self.historyStartDate, self.historyEndDate)
+				print(e)
+				print(self.historicalPrices.index.duplicated())
+		return r.values
+
+	def GetPriceSnapshot(self,forDate:datetime, verbose:bool=False, pvmethod:int=0):
+	#Returns: high, low, open, close, average, date
 	#if stats are already calculated then also poplulates:
 	#	Average_2Day, Average_5Day, EMA_Short, EMA_ShortSlope, EMA_Long, EMA_LongSlope, Channel_High, Channel_Low, PC_1Day, Deviation_1Day, Deviation_5Day, Deviation_15Day, PC_1Day, Gain_Monthly, LossStd_1Year, Predicted_Low, Target_1Day, Predicted_High
 	#	and uses some simple logic to populate Target_1Day
@@ -1026,21 +1056,42 @@ class PricingData:
 		except:
 			i = 0
 			if verbose: print('Unable to get price snapshot for ' + self.ticker + ' on ' + str(forDate))	
-		sn.Snapshot_Date = forDate 
+		sn.date = forDate 
 		if i > 0:
 			if not self.statsLoaded:
 				sn.high,sn.low,sn.open,sn.close,sn.average=self.historicalPrices.loc[forDate,['High','Low','Open','Close','Average']]
 			else:
 				sn.high,sn.low,sn.open,sn.close,sn.average,sn.Average_2Day,sn.Average_5Day,sn.EMA_Short,sn.EMA_ShortSlope,sn.EMA_Long,sn.EMA_LongSlope,sn.Channel_High,sn.Channel_Low = self.historicalPrices.loc[forDate,['High','Low','Open','Close','Average','Average_2Day','Average_5Day','EMA_Short','EMA_ShortSlope','EMA_Long','EMA_LongSlope','Channel_High', 'Channel_Low']]
-				sn.PC_1Day,sn.Deviation_1Day,sn.Deviation_5Day,sn.Deviation_15Day,sn.Gain_Monthly,sn.LossStd_1Year,sn.PC_1Month,sn.PC_1Month3WeekEMA,sn.PC_3Month,sn.PC_6Month,sn.PC_1Year,sn.PC_2Year = self.historicalPrices.loc[forDate,['PC_1Day','Deviation_1Day','Deviation_5DayAvg','Deviation_15DayAvg','Gain_Monthly','LossStd_1Year','PC_1Month','PC_1Month3WeekEMA','PC_3Month','PC_6Month','PC_1Year','PC_2Year']]
+				sn.PC_1Day,sn.Deviation_1Day,sn.Deviation_5Day,sn.Deviation_10Day,sn.Deviation_15Day,sn.Gain_Monthly,sn.LossStd_1Year,sn.PC_1Month,sn.PC_1Month3WeekEMA,sn.PC_2Month,sn.PC_3Month,sn.PC_6Month,sn.PC_1Year,sn.PC_18Month,sn.PC_2Year = self.historicalPrices.loc[forDate,['PC_1Day','Deviation_1Day','Deviation_5Day','Deviation_10Day','Deviation_15Day','Gain_Monthly','LossStd_1Year','PC_1Month','PC_1Month3WeekEMA','PC_2Month','PC_3Month','PC_6Month','PC_1Year','PC_18Month','PC_2Year']]
+				sn.EMA_12Day,sn.EMA_26Day,sn.MACD_Line,sn.MACD_Signal,sn.MACD_Histogram = self.historicalPrices.loc[forDate,['EMA_12Day','EMA_26Day','MACD_Line','MACD_Signal','MACD_Histogram']]
 				if pd.isna(sn.LossStd_1Year):
 					print(sn.ticker, sn.PC_1Year, sn.PC_6Month, sn.PC_3Month, sn.PC_1Month, sn.LossStd_1Year)
 					sn.LossStd_1Year = 0
-				else:
-					#sn.Point_Value = round((10*sn.PC_1Year) + (10*sn.PC_6Month) + (10*sn.PC_3Month) + (10*sn.PC_1Month) - (3-10*sn.LossStd_1Year)) #This is golden
-					if sn.PC_1Month > 0: sn.Point_Value = round((10*sn.PC_1Year) - (6-100*sn.LossStd_1Year))  #Testing
-					#if sn.PC_1Month > 0: sn.Point_Value = round((3*sn.PC_2Year) + (12*sn.PC_1Year) + (4*sn.PC_6Month) + (3*sn.PC_3Month) + (2*sn.PC_1Month) - (3-10*sn.LossStd_1Year)) #Test this too
-					if sn.Point_Value < 0: sn.Point_Value=0
+				if pvmethod ==0:
+					if sn.PC_1Month > 0: 
+						try:
+							sn.Point_Value = round((10*sn.PC_1Year) - (6-100*sn.LossStd_1Year))  #New golden: 44% average year -19% worst year, 10 stocks, improves if MarketCap < 3000
+						except:
+							print('Failed to calculate point value!')
+							print(self.ticker, sn.PC_1Year, sn.LossStd_1Year, forDate)
+				elif pvmethod ==1:
+					sn.Point_Value = round((10*sn.PC_1Year) + (10*sn.PC_6Month) + (10*sn.PC_3Month) + (10*sn.PC_1Month) - (3-10*sn.LossStd_1Year)) #This was my golden, 36%	-32%
+				elif pvmethod ==2:
+					if sn.PC_1Month > 0: sn.Point_Value = round((10*sn.PC_1Year) + (100*sn.LossStd_1Year))  #38, -29 worse than above, filter 3 testing now 37% -46%
+				elif pvmethod ==3:
+					if sn.PC_1Month > 0: sn.Point_Value = round((3*sn.PC_18Month) + (12*sn.PC_1Year) + (4*sn.PC_6Month) + (3*sn.PC_3Month) + (2*sn.PC_1Month) - (3-10*sn.LossStd_1Year)) #38%, -33
+					#if sn.PC_1Month > 0: sn.Point_Value = round(10*sn.PC_1Year)   #Testing now, 36% -31%
+				if False: #37%, -35
+					sn.Point_Value = sn.PC_1Year*.1  
+					sn.Point_Value = sn.Point_Value + (sn.PC_2Year*.07)/2
+					sn.Point_Value = sn.Point_Value + (sn.PC_3Month*.03)
+					sn.Point_Value = sn.Point_Value + (sn.PC_1Month*.07)/2
+					if sn.PC_6Month<0 and sn.PC_1Year> 0: sn.Point_Value = sn.PC_1Year*.22 
+					if sn.LossStd_1Year >= .12 and sn.LossStd_1Year <= .15: sn.Point_Value = (sn.PC_1Month*.30)+(sn.PC_3Month*.18) 
+					if sn.PC_1Year > 0 and (sn.LossStd_1Year >= .13 and sn.LossStd_1Year <= .15) and (sn.PC_3Month > 0 and sn.PC_1Month > 0): sn.Point_Value = sn.PC_1Year*.91 					
+
+				if sn.Point_Value < 0: sn.Point_Value=0
+				if sn.Point_Value > 100: sn.Point_Value=100
 				#Parameter Testing, these all decrease performance by about 5%
 				#sn.Point_Value = round((10*sn.PC_2Year) + (10*sn.PC_1Year6mo) + (10*sn.PC_1Year) + (10*sn.PC_6Month) + (10*sn.PC_3Month) + (10*sn.PC_1Month) - (3-10*sn.LossStd_1Year)) #-5% average yield
 				#if (sn.PC_2Year < 0 or sn.sn.PC_1Year6mo < 0): sn.Point_Value = round((5*sn.PC_2Year) + (5*sn.PC_1Year6mo) + (10*sn.PC_1Year) + (10*sn.PC_6Month) + (10*sn.PC_3Month) + (10*sn.PC_1Month) - (3-10*sn.LossStd_1Year))  #-5% average yield
@@ -1050,15 +1101,15 @@ class PricingData:
 
 				if sn.EMA_LongSlope < 0:
 					if sn.EMA_ShortSlope > 0:	#bounce or early recovery
-						sn.Target_1Day = min(sn.Average_1Day, sn.Average_2Day)
+						sn.Target_1Day = min(sn.average, sn.Average_2Day)
 					else:
 						sn.Target_1Day = min(sn.low, sn.Average_2Day)			
 				else:
 					if sn.EMA_ShortSlope < 0:	#correction or early downturn
-						sn.Target_1Day = max(sn.Average_1Day, (sn.Average_2Day*2)-sn.Average_1Day) + (sn.Average_1Day * (sn.EMA_LongSlope))
+						sn.Target_1Day = max(sn.average, (sn.Average_2Day*2)-sn.average) + (sn.average * (sn.EMA_LongSlope))
 					else:
-						sn.Target_1Day = max(sn.Average_1Day, sn.Average_2Day) + (sn.Average_1Day * sn.EMA_LongSlope)
-					#sn.Target_1Day = max(sn.Average_1Day, sn.Average_2Day) + (sn.Average_1Day * sn.EMA_LongSlope)
+						sn.Target_1Day = max(sn.average, sn.Average_2Day) + (sn.average * sn.EMA_LongSlope)
+					#sn.Target_1Day = max(sn.average, sn.Average_2Day) + (sn.average * sn.EMA_LongSlope)
 				sn.Comments = ''
 				if sn.low > sn.Channel_High: 
 					sn.Comments += 'Overbought; '
@@ -1071,7 +1122,7 @@ class PricingData:
 				else:
 					tomorrow =  forDate.date() + timedelta(days=1) 
 					sn.Predicted_Low,sn.Predicted_High= self.pricePredictions.loc[tomorrow,['Predicted_Low','Predicted_High']]
-		sn.Average_1Day = sn.average
+		sn.average = sn.average
 		return sn
 
 	def GetCurrentPriceSnapshot(self): return self.GetPriceSnapshot(self.historyEndDate)
@@ -1762,7 +1813,7 @@ class TradingModel(Portfolio):
 		if p.LoadHistory(requestedStartDate=startDate, requestedEndDate=endDate, verbose=verbose): 
 			if verbose: print(' Loading ' + startingTicker)
 			p.CalculateStats()
-			p.TrimToDateRange(startDate - timedelta(days=60), endDate + timedelta(days=10))
+			p.TrimToDateRange(startDate, endDate) # - timedelta(days=730), + timedelta(days=10)
 			self.priceHistory = [p] #add to list
 			i = p.historicalPrices.index.get_loc(startDate, method='nearest')
 			startDate = p.historicalPrices.index[i]
@@ -1799,7 +1850,7 @@ class TradingModel(Portfolio):
 			if self.verbose: print(' Loading price history for ' + ticker)
 			if p.LoadHistory(requestedStartDate=self.modelStartDate, requestedEndDate=self.modelEndDate): 
 				p.CalculateStats()
-				p.TrimToDateRange(self.modelStartDate - timedelta(days=60), self.modelEndDate + timedelta(days=10))
+				p.TrimToDateRange(self.modelStartDate, self.modelEndDate)# - timedelta(days=750),  + timedelta(days=10)
 				if len(p.historicalPrices) > len(self.priceHistory[0].historicalPrices): #first element is used for trading day indexing, replace if this is a better match
 					self.priceHistory.insert(0, p)
 					self._tickerList.insert(0, ticker)
@@ -1857,7 +1908,7 @@ class TradingModel(Portfolio):
 					if orders < 0:
 						if not tradeAtMarket: 
 							price = sn.Average_5Day * (1+shopSellPercent) 
-							if abs(orders) > 2: price = sn.Average_1Day
+							if abs(orders) > 2: price = sn.average
 						if rateLimitTransactions and abs(orders) > 1: orders = -1
 						print('Sell ' + str(abs(orders)) + ' ' + t, '$' + str(price))
 						for _ in range(abs(orders)): 
@@ -2018,6 +2069,7 @@ class TradingModel(Portfolio):
 class ForcastModel():	#used to forecast the effect of a series of trade actions, one per day, and return the net change in value.  This will mirror the given model.  Can also be used to test alternate past actions 
 	def __init__(self, mirroredModel:TradingModel, daysToForecast:int = 10):
 		modelName = 'Forcaster for ' + mirroredModel.modelName
+		self.daysToForecast = daysToForecast
 		self.daysToForecast = daysToForecast
 		self.startDate = mirroredModel.modelStartDate 
 		durationInYears = (mirroredModel.modelEndDate-mirroredModel.modelStartDate).days/365
@@ -2189,7 +2241,7 @@ class StockPicker():
 					if psnap.Deviation_5Day > .0275: result.append(ticker)
 		return result
 
-	def GetHighestPriceMomentum(self, currentDate:datetime, longHistoryDays:int = 365, shortHistoryDays:int = 30, stocksToReturn:int = 5, filterOption:int = 3, minPercentGain=0.05, maxVolatility=.1, verbose:bool=False): 
+	def GetHighestPriceMomentum(self, currentDate:datetime, longHistoryDays:int = 365, shortHistoryDays:int = 30, stocksToReturn:int = 5, filterOption:int = 3, minPercentGain=0.05, maxVolatility=.1, pvmethod:int=0, verbose:bool=False): 
 		minPC_1Day = minPercentGain/365
 		candidates = pd.DataFrame(columns=list(['Ticker','hp2Year','hp1Year','hp6mo','hp3mo','hp2mo','hp1mo','Price_Current','PC_2Year','PC_1Year','PC_6Month','PC_3Month','PC_2Month','PC_1Month','PC_1Day','Gain_Monthly','LossStd_1Year','longHistoricalValue','shortHistoricalValue','PC_LongTerm','PC_ShortTerm','Point_Value','Comments','latestEntry']))
 		candidates.set_index(['Ticker'], inplace=True)
@@ -2212,7 +2264,7 @@ class StockPicker():
 				hp2mo = sn.Average_5Day
 				sn = self.priceData[i].GetPriceSnapshot(currentDate + timedelta(days=-30))
 				hp1mo = sn.Average_5Day
-				sn = self.priceData[i].GetPriceSnapshot(currentDate)
+				sn = self.priceData[i].GetPriceSnapshot(forDate=currentDate, verbose=True, pvmethod=pvmethod)
 				Price_Current = sn.Average_5Day #Looking at 30/90/365 day prices, recent changes are just noise
 				PC_ShortTerm = sn.PC_1Month3WeekEMA/20 #Converted to daily
 				PC_LongTerm = sn.PC_1Year/250		   #Converted to daily
@@ -2249,6 +2301,9 @@ class StockPicker():
 		elif filterOption ==5: #Point Value
 			filter = (candidates['PC_1Year'] > minPC_1Day) & (candidates['Point_Value'] > 0)
 			candidates.sort_values('Point_Value', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last') 
+		elif filterOption ==6: #Hard year, will often not find cadidates
+			filter = (candidates['PC_1Year'] > 0) & (candidates['LossStd_1Year'] > .06) & (candidates['LossStd_1Year'] < .15) & (candidates['PC_3Month'] > 0) & (candidates['PC_1Month'] > 0)
+			candidates.sort_values('LossStd_1Year', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last') 
 		else: #no filter
 			filter = (candidates['Price_Current'] > 0)
 			candidates.sort_values('PC_LongTerm', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last') #Most critical factor, sorting by largest long term gain

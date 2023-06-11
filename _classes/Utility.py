@@ -14,34 +14,54 @@ def isfloat(num):
 	except ValueError:
 		return False
 
-def ReadConfig(sectionName:str, valueName:str):
+def ReadConfig(section_name:str, value_name:str):
 	settingsFile = os.path.join(os.path.abspath(os.path.dirname(os.path.dirname(__file__)))) + '/config.ini'
 	r = None
 	if os.path.isfile(settingsFile):
 		config = configparser.ConfigParser()
 		config.read(settingsFile)
-		try: 
-			r = ast.literal_eval(config.get(sectionName, valueName))
-		except Exception as e:
-			print()
-		#	print('Unable to read value ', valueName, ' from settings file.')
-		#	print(e)
+		if section_name in config:
+			try: 
+				r = config.get(section_name, value_name)
+				r = ast.literal_eval(r)
+			except Exception as e:
+				print('Unable to read value ', value_name, ' from settings file.')
+				print(e)
+	if r==None: WriteConfig(section_name, value_name, '')
 	return r
 
-def ReadConfigBool(sectionName:str, valueName:str):
-	r = ReadConfig(sectionName, valueName)
+def WriteConfig(section_name:str, value_name:str, value:str):
+	settingsFile = os.path.join(os.path.abspath(os.path.dirname(os.path.dirname(__file__)))) + '/config.ini'
+	config = configparser.ConfigParser()
+	if os.path.isfile(settingsFile): config.read(settingsFile)
+	if section_name not in config: config.add_section(section_name)
+	config.set(section_name, value_name, str(value))
+	try: 
+		with open(settingsFile, 'w') as configfile: config.write(configfile)
+	except Exception as e:
+		print('Unable to write value ', value_name, ' from settings file.')
+		print(e)
+
+def ReadConfigBool(section_name:str, value_name:str):
+	r = ReadConfig(section_name, value_name)
 	if r == None: r = False
-	r = bool(r)
-	return r
+	return bool(r)
 
-def ReadConfigString(sectionName:str, valueName:str):
-	r = ReadConfig(sectionName, valueName)
-	if not r == None: r = str(r)
-	return r
+def ReadConfigInt(section_name:str, value_name:str):
+	r = ReadConfig(section_name, value_name)
+	if r == None: r = 0
+	return int(r)
 
-def ReadConfigList(sectionName:str, valueName:str):
-	r = ReadConfig(sectionName, valueName)
-	if not r == None: r = list(r)
+def ReadConfigString(section_name:str, value_name:str):
+	r = ReadConfig(section_name, value_name)
+	if r == None: r = ''
+	return str(r)
+
+def ReadConfigList(section_name:str, value_name:str):
+	r = ReadConfig(section_name, value_name)
+	print(value_name, r)
+	if r == None: 
+		r = []
 	return r
 
 def CreateFolder(p:str):
@@ -58,37 +78,37 @@ def FileExists(f): return 	os.path.isfile(f)
 
 def GetMyDateFormat(): return '%m/%d/%Y'
 
-def ToDate(givenDate):
+def ToDate(given_date):
 #returns date object, converting from string or datetime if necessary
-	if type(givenDate) == str:
-		if givenDate.find('-') > 0 :
-			r = datetime.strptime(givenDate, '%Y-%m-%d').date()
+	if type(given_date) == str:
+		if given_date.find('-') > 0 :
+			r = datetime.strptime(given_date, '%Y-%m-%d').date()
 		else:
-			r = datetime.strptime(givenDate, GetMyDateFormat()).date()
-	elif isinstance(givenDate, datetime):
-		r = givenDate.date()
-	elif isinstance(givenDate, numpy.datetime64):
-		r = pd.Timestamp(givenDate).date()
+			r = datetime.strptime(given_date, GetMyDateFormat()).date()
+	elif isinstance(given_date, datetime):
+		r = given_date.date()
+	elif isinstance(given_date, numpy.datetime64):
+		r = pd.Timestamp(given_date).date()
 	else:
-		r = givenDate
+		r = given_date
 	return r
 
-def ToDateTime(givenDate):
+def ToDateTime(given_date):
 	#returns datetime object
-	if type(givenDate) == str: givenDate = ToDate(givenDate)
-	if isinstance(givenDate, datetime):
-		r = givenDate
-	elif isinstance(givenDate, numpy.datetime64):
-		r = pd.Timestamp(givenDate).date()
-	elif isinstance(givenDate, date): 
-		r = datetime.combine(givenDate, datetime.min.time())
+	if type(given_date) == str: given_date = ToDate(given_date)
+	if isinstance(given_date, datetime):
+		r = given_date
+	elif isinstance(given_date, numpy.datetime64):
+		r = pd.Timestamp(given_date).date()
+	elif isinstance(given_date, date): 
+		r = datetime.combine(given_date, datetime.min.time())
 	else:
-		r = givenDate
+		r = given_date
 	return r
 
-def DateFormatDatabase(givenDate):
+def DateFormatDatabase(given_date):
 	#returns datetime object, technically should be numpy.datetime64
-	r = ToDateTime(givenDate)
+	r = ToDateTime(given_date)
 	return r
 
 def GetDateTimeStamp():
@@ -104,17 +124,17 @@ def GetTodaysDateString():
 	d = datetime.now() #--1980-01-01
 	return d.strftime('%Y-%m-%d')
 
-def DateDiffDays(startDate:datetime, endDate:datetime):
-	delta = endDate-startDate
+def DateDiffDays(start_date:datetime, end_date:datetime):
+	delta = end_date-start_date
 	return delta.days
 		
-def DateDiffHours(startDate:datetime, endDate:datetime):
-	delta = endDate-startDate
+def DateDiffHours(start_date:datetime, end_date:datetime):
+	delta = end_date-start_date
 	return int(delta.total_seconds() / 3600)
 
-def AddDays(startDate, days:int):
-	startDate = ToDate(startDate)
-	return startDate + timedelta(days=days) 
+def AddDays(start_date, days:int):
+	start_date = ToDate(start_date)
+	return start_date + timedelta(days=days) 
 
 def CreateFolder(p:str):
 	r = True
@@ -268,7 +288,6 @@ if DatabaseServer != '' and DatabaseName !='' and DatabaseServer != None and Dat
 		DatabaseConstring += ';UID=' + DatabaseUsername + ';PWD=' + DatabasePassword
 	else:
 		DatabaseConstring += ';Trusted_Connection=yes;' #';Integrated Security=true;'
-	#print(DatabaseConstring)
 
 def Is_sql_configured(): return globalUseDatabase
 def SQL_ConString(): return DatabaseConstring
