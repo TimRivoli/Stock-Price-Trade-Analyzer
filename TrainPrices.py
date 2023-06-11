@@ -35,15 +35,15 @@ def TrainTickerRaw(ticker:str = '.INX', model_type:str='LSTM', use_generic_model
 		else:
 			prices.NormalizePrices()
 		prices.CalculateStats()
-		baseModelName = ticker
-		if use_generic_model: baseModelName = 'Prices'
-		model = StockPredictionNN(baseModelName=baseModelName, model_type=model_type)
+		base_model_name = ticker
+		if use_generic_model: base_model_name = 'Prices'
+		model = StockPredictionNN(base_model_name=base_model_name, model_type=model_type)
 		#time_steps = 16 * prediction_target_days
 		if model_type =='CNN': #For CNN the field order is significant since it is treated as an image
-			field_list = ['Average','EMA_Short','EMA_Long','Deviation_5DayAvg','Deviation_15DayAvg','LossStd_1Year','PC_1Month','PC_6Month','PC_1Year','PC_2Year']
+			field_list = ['Average','EMA_Short','EMA_Long','Deviation_5Day','Deviation_15Day','LossStd_1Year','PC_1Month','PC_6Month','PC_1Year','PC_2Year']
 		else:
 			#field_list = ['Average']
-			field_list = ['Average','EMA_Short','EMA_Long','Deviation_5DayAvg','Deviation_15DayAvg','LossStd_1Year','PC_1Month','PC_6Month','PC_1Year','PC_2Year']
+			field_list = ['Average','EMA_Short','EMA_Long','Deviation_5Day','Deviation_15Day','LossStd_1Year','PC_1Month','PC_6Month','PC_1Year','PC_2Year']
 		df = prices.GetPriceHistory()
 		df['Average']=df['Average_5Day'] #Too much noise in the daily
 		model.LoadSource(sourceDF=prices.GetPriceHistory(), field_list=field_list, time_steps=time_steps, use_percentage_change=use_percentage_change)
@@ -59,9 +59,9 @@ def TrainTickerRaw(ticker:str = '.INX', model_type:str='LSTM', use_generic_model
 			model.Train(epochs=epochs)
 		model.Predict(use_full_data_set=True)
 		#if epochs >= 10: model.Save()
-		model.PredictionResultsSave(filename=model.modelName, include_target=True, include_accuracy=False, include_input=True)
-		model.PredictionResultsSave(filename=model.modelName + '_Accuracy', include_target=True, include_accuracy=True, include_input=False)
-		model.PredictionResultsPlot(filename=model.modelName, include_target=True, include_accuracy=False)
+		model.PredictionResultsSave(filename=model.model_name, include_target=True, include_accuracy=False, include_input=True)
+		model.PredictionResultsSave(filename=model.model_name + '_Accuracy', include_target=True, include_accuracy=True, include_input=False)
+		model.PredictionResultsPlot(filename=model.model_name, include_target=True, include_accuracy=False)
 		
 if __name__ == '__main__':
 	switch = 1

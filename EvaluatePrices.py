@@ -58,8 +58,8 @@ def DownloadAndGraphStocks(tickerList:list, includePredictions:bool = False):
 			prices.NormalizePrices()
 			#prices.SaveStatsToFile(includePredictions=True, verbose=True)
 			psnap = prices.GetCurrentPriceSnapshot()
-			titleStatistics =' 5/15 dev: ' + str(round(psnap.Deviation_5Day*100, 2)) + '/' + str(round(psnap.Deviation_15Day*100, 2)) + '% ' + str(psnap.low) + '/' + str(psnap.Target_1Day) + '/' + str(psnap.high) + ' ' + str(psnap.Snapshot_Date)[:10]
-			print('Graphing ' + ticker + ' ' + str(psnap.Snapshot_Date)[:10])
+			titleStatistics =' 5/15 dev: ' + str(round(psnap.Deviation_5Day*100, 2)) + '/' + str(round(psnap.Deviation_15Day*100, 2)) + '% ' + str(psnap.low) + '/' + str(psnap.Target_1Day) + '/' + str(psnap.high) + ' ' + str(psnap.date)[:10]
+			print('Graphing ' + ticker + ' ' + str(psnap.date)[:10])
 			for days in [30,90,180,365]: #,2190,4380
 				includePredictions2 = includePredictions and (days < 1000)
 				prices.GraphData(endDate=None, daysToGraph=days, graphTitle=ticker + '_days' + str(days) + ' ' + titleStatistics, includePredictions=includePredictions2, saveToFile=True, fileNameSuffix=str(days).rjust(4, '0') + 'd', trimHistoricalPredictions=False)
@@ -139,7 +139,7 @@ def OpportunityFinder(tickerList:list):
 			if psnap.Deviation_5Day > .0275: 
 				Comments += 'HighDeviation; '
 			if Comments !='': 
-				titleStatistics =' 5/15 dev: ' + str(round(psnap.Deviation_5Day*100, 2)) + '/' + str(round(psnap.Deviation_15Day*100, 2)) + '% ' + str(psnap.low) + '/' + str(psnap.Target_1Day) + '/' + str(psnap.high) + str(psnap.Snapshot_Date)
+				titleStatistics =' 5/15 dev: ' + str(round(psnap.Deviation_5Day*100, 2)) + '/' + str(round(psnap.Deviation_15Day*100, 2)) + '% ' + str(psnap.low) + '/' + str(psnap.Target_1Day) + '/' + str(psnap.high) + str(psnap.date)
 				prices.GraphData(None, 60, ticker + ' 60d ' + titleStatistics, False, True, '60d', outputFolder)
 				if (price_current > 0 and hp2Year > 0 and hp1Year > 0 and hp6mo > 0 and hp2mo > 0 and hp1mo > 0): #values were loaded
 					candidates.loc[ticker] = [hp2Year,hp1Year,hp6mo,hp3mo,hp2mo,hp1mo,price_current,psnap.Channel_High,psnap.Channel_Low,psnap.EMA_Short,psnap.EMA_Long,(price_current/hp2Year)-1,(price_current/hp1Year)-1,(price_current/hp6mo)-1,(price_current/hp3mo)-1,(price_current/hp2mo)-1,(price_current/hp1mo)-1,psnap.PC_1Day, psnap.Gain_Monthly, psnap.LossStd_1Year,Comments]

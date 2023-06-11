@@ -91,7 +91,7 @@ def CompareModels(modelOneName:str, modelOneFunction, modelTwoName:str, modelTwo
 def RunTradingModelBuyHold(tm: TradingModel, ticker:str):
 #Baseline model, buy and hold
 	sn = tm.GetPriceSnapshot()
-	if tm.verbose: print(sn.Snapshot_Date, sn.Target_1Day)
+	if tm.verbose: print(sn.date, sn.Target_1Day)
 	if not sn == None:
 		for i in range(tm._tranchCount):
 			available, buyPending, sellPending, longPositions = tm.PositionSummary()				

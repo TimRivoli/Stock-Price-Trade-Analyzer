@@ -98,7 +98,7 @@ def PredictPrices(prices:PricingData, predictionMethod:int=0, daysForward:int = 
 			model_type = 'CNN'
 			time_steps = 16 * daysForward
 			modelDescription = prices.ticker + '_CNN' + '_epochs' + str(numberOfLearningPasses) + '_histwin' + str(time_steps) + '_daysforward' + str(daysForward) 
-		learningModule = StockPredictionNN(baseModelName=prices.ticker, model_type=model_type)
+		learningModule = StockPredictionNN(base_model_name=prices.ticker, model_type=model_type)
 		learningModule.LoadSource(prices.GetPriceHistory(), field_list=source_field_list, time_steps=time_steps)
 		learningModule.LoadTarget(targetDF=None, prediction_target_days=daysForward)
 		learningModule.MakeTrainTest(batch_size=32, train_test_split=.93)
