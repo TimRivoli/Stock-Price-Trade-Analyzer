@@ -30,19 +30,13 @@ Luka Anicin: https://github.com/lucko515/tesla-stocks-prediction
 I've tested this on both Windows 10 Python 3.6.4  and AWS Linux Python 3.6.2.  Both versions use TensorFlow 2.1.0.
 Requirements: happily all native Python 3.6 and no C++ compilers
 Windows PIP install requirements with:
-pip install numpy
-pip install pandas
-pip install matplotlib
-pip install tensorflow
-pip install keras
-pin install yahoofinance
+pip install numpy pandas matplotlib requests pyodbc sqlalchemy yahoofinancials
+pip install tensorflow keras
 
 AWS install requirements with:
 python3 -m pip install numpy --upgrade
 python3 -m pip install pandas --upgrade
-python3 -m pip install tensorflow --upgrade
-python3 -m pip install keras --upgrade
-python3 -m pip install yahoofinance --upgrade
+etc...
 
 Note about using an AWS instance:  There is no GUI so I've added a switch to enable the Agg non-interactive back-end for matplotlib.  Also, it can be difficult to access web sites from within AWS as some sites block hosted IP ranges and python response headers, so I've added a web-proxy option to get around this.  We should bear in mind that the reason sites put these blocks in place is to avoid abuse of their services, so please be kind and don't abuse free services.
 
