@@ -28,7 +28,7 @@ import matplotlib.dates as mdates
 if not displayPythonWarnings: warnings.filterwarnings("ignore")
 base_field_list = ['Open','Close','High','Low']
 
-globalUseDatabase = Is_sql_configured()
+globalUseDatabase = Is_database_configured()
 useWebProxyServer = ReadConfigBool('Settings', 'useWebProxyServer')
 
 #-------------------------------------------- General Utilities -----------------------------------------------
@@ -79,8 +79,8 @@ def PlotDataFrame(df:pd.DataFrame, title:str, xlabel:str, ylabel:str, adjustScal
 		ax.set_xlabel(xlabel)
 		ax.set_ylabel(ylabel)
 		ax.tick_params(axis='x', rotation=70)
-		ax.grid(b=True, which='major', color='black', linestyle='solid', linewidth=.5)
-		ax.grid(b=True, which='minor', color='0.65', linestyle='solid', linewidth=.3)
+		ax.grid(visible=True, which='major', color='black', linestyle='solid', linewidth=.5)
+		ax.grid(visible=True, which='minor', color='0.65', linestyle='solid', linewidth=.3)
 		if adjustScale:
 			dates= df.index.get_level_values('Date')
 			minDate = dates.min()
@@ -91,7 +91,7 @@ def PlotDataFrame(df:pd.DataFrame, title:str, xlabel:str, ylabel:str, adjustScal
 			plt.savefig(fileName, dpi=dpi)			
 		else:
 			fig = plt.figure(1)
-			fig.canvas.set_window_title(title)
+			fig.canvas.manager.set_window_title(title)
 			plt.show()
 		plt.close('all')
 
@@ -417,18 +417,18 @@ class DataDownload:
 				t2 = t.upper().replace('.INX', '^SPX')
 				if t2[0]== '.': t2 = t2.replace('.', '^')
 				t2 = t2.replace('.', '-')
-				yf = YahooFinancials([t2], concurrent=True, max_workers=8, country="US")
+				yf = YahooFinancials([t2], country="US")
 				hpd = yf.get_historical_price_data('1980-01-01', end_date, 'daily')
 				for x in hpd.keys():
-					#print(hpd[x].keys())
-					if 'prices' in hpd[x].keys():
-						df = pd.DataFrame(hpd[x]['prices'])
-						df['Date'] = pd.to_datetime(df['formatted_date'])
-						df.set_index('Date', inplace=True)
-						df.sort_index(inplace=True)
-						df = df[['open','high','low','close','volume']]
-						df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}, inplace=True)
-						df.to_csv(download_folder + t + '.csv')
+					if hpd[x] is not None:
+						if 'prices' in hpd[x].keys():
+							df = pd.DataFrame(hpd[x]['prices'])
+							df['Date'] = pd.to_datetime(df['formatted_date'])
+							df.set_index('Date', inplace=True)
+							df.sort_index(inplace=True)
+							df = df[['open','high','low','close','volume']]
+							df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}, inplace=True)
+							df.to_csv(download_folder + t + '.csv')
 
 	def _UnpackNestedDictionary(self, data):
     #From https://github.com/JECSand/yahoofinancials/issues/98
@@ -806,9 +806,14 @@ class PricingData:
 		self.historicalPrices['Gain_Monthly'] = self.historicalPrices['Gain_Monthly'].replace(np.NaN, 0) #test not sure what getting NaN here
 		self.historicalPrices['Losses_Monthly'] = self.historicalPrices['Gain_Monthly']
 		self.historicalPrices['Losses_Monthly'].loc[self.historicalPrices['Losses_Monthly'] > 0] = 0 #zero out the positives
-		self.historicalPrices['LossStd_1Year'] = self.historicalPrices['Losses_Monthly'].rolling(window=252, center=False).std()	#Stdev of negative values, these are the negative monthly price drops in the past year
+		self.historicalPrices['LossStd_1Year'] = self.historicalPrices['Losses_Monthly'].rolling(window=252, center=False).std()	#Stdev monthly price drops in the past year.  Intended to indicate risk, but actually suggests good returns
 		self.historicalPrices['Channel_High'] = self.historicalPrices['EMA_Long'] + (self.historicalPrices['Average']*self.historicalPrices['Deviation_15Day'])
 		self.historicalPrices['Channel_Low'] = self.historicalPrices['EMA_Long'] - (self.historicalPrices['Average']*self.historicalPrices['Deviation_15Day'])
+		self.historicalPrices.fillna(method='ffill', inplace=True)
+		self.historicalPrices.fillna(method='bfill', inplace=True)
+		self.historicalPrices['Point_Value'] = (10*self.historicalPrices['PC_1Year']) + (100*self.historicalPrices['LossStd_1Year']) - 6  #New golden: 45% average year -22% worst year, 3 day re-eval
+		self.historicalPrices['Point_Value'].loc[self.historicalPrices['PC_1Month'] < 0.00175]-=3 #helps early position close
+		self.historicalPrices['Point_Value'].loc[(self.historicalPrices['PC_1Month3WeekEMA'] < -0.00175)|(self.historicalPrices['Point_Value'] < 2)] = 0 #zero out short term losers
 		self.historicalPrices.fillna(method='ffill', inplace=True)
 		self.historicalPrices.fillna(method='bfill', inplace=True)
 		self.statsLoaded = True
@@ -862,7 +867,7 @@ class PricingData:
 				bucket['Predicted_High'] = bucket['High'].shift(1).rolling(3).min() 
 				bucket = bucket.query('not (EMA_LongSlope >= -' + str(minActionableSlope) + ' or EMA_ShortSlope >= -' + str(minActionableSlope) +')')
 				bucket = bucket[['Predicted_Low','Predicted_High']]
-				self.pricePredictions = self.pricePredictions.append(bucket)
+				self.pricePredictions = pd.concat([self.pricePredictions, bucket], ignore_index=False)
 				self.pricePredictions.sort_index(inplace=True)	
 			elif method==2:	#Slope plus momentum with full consideration for trend.
 					#++ Often over bought, strong momentum
@@ -880,7 +885,7 @@ class PricingData:
 				bucket['Predicted_High'] = bucket['High'].shift(1).rolling(3).max()  * (1.005 + abs(bucket['EMA_ShortSlope'].shift(1)))
 				bucket = bucket.query('EMA_LongSlope >= ' + str(minActionableSlope) + ' and EMA_ShortSlope < -' + str(minActionableSlope))
 				bucket = bucket[['Predicted_Low','Predicted_High']]
-				self.pricePredictions = self.pricePredictions.append(bucket)
+				self.pricePredictions = pd.concat([self.pricePredictions, bucket], ignore_index=False)
 					 #-+ bounce or early recovery, loss of momentum
 				bucket = self.historicalPrices.copy()
 				bucket['Predicted_Low']  = bucket['Low'].shift(1)
@@ -888,20 +893,20 @@ class PricingData:
 				bucket = bucket.query('EMA_LongSlope < -' + str(minActionableSlope) + ' and EMA_ShortSlope >= ' + str(minActionableSlope))
 				bucket = bucket[['Predicted_Low','Predicted_High']]
 					#-- Often over sold
-				self.pricePredictions = self.pricePredictions.append(bucket)
+				self.pricePredictions = pd.concat([self.pricePredictions, bucket], ignore_index=False)
 				bucket = self.historicalPrices.copy() 
 				bucket['Predicted_Low'] = bucket['Low'].shift(1).rolling(3).min() * .99
 				bucket['Predicted_High'] = bucket['High'].shift(1).rolling(3).min() 
 				bucket = bucket.query('EMA_LongSlope < -' + str(minActionableSlope) + ' and EMA_ShortSlope < -' + str(minActionableSlope))
 				bucket = bucket[['Predicted_Low','Predicted_High']]
-				self.pricePredictions = self.pricePredictions.append(bucket)
+				self.pricePredictions = pd.concat([self.pricePredictions, bucket], ignore_index=False)
 					#== no significant slope
 				bucket = self.historicalPrices.copy() 
 				bucket['Predicted_Low']  = bucket['Low'].shift(1).rolling(4).mean()
 				bucket['Predicted_High'] = bucket['High'].shift(1).rolling(4).mean()
 				bucket = bucket.query(str(minActionableSlope) + ' > EMA_LongSlope >= -' + str(minActionableSlope) + ' or ' + str(minActionableSlope) + ' > EMA_ShortSlope >= -' + str(minActionableSlope))
 				bucket = bucket[['Predicted_Low','Predicted_High']]
-				self.pricePredictions = self.pricePredictions.append(bucket)
+				self.pricePredictions = pd.concat([self.pricePredictions, bucket], ignore_index=False)
 				self.pricePredictions.sort_index(inplace=True)	
 			d = self.historicalPrices.index[-1] 
 			ls = self.historicalPrices['EMA_LongSlope'][-1]
@@ -1007,10 +1012,12 @@ class PricingData:
 
 	def GetPrice(self,forDate:datetime, verbose:bool=False):
 		forDate = ToDateTime(forDate)
+		r = 0
 		try:
-			i = self.historicalPrices.index.get_loc(forDate, method='ffill') #ffill will effectively look backwards for the first instance
-			forDate = self.historicalPrices.index[i]
-			r = self.historicalPrices.loc[forDate]['Average']			
+			i = self.historicalPrices.index.get_indexer([forDate], method='ffill')[0] #ffill will effectively look backwards for the first instance
+			if i > -1: 
+				forDate = self.historicalPrices.index[i]
+				r = self.historicalPrices.loc[forDate]['Average']			
 		except Exception as e: 
 			if verbose or True: 
 				print(' Unable to get price for ' + self.ticker + ' on ' + str(forDate))	
@@ -1028,9 +1035,10 @@ class PricingData:
 		r = None
 		forDate = ToDateTime(forDate)
 		try:
-			i = self.historicalPrices.index.get_loc(forDate, method='ffill') #ffill will effectively look backwards for the first instance
-			forDate = self.historicalPrices.index[i]
-			r = self.historicalPrices.loc[forDate, field_list]
+			i = self.historicalPrices.index.get_indexer([forDate], method='ffill')[0] #ffill will effectively look backwards for the first instance
+			if i > -1: 
+				forDate = self.historicalPrices.index[i]
+				r = self.historicalPrices.loc[forDate, field_list]
 		except Exception as e: 
 			if verbose or True: 
 				print(' Unable to get price for ' + self.ticker + ' on ' + str(forDate))	
@@ -1051,8 +1059,8 @@ class PricingData:
 		sn.ticker = self.ticker
 		sn.high, sn.low, sn.open, sn.close = 0,0,0,0
 		try:
-			i = self.historicalPrices.index.get_loc(forDate, method='ffill')
-			forDate = self.historicalPrices.index[i]
+			i = self.historicalPrices.index.get_indexer([forDate], method='ffill')[0]
+			if i > -1: forDate = self.historicalPrices.index[i]
 		except:
 			i = 0
 			if verbose: print('Unable to get price snapshot for ' + self.ticker + ' on ' + str(forDate))	
@@ -1063,41 +1071,56 @@ class PricingData:
 			else:
 				sn.high,sn.low,sn.open,sn.close,sn.average,sn.Average_2Day,sn.Average_5Day,sn.EMA_Short,sn.EMA_ShortSlope,sn.EMA_Long,sn.EMA_LongSlope,sn.Channel_High,sn.Channel_Low = self.historicalPrices.loc[forDate,['High','Low','Open','Close','Average','Average_2Day','Average_5Day','EMA_Short','EMA_ShortSlope','EMA_Long','EMA_LongSlope','Channel_High', 'Channel_Low']]
 				sn.PC_1Day,sn.Deviation_1Day,sn.Deviation_5Day,sn.Deviation_10Day,sn.Deviation_15Day,sn.Gain_Monthly,sn.LossStd_1Year,sn.PC_1Month,sn.PC_1Month3WeekEMA,sn.PC_2Month,sn.PC_3Month,sn.PC_6Month,sn.PC_1Year,sn.PC_18Month,sn.PC_2Year = self.historicalPrices.loc[forDate,['PC_1Day','Deviation_1Day','Deviation_5Day','Deviation_10Day','Deviation_15Day','Gain_Monthly','LossStd_1Year','PC_1Month','PC_1Month3WeekEMA','PC_2Month','PC_3Month','PC_6Month','PC_1Year','PC_18Month','PC_2Year']]
-				sn.EMA_12Day,sn.EMA_26Day,sn.MACD_Line,sn.MACD_Signal,sn.MACD_Histogram = self.historicalPrices.loc[forDate,['EMA_12Day','EMA_26Day','MACD_Line','MACD_Signal','MACD_Histogram']]
-				if pd.isna(sn.LossStd_1Year):
+				sn.EMA_12Day,sn.EMA_26Day,sn.MACD_Line,sn.MACD_Signal,sn.MACD_Histogram, sn.Point_Value = self.historicalPrices.loc[forDate,['EMA_12Day','EMA_26Day','MACD_Line','MACD_Signal','MACD_Histogram','Point_Value']]
+				if pd.isna(sn.LossStd_1Year) or pd.isna(sn.PC_1Month) or pd.isna(sn.PC_1Year) or pd.isna(sn.PC_1Month3WeekEMA):
 					print(sn.ticker, sn.PC_1Year, sn.PC_6Month, sn.PC_3Month, sn.PC_1Month, sn.LossStd_1Year)
-					sn.LossStd_1Year = 0
-				if pvmethod ==0:
-					if sn.PC_1Month > 0: 
-						try:
-							sn.Point_Value = round((10*sn.PC_1Year) - (6-100*sn.LossStd_1Year))  #New golden: 44% average year -19% worst year, 10 stocks, improves if MarketCap < 3000
-						except:
-							print('Failed to calculate point value!')
-							print(self.ticker, sn.PC_1Year, sn.LossStd_1Year, forDate)
-				elif pvmethod ==1:
-					sn.Point_Value = round((10*sn.PC_1Year) + (10*sn.PC_6Month) + (10*sn.PC_3Month) + (10*sn.PC_1Month) - (3-10*sn.LossStd_1Year)) #This was my golden, 36%	-32%
+					if pd.isna(sn.LossStd_1Year): sn.LossStd_1Year = 0
+					if pd.isna(sn.PC_1Month): sn.PC_1Month = 0
+					if pd.isna(sn.PC_1Month3WeekEMA): sn.PC_1Month3WeekEMA = 0
+					if pd.isna(sn.PC_1Year): sn.PC_1Year = 0					
+				sn.Point_Value = 0 #Somehow this is slignly different than the DataFrame
+				if sn.PC_1Month3WeekEMA >= -0.00175: #This is really good 45%, -22% on 3 ReVal, 53/28 small cap
+					sn.Point_Value = round(10*sn.PC_1Year + 100*sn.LossStd_1Year - 6)  
+					if sn.PC_1Month < .00175: sn.Point_Value-=3
+					if sn.Point_Value < 2: sn.Point_Value=0
+				if pvmethod ==1:
+					sn.Point_Value=0
+					if sn.PC_1Month >= -0.00175: 
+						sn.Point_Value = round(10*sn.PC_1Year + 100*sn.LossStd_1Year - 6)  
+						if sn.PC_1Month < .1:
+							sn.Point_Value-=6
+							if sn.PC_1Month3WeekEMA < .1: sn.Point_Value-=8
+							if sn.PC_2Month < .1: sn.Point_Value-=15
 				elif pvmethod ==2:
-					if sn.PC_1Month > 0: sn.Point_Value = round((10*sn.PC_1Year) + (100*sn.LossStd_1Year))  #38, -29 worse than above, filter 3 testing now 37% -46%
+					sn.Point_Value = 0
+					if sn.PC_1Month3WeekEMA >= -0.00175: 
+						sn.Point_Value = round(10*sn.PC_1Year + 100*sn.LossStd_1Year - 6)  
+						if sn.PC_1Month < .00175: 
+							sn.Point_Value-=3
+						elif sn.PC_2Year<0 or sn.PC_6Month<0: 
+							sn.Point_Value+=10						
+						if sn.Point_Value < 2: sn.Point_Value=0
 				elif pvmethod ==3:
-					if sn.PC_1Month > 0: sn.Point_Value = round((3*sn.PC_18Month) + (12*sn.PC_1Year) + (4*sn.PC_6Month) + (3*sn.PC_3Month) + (2*sn.PC_1Month) - (3-10*sn.LossStd_1Year)) #38%, -33
-					#if sn.PC_1Month > 0: sn.Point_Value = round(10*sn.PC_1Year)   #Testing now, 36% -31%
-				if False: #37%, -35
-					sn.Point_Value = sn.PC_1Year*.1  
-					sn.Point_Value = sn.Point_Value + (sn.PC_2Year*.07)/2
-					sn.Point_Value = sn.Point_Value + (sn.PC_3Month*.03)
-					sn.Point_Value = sn.Point_Value + (sn.PC_1Month*.07)/2
-					if sn.PC_6Month<0 and sn.PC_1Year> 0: sn.Point_Value = sn.PC_1Year*.22 
-					if sn.LossStd_1Year >= .12 and sn.LossStd_1Year <= .15: sn.Point_Value = (sn.PC_1Month*.30)+(sn.PC_3Month*.18) 
-					if sn.PC_1Year > 0 and (sn.LossStd_1Year >= .13 and sn.LossStd_1Year <= .15) and (sn.PC_3Month > 0 and sn.PC_1Month > 0): sn.Point_Value = sn.PC_1Year*.91 					
-
+					sn.Point_Value = 0
+					if sn.PC_1Month3WeekEMA >= -0.00175: 
+						sn.Point_Value = round(10*sn.PC_1Year + 100*sn.LossStd_1Year - 6)  
+						if sn.PC_1Month < .00175: 
+							sn.Point_Value-=3
+						else:
+							if sn.PC_2Year<0 or sn.PC_6Month<0: sn.Point_Value+=10						
+							if sn.LossStd_1Year > .06:
+								sn.Point_Value+=8
+								if sn.LossStd_1Year <= .08: sn.Point_Value+=8
+								if sn.LossStd_1Year >= .12: sn.Point_Value+=10
+						if sn.Point_Value < 2: sn.Point_Value=0
+				elif pvmethod ==4:
+					sn.Point_Value = 0
+					if sn.PC_1Month3WeekEMA >= -0.00175: #This is really good 45%, -22% on 3 ReVal
+						sn.Point_Value = round(10*sn.PC_1Year + 100*sn.LossStd_1Year - 6)  
+						if sn.PC_1Month < .00175: sn.Point_Value-=3
+						if sn.Point_Value < 2: sn.Point_Value=0
 				if sn.Point_Value < 0: sn.Point_Value=0
 				if sn.Point_Value > 100: sn.Point_Value=100
-				#Parameter Testing, these all decrease performance by about 5%
-				#sn.Point_Value = round((10*sn.PC_2Year) + (10*sn.PC_1Year6mo) + (10*sn.PC_1Year) + (10*sn.PC_6Month) + (10*sn.PC_3Month) + (10*sn.PC_1Month) - (3-10*sn.LossStd_1Year)) #-5% average yield
-				#if (sn.PC_2Year < 0 or sn.sn.PC_1Year6mo < 0): sn.Point_Value = round((5*sn.PC_2Year) + (5*sn.PC_1Year6mo) + (10*sn.PC_1Year) + (10*sn.PC_6Month) + (10*sn.PC_3Month) + (10*sn.PC_1Month) - (3-10*sn.LossStd_1Year))  #-5% average yield
-				#if (sn.PC_2Year > 0 and sn.sn.PC_1Year6mo > 0): sn.Point_Value = round((5*sn.PC_2Year) + (5*sn.PC_1Year6mo) + (10*sn.PC_1Year) + (10*sn.PC_6Month) + (10*sn.PC_3Month) + (10*sn.PC_1Month) - (3-10*sn.LossStd_1Year))  #-5% average yield
-				#if (sn.PC_1Year > .3 and sn.PC2mo*6.0833 > .1 and sn.PC_1Month*12.1666 > .12):# This does NOT improve performance
-				#	sn.Point_Value = round((5*sn.PC_1Year) + (5*sn.PC_6Month) + (7*sn.PC_3Month) + (13*sn.PC2mo) + (15*sn.PC_1Month) - (3-10*sn.LossStd_1Year))# This does NOT improve performance
 
 				if sn.EMA_LongSlope < 0:
 					if sn.EMA_ShortSlope > 0:	#bounce or early recovery
@@ -1109,7 +1132,6 @@ class PricingData:
 						sn.Target_1Day = max(sn.average, (sn.Average_2Day*2)-sn.average) + (sn.average * (sn.EMA_LongSlope))
 					else:
 						sn.Target_1Day = max(sn.average, sn.Average_2Day) + (sn.average * sn.EMA_LongSlope)
-					#sn.Target_1Day = max(sn.average, sn.Average_2Day) + (sn.average * sn.EMA_LongSlope)
 				sn.Comments = ''
 				if sn.low > sn.Channel_High: 
 					sn.Comments += 'Overbought; '
@@ -1171,8 +1193,8 @@ class PricingData:
 			ax.set_xlabel('Date')
 			ax.set_ylabel('Price')
 			ax.tick_params(axis='x', rotation=70)
-			ax.grid(b=True, which='major', color='black', linestyle='solid', linewidth=.5)
-			ax.grid(b=True, which='minor', color='0.65', linestyle='solid', linewidth=.1)
+			ax.grid(visible=True, which='major', color='black', linestyle='solid', linewidth=.5)
+			ax.grid(visible=True, which='minor', color='0.65', linestyle='solid', linewidth=.1)
 			PlotScalerDateAdjust(startDate, endDate, ax)
 			if saveToFile:
 				if not fileNameSuffix =='': fileNameSuffix = '_' + fileNameSuffix
@@ -1815,10 +1837,10 @@ class TradingModel(Portfolio):
 			p.CalculateStats()
 			p.TrimToDateRange(startDate, endDate) # - timedelta(days=730), + timedelta(days=10)
 			self.priceHistory = [p] #add to list
-			i = p.historicalPrices.index.get_loc(startDate, method='nearest')
-			startDate = p.historicalPrices.index[i]
-			i = p.historicalPrices.index.get_loc(endDate, method='nearest')
-			endDate = p.historicalPrices.index[i]
+			i = p.historicalPrices.index.get_indexer([startDate], method='nearest')[0]
+			if i > -1: startDate = p.historicalPrices.index[i]
+			i = p.historicalPrices.index.get_indexer([endDate], method='nearest')[0]
+			if i > -1: endDate = p.historicalPrices.index[i]
 			if not PandaIsInIndex(p.historicalPrices, startDate): startDate += timedelta(days=1)
 			if not PandaIsInIndex(p.historicalPrices, startDate): startDate += timedelta(days=1)
 			if not PandaIsInIndex(p.historicalPrices, startDate): startDate += timedelta(days=1)
@@ -1967,8 +1989,8 @@ class TradingModel(Portfolio):
 
 	def GetValueAt(self, date): 
 		try:
-			i = self.dailyValue.index.get_loc(date, method='nearest')
-			r = self.dailyValue.iloc[i]['TotalValue']
+			i = self.dailyValue.index.get_indexer([date], method='nearest')[0]
+			if i > -1: r = self.dailyValue.iloc[i]['TotalValue']
 		except:
 			print('Unable to return value at ', date)
 			r=-1
@@ -2050,9 +2072,9 @@ class TradingModel(Portfolio):
 		self.ReEvaluateTrancheCount()
 		if withIncrement and self.currentDate <= self.modelEndDate: #increment the date
 			try:
-				loc = self.priceHistory[0].historicalPrices.index.get_loc(self.currentDate) + 1
-				if loc < self.priceHistory[0].historicalPrices.shape[0]:
-					nextDay = self.priceHistory[0].historicalPrices.index.values[loc]
+				loc = self.priceHistory[0].historicalPrices.index.get_indexer([self.currentDate], method='ffill')[0]
+				if loc > -1 and loc <= self.priceHistory[0].historicalPrices.shape[0]:
+					nextDay = self.priceHistory[0].historicalPrices.index.values[loc+1]
 					self.currentDate = ToDateTime(str(nextDay)[:10])
 				else:
 					print('The end: ' + str(self.modelEndDate))

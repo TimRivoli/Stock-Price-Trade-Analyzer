@@ -23,7 +23,6 @@ def ReadConfig(section_name:str, value_name:str):
 		if section_name in config:
 			try: 
 				r = config.get(section_name, value_name)
-				r = ast.literal_eval(r)
 			except Exception as e:
 				print('Unable to read value ', value_name, ' from settings file.')
 				print(e)
@@ -44,24 +43,34 @@ def WriteConfig(section_name:str, value_name:str, value:str):
 
 def ReadConfigBool(section_name:str, value_name:str):
 	r = ReadConfig(section_name, value_name)
-	if r == None: r = False
+	if r == None: 
+		r = False
+	elif len(r) > 0:
+		r = ast.literal_eval(r)
 	return bool(r)
 
 def ReadConfigInt(section_name:str, value_name:str):
 	r = ReadConfig(section_name, value_name)
-	if r == None: r = 0
+	if r == None: 
+		r = 0
+	elif len(r) > 0: 
+		r = ast.literal_eval(r)
 	return int(r)
 
 def ReadConfigString(section_name:str, value_name:str):
 	r = ReadConfig(section_name, value_name)
-	if r == None: r = ''
+	if r == None: 
+		r = ''
+	elif len(r) > 0: 
+		if "'" in r or '"' in r: r = ast.literal_eval(r)
 	return str(r)
 
 def ReadConfigList(section_name:str, value_name:str):
 	r = ReadConfig(section_name, value_name)
-	print(value_name, r)
 	if r == None: 
 		r = []
+	elif len(r) > 0: 
+		r = ast.literal_eval(r)
 	return r
 
 def CreateFolder(p:str):
@@ -281,15 +290,20 @@ if DatabaseServer != '' and DatabaseName !='' and DatabaseServer != None and Dat
 	UseSQLDriver = ReadConfigBool('Database', 'UseSQLDriver')
 	DatabaseUsername = ReadConfigString('Database', 'DatabaseUsername')
 	DatabasePassword = ReadConfigString('Database', 'DatabasePassword')
-	DatabaseConstring = 'DRIVER={ODBC Driver 17 for SQL Server};SERVER=' + DatabaseServer + ';DATABASE=' + DatabaseName 
-	if UseSQLDriver:
-		DatabaseConstring = 'DRIVER={SQL Server Native Client 11.0};SERVER=' + DatabaseServer + ';DATABASE=' + DatabaseName 
-	if DatabaseUsername !="" and DatabaseUsername != None:
-		DatabaseConstring += ';UID=' + DatabaseUsername + ';PWD=' + DatabasePassword
-	else:
-		DatabaseConstring += ';Trusted_Connection=yes;' #';Integrated Security=true;'
+	DatabaseConstring = ReadConfigString('Database', 'ConnectionString')
+	if DatabaseConstring =='': 
+		DatabaseConstring = 'SERVER=' + DatabaseServer + ';DATABASE=' + DatabaseName 
+		if UseSQLDriver:
+			#DatabaseConstring = 'DRIVER={SQL Server};SERVER=' + DatabaseServer + ';DATABASE=' + DatabaseName 
+			#DatabaseConstring = 'DRIVER={ODBC Driver 17 for SQL Server};SERVER=' + DatabaseServer + ';DATABASE=' + DatabaseName 
+			DatabaseConstring = 'DRIVER={SQL Server Native Client 11.0};SERVER=' + DatabaseServer + ';DATABASE=' + DatabaseName 
+		if DatabaseUsername !="" and DatabaseUsername != None:
+			DatabaseConstring += ';UID=' + DatabaseUsername + ';PWD=' + DatabasePassword
+		else:
+			DatabaseConstring += ';Trusted_Connection=yes;' #';Integrated Security=true;'
 
 def Is_sql_configured(): return globalUseDatabase
+def Is_database_configured(): return globalUseDatabase
 def SQL_ConString(): return DatabaseConstring
 #-------------------------------------------- SQL Utilities -----------------------------------------------
 class PTADatabase():
@@ -316,6 +330,7 @@ class PTADatabase():
 		except Exception as e:
 			self.databaseConnected = False
 			print("Database connection attempt failed")
+			print(SQL_ConString())
 			print(e)
 		return result
 

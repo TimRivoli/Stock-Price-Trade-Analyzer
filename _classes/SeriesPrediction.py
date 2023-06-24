@@ -1,6 +1,6 @@
 nonGUIEnvironment = False	#hosted environments often have no GUI so matplotlib won't be outputting to display
 useTensorBoard = False
-useSQL = False
+use_database = False
 import os, numpy, pandas, matplotlib
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
 import keras, tensorflow as tf
@@ -19,6 +19,7 @@ if useTensorBoard: from keras.callbacks import TensorBoard
 nonGUIEnvironment = ReadConfigBool('Settings', 'nonGUIEnvironment')
 if nonGUIEnvironment: matplotlib.use('agg',warn=False, force=True)
 from matplotlib import pyplot as plt
+use_database = Is_database_configured()
 
 def ToSQL(df:pandas.DataFrame, tableName:str, indexAsColumn:bool=True, clearExistingData:bool=False):
 		db = PTADatabase()
@@ -50,7 +51,7 @@ class SeriesPredictionNN(object):
 	pcFieldWatch = [] #These are fields which will automatically be converted to percentage change from prior value
 
 	def __init__(self, base_model_name:str='', prediction_target_days:int=0, model_type:str='', prediction_results_folder:str='', model_save_folder:str=''):	
-		if not model_type in ['CNN','LSTM','CNN_LSTM','BiLSTM','GRU','ActorCritic','Attention','Simple']: model_type='LSTM'
+		if not model_type in ['CNN','LSTM','CNN_LSTM','BiLSTM','GRU','ActorCritic','Attention','Transformer','Simple']: model_type='LSTM'
 		self.model_type = model_type
 		base_model_name += '_' + model_type
 		self.base_model_name = base_model_name
@@ -118,7 +119,7 @@ class SeriesPredictionNN(object):
 	def _Build_LSTM_Model(self):
 		#LSTM should use a time_window, could add a batchnormalization layer, but doesn't need an activation layer because such is done within LSTM
 		#hidden_layer_size:int, dropout_rate:float, optimizer:str, learning_rate:float, metrics:list
-		lstm_units = 128
+		lstm_units = 256
 		inputs = self._InputLayer()
 		x = tf.concat(inputs, axis=-1)
 		#x = LSTM(units=lstm_units, return_sequences=True)(x)
@@ -127,7 +128,8 @@ class SeriesPredictionNN(object):
 		x = LSTM(units=lstm_units, return_sequences=False)(x)
 		if self.use_BatchNormalization: x = BatchNormalization()(x)
 		if self.dropout_rate > 0: x = Dropout(self.dropout_rate)(x)
-		x = Dense(units=64, activation='relu')(x)
+		x = Dense(units=256, activation='relu')(x)
+		x = Dense(units=128, activation='relu')(x)
 		x = Dense(units=21, activation='relu')(x)
 		output = Dense(units=self.num_classes, activation=self.output_activation)(x)
 		model = Model(inputs=inputs, outputs=output)
@@ -136,7 +138,7 @@ class SeriesPredictionNN(object):
 		self.model = model
 
 	def _Build_BiLSTM_Model(self):
-		lstm_units = 128
+		lstm_units = 256
 		inputs = self._InputLayer()
 		x = Bidirectional(LSTM(units=lstm_units, return_sequences=True))(tf.concat(inputs, axis=-1))
 		#x = LayerNormalization()(x)
@@ -155,7 +157,7 @@ class SeriesPredictionNN(object):
 		self.model = model
 
 	def _Build_CNN_LSTM_Model(self):
-		lstm_units = 128
+		lstm_units = 256
 		inputs = self._InputLayer()
 		inputs_joined = tf.concat(inputs, axis=-1)
 		x = Conv1D(filters=64, kernel_size=10, dilation_rate=1, activation='relu')(inputs_joined)
@@ -177,11 +179,11 @@ class SeriesPredictionNN(object):
 
 	def _Build_GRU_Model(self):
 		inputs = self._InputLayer()
-		x = GRU(units=64, return_sequences=True)(tf.concat(inputs, axis=-1))
+		x = GRU(units=128, return_sequences=True)(tf.concat(inputs, axis=-1))
 		x = LayerNormalization()(x)
-		x = GRU(units=64, return_sequences=True)(x)
+		x = GRU(units=128, return_sequences=True)(x)
 		x = LayerNormalization()(x)
-		x = GRU(units=64, return_sequences=True)(x)
+		x = GRU(units=128, return_sequences=True)(x)
 		x = Flatten()(x)
 		if self.dropout_rate > 0: x = Dropout(self.dropout_rate)(x)
 		x = Dense(units=128, activation='relu')(x)
@@ -207,6 +209,22 @@ class SeriesPredictionNN(object):
 		self.num_layers = len(model.layers) - len(inputs)
 		self.model = model
 
+	def _Build_Transformer_Model(self):
+		input_layer = self._InputLayer()
+		num_units = 256
+		num_heads = 8
+		encoder = tf.keras.layers.MultiHeadAttention(num_heads=num_heads, key_dim=num_units)(tf.concat(input_layer, axis=-1), tf.concat(input_layer, axis=-1))
+		encoder = tf.keras.layers.MultiHeadAttention(num_heads=num_heads, key_dim=num_units)(encoder, encoder)
+		encoder = tf.keras.layers.Flatten()(encoder)
+		encoder = Dense(num_units, activation='relu')(encoder)
+		encoder = Dense(num_units, activation='relu')(encoder)
+		encoder = Dense(num_units, activation='relu')(encoder)
+		output_layer = Dense(1)(encoder)
+		model = Model(inputs=input_layer, outputs=output_layer)
+		model.compile(optimizer=self.optimizer_function, loss=self.loss_function, metrics=self.metrics)
+		self.num_layers = len(model.layers) 
+		self.model = model
+
 	def _Build_ActorCritic_Model(self):
 		inputs = self._InputLayer()
 		model = keras.models.Sequential()
@@ -227,17 +245,13 @@ class SeriesPredictionNN(object):
 		self.num_layers = len(model.layers) - len(inputs)
 		self.model = model
 
-	def BuildModel(self, learning_rate:float=0.00001, dropout_rate:float=0.01, use_BatchNormalization:bool=False):
-		#hidden_layer_size:int=256, dropout_rate:float=0.01, optimizer:str='adam', metrics:list=['accuracy'], dropout:bool=True
-		#0.01 dropout rate is low, could be closer to .2
-		#0.000020 learning rate is low, 0.001 is considered deep, current implementations use adaptive
+	def BuildModel(self, learning_rate:float=0.00001, dropout_rate:float=0.0, use_BatchNormalization:bool=False):
 		self.dropout_rate = dropout_rate
 		self.use_BatchNormalization = use_BatchNormalization
 		if not (self.source_data_loaded):
 			print('Source data needs to be loaded before building model.')
 			assert(False)
 		if not self.batchesCreated: self.MakeTrainTest()
-		#self.optimizer_function='adam' #adaptive learning rate, starts at 0.001 
 		self.optimizer_function=Adam(learning_rate=learning_rate)
 		if self.predictClasses:
 			self.loss_function = 'categorical_crossentropy'
@@ -263,6 +277,8 @@ class SeriesPredictionNN(object):
 				self._Build_Attention_Model()
 			elif self.model_type=='CNN_LSTM':
 				self._Build_CNN_LSTM_Model()
+			elif self.model_type=='Transformer':				
+				self._Build_Transformer_Model()
 			elif self.model_type=='Simple':
 				self._Build_Simple_Model()
 		
@@ -536,7 +552,7 @@ class SeriesPredictionNN(object):
 			TestResults.set_index(['model_name'], inplace=True)	
 			TestResults.loc[self.model_name] = [self.train_start_accuracy, self.train_end_accuracy, self.train_start_accuracy2, self.train_end_accuracy2, self.train_start_loss, self.train_end_loss, self.num_features, self.num_classes, self.num_layers, self.prediction_target_days, self.time_steps, self.num_source_days, self.batch_size, epochs_completed, self.dropout_rate, self.use_BatchNormalization]
 			TestResults['source_field_list'] = str(self.source_field_list)
-			if useSQL:
+			if use_database:
 				try:
 					ToSQL(TestResults, 'NNTrainingResults')
 				except:
