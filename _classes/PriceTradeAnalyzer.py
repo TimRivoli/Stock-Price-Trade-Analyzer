@@ -154,7 +154,7 @@ class PriceSnapshot:
 	
 class DataDownload:
 	def _DownLoadGoogleFinancePage(self, ticker:str, stockExchange:str ="NYSE"):
-		print("Downloading ticker infor for " + ticker)
+		print("Downloading ticker info for " + ticker)
 		url = "https://www.google.com/finance/quote/" + ticker + ":" + stockExchange + "?window=5D"  #5 Day, (data1: 1M Daily, data2: 1D Minutely)
 		try:
 			openUrl = webRequest.urlopen(url, timeout=60) 
@@ -202,7 +202,7 @@ class DataDownload:
 		return v
 
 	def _ScrapeGoogleFinanceTickerInfoAndFinancials(self, ticker:str, pageData:str):
-		#Updates missing About and other info
+		#Parses GF page for financial data, updates database
 		print(" Parsing ticker infor for " + ticker)
 		result = False
 		currentDate = GetTodaysDate()
@@ -268,13 +268,13 @@ class DataDownload:
 					#print(i, values[i])
 				while len(values) < 24: values.append(0)
 				with suppress(Exception):
-					cursor.execute("DELETE FROM TickerFinancials WHERE Ticker=? AND Year=?", ticker, currentYear)
-					SQL = "INSERT INTO TickerFinancials (Ticker, Year, Revenue, OperatingExpense, NetIncome, NetProfitMargin, EarningsPerShare, EBITDA, EffectiveTaxRate) Values(?,?,?,?,?,?,?,?,?)"
-					cursor.execute(SQL,ticker,currentYear,values[0],values[1],values[2],values[3],values[4],values[5],values[6])
-					SQL = "UPDATE TickerFinancials SET CashShortTermInvestments=?, TotalAssets=?, TotalLiabilities=?, TotalEquity=?, SharesOutstanding=?, PriceToBook=?, ReturnOnAssetts=?, ReturnOnCapital=? WHERE Ticker=? AND Year=?"
-					cursor.execute(SQL,values[7],values[8],values[9],values[10],values[11],values[12],values[13],values[14],ticker,currentYear)
-					SQL = "UPDATE TickerFinancials SET CashFromOperations=?, CashFromInvesting=?, CashFromFinancing=?, NetChangeInCash=?, FreeCashFlow=? WHERE Ticker=? AND Year=?"
-					cursor.execute(SQL,values[16],values[17],values[18],values[19],values[20],ticker,currentYear)	
+					cursor.execute("DELETE FROM TickerFinancials WHERE Ticker=? AND Year=?", ticker, currentDate.year)
+					SQL = "INSERT INTO TickerFinancials (Ticker, Year, Month, Revenue, OperatingExpense, NetIncome, NetProfitMargin, EarningsPerShare, EBITDA, EffectiveTaxRate) Values(?,?,?,?,?,?,?,?,?,?)"
+					cursor.execute(SQL,ticker,currentDate.year, currentDate.month,values[0],values[1],values[2],values[3],values[4],values[5],values[6])
+					SQL = "UPDATE TickerFinancials SET CashShortTermInvestments=?, TotalAssets=?, TotalLiabilities=?, TotalEquity=?, SharesOutstanding=?, PriceToBook=?, ReturnOnAssetts=?, ReturnOnCapital=? WHERE Ticker=? AND Year=? AND MONTH=?"
+					cursor.execute(SQL,values[7],values[8],values[9],values[10],values[11],values[12],values[13],values[14],ticker,currentDate.year,currentDate.month)
+					SQL = "UPDATE TickerFinancials SET CashFromOperations=?, CashFromInvesting=?, CashFromFinancing=?, NetChangeInCash=?, FreeCashFlow=? WHERE Ticker=? AND Year=? AND MONTH=?"
+					cursor.execute(SQL,values[16],values[17],values[18],values[19],values[20],ticker,currentDate.yearcurrentDate.month)	
 			startIndex = pageData.find(startAboutDelimiter,0)
 			if startIndex > 0:
 				startIndex += len(startAboutDelimiter)
@@ -289,6 +289,7 @@ class DataDownload:
 			db.Close()
 
 	def _ParseAndUpdatePriceHistory(self, ticker:str, stockExchange:str, pageData:str, IntraDayValues:bool=False, verbose:bool=False):
+		#Parses GF page for price data, updates database
 		result = False
 		startDate = ""
 		endDate = ""
@@ -383,16 +384,15 @@ class DataDownload:
 			#assert(False)
 
 	def DownloadIntradayPriceGoogleFinance(self, ticker:str, Exchange:str='NYSE'):
+		#Downloads past 30 days intraday price and financial data, saves to database
 		Result = False
-		Exchanges = ['NYSE','NASDAQ','Delisted']
+		Exchanges = ['NYSE','NASDAQ','INDEXNASDAQ','INDEXSP','INDEXDJX','NYSEARCA','BMV','LON']
 		if Exchange == "":
-			i = 0
-			while i <= 2 and pageData =="":				
-				Exchange = Exchanges[i]
-				print("Testing exchange: " + Exchange)
-				pageData = ""
-				if i < 2: pageData = self._DownLoadGoogleFinancePage(ticker, Exchange)
-				i +=1
+			for e in Exchanges:
+				if pageData =="":				
+					Exchange = e
+					print("Testing exchange: " + Exchange)
+					pageData = self._DownLoadGoogleFinancePage(ticker, Exchange)
 			if pageData!="": cursor.execute("IF NOT EXISTS(SELECT Ticker FROM tickers WHERE ticker=?) INSERT INTO Tickers (Ticker, Exchange) values(?,?)", ticker, ticker, Exchange)
 			cursor.execute("UPDATE t SET Exchange=? FROM Tickers t WHERE Ticker=?", Exchange, ticker)		
 		else:
@@ -403,10 +403,9 @@ class DataDownload:
 			self._ScrapeGoogleFinanceTickerInfoAndFinancials(ticker, pageData)
 			Result = True
 		return Result
-	
-	
+		
 	def DownloadTickerGoogleFinance(self, ticker:str, exchange:str='NYSE'):
-		#Updates missing About and other info
+		#Updates missing About and other info, updates database tables
 		pageData = self._DownLoadGoogleFinancePage(ticker, exchange)
 		if pageData != '': self._ScrapeGoogleFinanceTickerInfoAndFinancials(ticker, pageData)
 
@@ -445,6 +444,7 @@ class DataDownload:
 		return outputdict, dates 
 
 	def DownloadFinanceDataYahooFinance(self, ticker_list:list, download_folder:str, balance_sheet:bool=True, income_statement:bool=True, cash_flow:bool=False):
+		#Downloads historical balance sheets and income statements, saves to CSV files
 		yf = YahooFinancials(ticker_list, concurrent=True, max_workers=8, country="US")
 		if balance_sheet:
 			data = yf.get_financial_stmts('quarterly', 'balance', reformat=True)
@@ -519,6 +519,7 @@ class DataDownload:
 				if len(df) > 0: df.to_csv(download_folder + file_name)
 
 	def DownloadPriceDataStooq(self, ticker:str, download_folder:str, verbose:bool=False):
+		#Downloads historical price data, saves to CSV file
 		url = "https://stooq.com/q/d/l/?i=d&s=" + ticker + '.us'
 		if ticker[0] == '^': 
 			url = "https://stooq.com/q/d/l/?i=d&s=" + ticker 
@@ -673,6 +674,8 @@ class PricingData:
 		self._LoadHistory(refreshPrices=False, verbose=verbose)
 		if self.pricesLoaded:
 			requestNewData = False
+			if not(requestedStartDate==None): requestedStartDate = ToDate(requestedStartDate)
+			if not(requestedEndDate==None): requestedEndDate = ToDate(requestedEndDate)
 			filePath = self._dataFolderhistoricalPrices + self.ticker + '.csv'
 			lastUpdated = datetime.now() - timedelta(days=10950)
 			if os.path.isfile(filePath): lastUpdated = datetime.fromtimestamp(os.path.getmtime(filePath))
@@ -814,6 +817,7 @@ class PricingData:
 		self.historicalPrices['Point_Value'] = (10*self.historicalPrices['PC_1Year']) + (100*self.historicalPrices['LossStd_1Year']) - 6  #New golden: 45% average year -22% worst year, 3 day re-eval
 		self.historicalPrices['Point_Value'].loc[self.historicalPrices['PC_1Month'] < 0.00175]-=3 #helps early position close
 		self.historicalPrices['Point_Value'].loc[(self.historicalPrices['PC_1Month3WeekEMA'] < -0.00175)|(self.historicalPrices['Point_Value'] < 2)] = 0 #zero out short term losers
+		self.historicalPrices['Point_Value'] = (self.historicalPrices['Point_Value']**2)/5	#This adds about 3% on a selection of 10, matches 5, improves slightly with 15
 		self.historicalPrices.fillna(method='ffill', inplace=True)
 		self.historicalPrices.fillna(method='bfill', inplace=True)
 		self.statsLoaded = True
@@ -1078,19 +1082,19 @@ class PricingData:
 					if pd.isna(sn.PC_1Month): sn.PC_1Month = 0
 					if pd.isna(sn.PC_1Month3WeekEMA): sn.PC_1Month3WeekEMA = 0
 					if pd.isna(sn.PC_1Year): sn.PC_1Year = 0					
-				sn.Point_Value = 0 #Somehow this is slignly different than the DataFrame
-				if sn.PC_1Month3WeekEMA >= -0.00175: #This is really good 45%, -22% on 3 ReVal, 53/28 small cap
+				sn.Point_Value = 0 #Somehow this is slightly different than the DataFrame calculation
+				if sn.PC_1Month3WeekEMA >= -0.00175: #This is really good 45%, -22% on 3 ReVal
 					sn.Point_Value = round(10*sn.PC_1Year + 100*sn.LossStd_1Year - 6)  
 					if sn.PC_1Month < .00175: sn.Point_Value-=3
 					if sn.Point_Value < 2: sn.Point_Value=0
+					sn.Point_Value = (sn.Point_Value*sn.Point_Value)/5 #adds 3% on 10 picks
 				if pvmethod ==1:
 					sn.Point_Value=0
-					if sn.PC_1Month >= -0.00175: 
+					if sn.PC_1Month3WeekEMA >= -0.00175: 
 						sn.Point_Value = round(10*sn.PC_1Year + 100*sn.LossStd_1Year - 6)  
-						if sn.PC_1Month < .1:
-							sn.Point_Value-=6
-							if sn.PC_1Month3WeekEMA < .1: sn.Point_Value-=8
-							if sn.PC_2Month < .1: sn.Point_Value-=15
+						if sn.PC_1Month < .00175: sn.Point_Value-=3
+						if sn.Point_Value < 2: sn.Point_Value=0
+					sn.Point_Value = (sn.Point_Value*sn.Point_Value)/5
 				elif pvmethod ==2:
 					sn.Point_Value = 0
 					if sn.PC_1Month3WeekEMA >= -0.00175: 
@@ -1119,6 +1123,17 @@ class PricingData:
 						sn.Point_Value = round(10*sn.PC_1Year + 100*sn.LossStd_1Year - 6)  
 						if sn.PC_1Month < .00175: sn.Point_Value-=3
 						if sn.Point_Value < 2: sn.Point_Value=0
+				elif pvmethod ==5:
+					if sn.PC_1Month3WeekEMA >= -0.00175: 
+						sn.Point_Value = round(15*sn.PC_1Year + 100*sn.LossStd_1Year - 6)  #2% worse
+						if sn.PC_1Month < .00175: sn.Point_Value-=3
+						if sn.Point_Value < 2: sn.Point_Value=0
+				elif pvmethod ==6:
+					if sn.PC_1Month3WeekEMA >= -0.00175: 
+						sn.Point_Value = round(20*sn.PC_1Year + 100*sn.LossStd_1Year - 6)  #4% worse
+						if sn.PC_1Month < .00175: sn.Point_Value-=3
+						if sn.Point_Value < 2: sn.Point_Value=0
+
 				if sn.Point_Value < 0: sn.Point_Value=0
 				if sn.Point_Value > 100: sn.Point_Value=100
 
@@ -1780,7 +1795,7 @@ class Portfolio:
 					df['TradeModel'] = self.portfolioName 
 					self.database.DataFrameToSQL(df, 'TradeModel_Trades', indexAsColumn=True)
 					self.database.Close()
-			elif CreateFolder(foldername):
+			if CreateFolder(foldername):
 				filePath = foldername + self.portfolioName 
 				if addTimeStamp: filePath += '_' + GetDateTimeStamp()
 				filePath += '_trades.csv'
@@ -1793,7 +1808,7 @@ class Portfolio:
 				df['TradeModel'] = self.portfolioName 
 				self.database.DataFrameToSQL(df, 'TradeModel_DailyValue', indexAsColumn=True)
 				self.database.Close()
-		elif CreateFolder(foldername):
+		if CreateFolder(foldername):
 			filePath = foldername + self.portfolioName 
 			if addTimeStamp: filePath += '_' + GetDateTimeStamp()
 			filePath+= '_dailyvalue.csv'
@@ -2217,21 +2232,29 @@ class StockPicker():
 				self._tickerList.append(ticker)
 
 	def RemoveTicker(self, ticker:str, verbose:bool=False):
-#		if ticker in self._tickerList:
 		i=len(self.priceData)-1
-		while i > 0:
+		while i >= 0:
 			if ticker == self.priceData[i].ticker:
 				if verbose: print(" Removing ticker " + ticker)
 				self.priceData.pop(i)
+				self._tickerList.remove(ticker)
 			i -=1
-		if ticker in self._tickerList: self._tickerList.remove(ticker)	
+		if ticker in self._tickerList: 
+			print(" Error removing ticker " + ticker)
+			print(len(self.priceData))	
+			print(self._tickerList)	
+			assert(False)
 
 	def AlignToList(self, newList:list, verbose:bool=False):
 		#Add/Remove tickers until they match the given list
-		for t in self._tickerList:
-			if not t in newList:
-				if verbose: print(" Removing ticker " + t)
-				self.RemoveTicker(t)
+		i=len(self.priceData)-1
+		while i >= 0:
+			ticker = self.priceData[i].ticker
+			if not ticker in newList:
+				if verbose: print(" Removing ticker " + ticker)
+				self.priceData.pop(i)
+				self._tickerList.remove(ticker)
+			i -=1
 		for t in newList:
 			self.AddTicker(t)
 
@@ -2263,7 +2286,7 @@ class StockPicker():
 					if psnap.Deviation_5Day > .0275: result.append(ticker)
 		return result
 
-	def GetHighestPriceMomentum(self, currentDate:datetime, longHistoryDays:int = 365, shortHistoryDays:int = 30, stocksToReturn:int = 5, filterOption:int = 3, minPercentGain=0.05, maxVolatility=.1, pvmethod:int=0, verbose:bool=False): 
+	def GetHighestPriceMomentum(self, currentDate:datetime, longHistoryDays:int=365, shortHistoryDays:int=30, stocksToReturn:int=5, filterOption:int=3, minPercentGain=0.05, pvmethod:int=0, verbose:bool=False): 
 		minPC_1Day = minPercentGain/365
 		candidates = pd.DataFrame(columns=list(['Ticker','hp2Year','hp1Year','hp6mo','hp3mo','hp2mo','hp1mo','Price_Current','PC_2Year','PC_1Year','PC_6Month','PC_3Month','PC_2Month','PC_1Month','PC_1Day','Gain_Monthly','LossStd_1Year','longHistoricalValue','shortHistoricalValue','PC_LongTerm','PC_ShortTerm','Point_Value','Comments','latestEntry']))
 		candidates.set_index(['Ticker'], inplace=True)
@@ -2318,7 +2341,7 @@ class StockPicker():
 			filter =  (candidates['PC_ShortTerm'] > minPC_1Day) 
 			candidates.sort_values('PC_ShortTerm', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last') #Most critical factor sorting by largest short term gain which is not effective
 		elif filterOption ==44: #Short term gain meets min requirements, sort long value
-			filter =  (candidates['PC_ShortTerm'] > minPC_1Day) 
+			filter = (candidates['PC_ShortTerm'] > minPC_1Day) 
 			candidates.sort_values('PC_LongTerm', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last') #Most critical factor sorting by largest long term gain
 		elif filterOption ==5: #Point Value
 			filter = (candidates['PC_1Year'] > minPC_1Day) & (candidates['Point_Value'] > 0)
