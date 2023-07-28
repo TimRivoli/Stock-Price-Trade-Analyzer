@@ -43,7 +43,8 @@ def PandaIsInIndex(df:pd.DataFrame, value):
 def PlotSetDefaults():
 	#params = {'legend.fontsize': 4, 'axes.labelsize': 4,'axes.titlesize':4,'xtick.labelsize':4,'ytick.labelsize':4}
 	#plt.rcParams.update(params)
-	plt.rcParams['font.size'] = 4
+	plt.rcParams['font.size'] = 5
+	plt.rcParams['figure.dpi'] = 600
 
 def PlotScalerDateAdjust(minDate:datetime, maxDate:datetime, ax):
 	if type(minDate)==str:
