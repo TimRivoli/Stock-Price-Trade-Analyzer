@@ -40,7 +40,6 @@ def RunModel(modelName:str, modelFunction, ticker:str, startDate:str, durationIn
 				tm.PositionSummary()
 				#tm.PrintPositions()
 				break
-			days_passed+=1
 		cash, asset = tm.Value()
 		#print('Ending Value: ', cash + asset, '(Cash', cash, ', Asset', asset, ')')
 		tradeCount = len(tm.tradeHistory)
