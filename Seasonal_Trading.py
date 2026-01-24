@@ -1,5 +1,4 @@
 import pandas as pd
-from tqdm import tqdm
 from _classes.PriceTradeAnalyzer import TradingModel, PlotHelper, PriceSnapshot
 from _classes.Utility import *
 
@@ -28,16 +27,12 @@ def RunModel(modelName:str, modelFunction, ticker:str, startDate:str, durationIn
 	endDate = tm.modelEndDate
 	dayCounter = 0
 	currentYear = 0
-	days_passed = 0
-	total_days = (endDate - startDate).days    
 	if not tm.modelReady:
 		print('Unable to initialize price history for model for ' + str(startDate))
 		if returndailyValues: return pd.DataFrame()
 		else:return portfolioSize
 	else:
-		pbar = tqdm(total=total_days, desc=f"Running {modelName}", unit="day")
 		while not tm.ModelCompleted():
-			pbar.update(days_passed)
 			modelFunction(tm, ticker)
 			tm.ProcessDay()
 			if tm.AccountingError(): 
@@ -46,7 +41,6 @@ def RunModel(modelName:str, modelFunction, ticker:str, startDate:str, durationIn
 				#tm.PrintPositions()
 				break
 			days_passed+=1
-		pbar.close()
 		cash, asset = tm.Value()
 		#print('Ending Value: ', cash + asset, '(Cash', cash, ', Asset', asset, ')')
 		tradeCount = len(tm.tradeHistory)
