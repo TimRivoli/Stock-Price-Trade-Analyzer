@@ -1,5 +1,6 @@
 import time
 import numpy as np, pandas as pd
+from tqdm import tqdm
 from math import floor
 from datetime import datetime, timedelta
 from _classes.DataIO import PTADatabase
@@ -182,7 +183,9 @@ class Portfolio:
 		self.dailyValue = None	  #DataFrame for the value at the end of each day
 		self._commisionCost = 0
 		self.portfolioName = portfolioName
+		self._initialValue = totalFunds
 		self._cash = totalFunds
+		self.assetValue = 0
 		self._fundsCommittedToOrders = 0
 		self._verbose = verbose
 		self._trancheCount = floor(totalFunds/trancheSize)
@@ -296,12 +299,16 @@ class Portfolio:
 				print( 'Committed funds variance actual/recorded', x, self._fundsCommittedToOrders)
 		return (self._fundsCommittedToOrders - x)
 
-	def Value(self):
+	def _calculate_asset_value(self):
 		assetValue=0
 		for t in self._tranches:
 			if t.purchased:
 				assetValue = assetValue + (t.units*t.latestPrice)
-		return self._cash, assetValue
+		self.assetValue = assetValue
+
+	def Value(self):
+		self._calculate_asset_value()
+		return self._cash, self.assetValue
 		
 	def ReEvaluateTrancheCount(self, verbose:bool=False):
 		#Portfolio performance may require adjusting the available Tranches
@@ -557,6 +564,9 @@ class TradingModel(Portfolio):
 		CreateFolder(self._dataFolderTradeModel)
 		self.modelName = modelName
 		self.database = None
+		self.days_passed = 0
+		total_days = (endDate - startDate).days    	
+		self.pbar = tqdm(total=total_days, desc=f"Running {modelName}", unit="day")
 		if useDatabase:
 			db = PTADatabase()
 			if db.database_configured:
@@ -689,7 +699,8 @@ class TradingModel(Portfolio):
 			self.SellAllPositions(self.currentDate, allowWeekEnd=True)
 		self.UpdateDailyValue()
 		cashValue, assetValue = self.Value()
-		netChange = cashValue + assetValue - self.startingValue 		
+		netChange = cashValue + assetValue - self.startingValue 
+		if self.pbar: self.pbar.close()
 		if saveHistoryToFile:
 			self.SaveDailyValue(folderName)
 			self.SaveTradeHistory(folderName)
@@ -752,13 +763,14 @@ class TradingModel(Portfolio):
 					if ph.ticker == ticker: r = ph.GetPriceSnapshot(forDate) 
 		return r
 
-	def ModelCompleted(self):
-		if self.currentDate ==None or self.modelEndDate == None or not self.modelReady: 
-			r = True
-			print(f"Model is completed because it doesn't have valid data current date {self.currentDate} end date {self.modelEndDate}")
-		else:
-			r = self.currentDate >= self.modelEndDate
-		return(r)
+	def ModelCompleted(self) -> bool:
+		if not self.modelReady or self.currentDate is None or self.modelEndDate is None:
+			print(f" TradeModel: Warning model stop triggered by invalid state. Ready: {self.modelReady}, Date: {self.currentDate}, End: {self.modelEndDate}")
+			return True
+		is_completed = self.currentDate >= self.modelEndDate		
+		if is_completed:
+			print(f" TradeModel: Backtest successfully reached end date: {self.modelEndDate}")		
+		return is_completed				
 
 	def NormalizePrices(self):
 		self._NormalizePrices =  not self._NormalizePrices
@@ -791,28 +803,25 @@ class TradingModel(Portfolio):
 
 	def ProcessDay(self, withIncrement:bool=True, allowWeekEnd:bool=False):
 		#Process current day and increment the current date, allowWeekEnd is for model closing only
-		if self.verbose: 
-			c, a = self.Value()
-			if self.verbose: print(str(self.currentDate) + ' model: ' + self.modelName + ' _cash: ' + str(c) + ' Assets: ' + str(a))
 		if self.currentDate.weekday() < 5 or allowWeekEnd:
 			for ph in self.priceHistory:
 				sn = ph.GetPriceSnapshot(self.currentDate)
 				self.ProcessDaysOrders(ph.ticker, sn.Open, sn.High, sn.Low, sn.Close, self.currentDate)
 		self.UpdateDailyValue()
+		if self.pbar and self.verbose:
+			c = self._cash
+			a = self.assetValue
+			tqdm.write(f"Model: {self.modelName} Date: {self.currentDate} Cash: ${int(c)} Assets: ${int(a)} Total: ${int(c+a)} Return: {round(100*(((c+a)/self._initialValue)-1), 2)}%")
 		self.ReEvaluateTrancheCount()
-		if withIncrement and self.currentDate <= self.modelEndDate: #increment the date
-			try:
-				loc = self.priceHistory[0].historicalPrices.index.get_indexer([self.currentDate], method='ffill')[0]
-				if loc > -1 and loc <= self.priceHistory[0].historicalPrices.shape[0]:
-					nextDay = self.priceHistory[0].historicalPrices.index.values[loc+1]
-					self.currentDate = ToDateTime(str(nextDay)[:10])
-				else:
-					print('The end: ' + str(self.modelEndDate))
-					self.currentDate=self.modelEndDate		
-			except:
-				#print(self.priceHistory[0].historicalPrices)
-				print('Unable to find next date in index from ', self.currentDate,  self.priceHistory[0].ticker)
-				self.currentDate += timedelta(days=1)
+		if withIncrement and self.currentDate <= self.modelEndDate:
+			idx = self.priceHistory[0].historicalPrices.index		
+			pos = idx.searchsorted(self.currentDate, side='right')
+			if self.pbar: self.pbar.update(self.days_passed)
+			self.days_passed+=1
+			if pos < len(idx):
+				self.currentDate = idx[pos]
+			else:
+				self.currentDate = self.modelEndDate
 	
 	def SetCustomValues(self, v1, v2):
 		self.Custom1 = v1
