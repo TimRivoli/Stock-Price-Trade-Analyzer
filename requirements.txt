@@ -1,0 +1,23 @@
+# Data Manipulation
+pandas
+numpy
+
+# Finance Data
+yfinance
+
+# Machine Learning & AI
+tensorflow
+keras
+
+# Database & SQL
+pyodbc
+sqlalchemy
+
+# Networking & Web Requests
+requests
+curl_cffi
+
+# Optional: Specialized Database Drivers
+# install this if you are using specific DBs like PostgreSQL or MySQL
+# psycopg2-binary
+# pymysql
