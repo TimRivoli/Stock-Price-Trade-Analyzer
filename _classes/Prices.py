@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 BASE_FIELD_LIST = ['Open','Close','High','Low']
 TRADING_MONTH = 21
 TRADING_YEAR = 252
-REQUIRED_LOOKBACK = (TRADING_YEAR * 2) + 15 #when dates are trimmed this amount will be privetly held for calcuations
+REQUIRED_LOOKBACK = (365 * 2) + 15 #Calendar days, for when dates are trimmed this amount will be privetly held for calcuations
 
 #-------------------------------------------- Classes PriceSnapshot and PricingData -----------------------------------------------
 class PriceSnapshot:
