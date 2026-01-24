@@ -114,12 +114,11 @@ def PredictPrices(prices:PricingData, predictionMethod:int=0, daysForward:int = 
 	plot.PlotDataFrameDateRange(predDF[['Average','Average_Predicted']], None, 160, modelDescription + '_last160ays', 'Date', 'Price', dataFolder + modelDescription + '_last160Days') 
 	plot.PlotDataFrameDateRange(predDF[['Average','Average_Predicted']], None, 1000, modelDescription + '_last1000ays', 'Date', 'Price', dataFolder + modelDescription + '_last1000Days') 
 
-def RunPredictions(ticker:str='^SPX', numberOfLearningPasses:int = 750):
+def RunPredictions(ticker:str='.INX', numberOfLearningPasses:int = 750):
 	#Runs three prediction models (Linear, LSTM, CCN) predicting a target price 4, 20, and 60 days in the future.
 	prices = PricingData(ticker)
 	print('Loading ' + ticker)
-	if prices.LoadHistory():
-		prices.TrimToDateRange('1/1/1950', '3/1/2018')
+	if prices.LoadHistory(requestedStartDate='1/1/1950', requestedEndDate='3/1/2018'):
 		prices.NormalizePrices()
 		for ii in [4,20,60]:
 			for i in range(0,3):
@@ -139,10 +138,10 @@ def CreateAdditionalGraph():
 				
 CreateFolder(dataFolder)
 CreateFolder(dataFolder + '\samples')
-ticker='NFLX' #'NFLX', 'AMZN', 'GOOGL', '^SPX'
-SampleGraphs('^SPX', 15)
-SampleLSTM('^SPX')
-SampleCNN('^SPX')
+ticker='NFLX' #'NFLX', 'AMZN', 'GOOGL', '.INX'
+SampleGraphs('.INX', 15)
+SampleLSTM('.INX')
+SampleCNN('.INX')
 print('Sample data has been placed in ' + dataFolder)
 RunPredictions(ticker, numberOfLearningPasses=450)
 print('Output put in ' + dataFolder)

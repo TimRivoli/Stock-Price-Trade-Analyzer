@@ -25,7 +25,7 @@ def RunModel(modelName:str, modelFunction, ticker:str, startDate:str, durationIn
 	#Performs the logic of the given model over a period of time to evaluate the performance
 	modelName = modelName + '_' + ticker
 	print('Running model ' + modelName)
-	tm = TradingModel(modelName=modelName, startingTicker=ticker, startDate=startDate, durationInYears=durationInYears, totalFunds=portfolioSize, tranchSize=round(portfolioSize/10), verbose=verbose)
+	tm = TradingModel(modelName=modelName, startingTicker=ticker, startDate=startDate, durationInYears=durationInYears, totalFunds=portfolioSize, trancheSize=round(portfolioSize/10), verbose=verbose)
 	startDate = tm.modelStartDate
 	endDate = tm.modelEndDate
 	if not tm.modelReady:
@@ -91,11 +91,11 @@ def CompareModels(modelOneName:str, modelOneFunction, modelTwoName:str, modelTwo
 def RunTradingModelBuyHold(tm: TradingModel, ticker:str):
 #Baseline model, buy and hold
 	sn = tm.GetPriceSnapshot()
-	if tm.verbose: print(sn.date, sn.Target_1Day)
+	if tm.verbose: print(sn.Date, sn.Target)
 	if not sn == None:
-		for i in range(tm._tranchCount):
+		for i in range(tm._trancheCount):
 			available, buyPending, sellPending, longPositions = tm.PositionSummary()				
-			if tm.TranchesAvailable() > 0 and tm.FundsAvailable() > sn.high: tm.PlaceBuy(ticker=ticker, price=sn.low, marketOrder=True)
+			if tm.TranchesAvailable() > 0 and tm.FundsAvailable() > sn.High: tm.PlaceBuy(ticker=ticker, price=sn.Low, marketOrder=True)
 			if available ==0: break
 
 def RunTradingModelSeasonal(tm: TradingModel, ticker:str):
@@ -113,10 +113,10 @@ def RunTradingModelSeasonal(tm: TradingModel, ticker:str):
 
 	sn = tm.GetPriceSnapshot()
 	if not sn == None:
-		low = sn.low
-		high = sn.high
+		low = sn.Low
+		high = sn.High
 		m = tm.currentDate.month
-		for i in range(tm._tranchCount):
+		for i in range(tm._trancheCount):
 			available, buyPending, sellPending, longPositions = tm.PositionSummary()				
 			if m >= SellMonth and m < BuyMonth:
 				if longPositions > 0: 
@@ -135,10 +135,10 @@ def RunTradingModelFirstHalfOfMonth(tm: TradingModel, ticker:str):
 	SellDay = 15 #Sell mid month, after the 15th	
 	sn = tm.GetPriceSnapshot()
 	if not sn == None:
-		low = sn.low
-		high = sn.high
+		low = sn.Low
+		high = sn.High
 		d = tm.currentDate.day
-		for i in range(tm._tranchCount):
+		for i in range(tm._trancheCount):
 			available, buyPending, sellPending, longPositions = tm.PositionSummary()				
 			if d >= BuyDay or d < 3:
 				if available > 0 and tm.FundsAvailable() > high: 
@@ -157,10 +157,10 @@ def RunTradingTestTrading(tm: TradingModel, ticker:str):
 #Test effect of just trading back and forth on profit
 	sn = tm.GetPriceSnapshot()
 	if not sn == None:
-		low = sn.low
-		high = sn.high
+		low = sn.Low
+		high = sn.High
 		d = tm.currentDate.day
-		for i in range(tm._tranchCount):
+		for i in range(tm._trancheCount):
 			available, buyPending, sellPending, longPositions = tm.PositionSummary()				
 			if (d % 5) == 0:
 				if available > 0 and tm.FundsAvailable() > high: 
@@ -185,41 +185,41 @@ def RunTradingModelTrending(tm: TradingModel, ticker:str):
 	if not p == None:
 		available, buyPending, sellPending, longPositions = tm.PositionSummary()
 		maxPositions = available + buyPending + sellPending + longPositions
-		targetBuy = p.Target_1Day * (1 + p.Deviation_5Day/2)
-		targetSell = p.Target_1Day * (1 - p.Deviation_5Day/2)
-		for i in range(tm._tranchCount):
+		targetBuy = p.Target * (1 + p.Deviation_5Day/2)
+		targetSell = p.Target * (1 - p.Deviation_5Day/2)
+		for i in range(tm._trancheCount):
 			if p.EMA_LongSlope >= minActionableSlope and p.EMA_ShortSlope >= minActionableSlope:	 
 				trendState='++' #++	Positive trend, 100% long
 				if available > 0 :tm.PlaceBuy(ticker=ticker, price=targetBuy, marketOrder=True)	
 			elif p.EMA_LongSlope >= minActionableSlope and p.EMA_ShortSlope < minActionableSlope:  
 				trendState='+-' #+- Correction or early downturn, recent price drop
-				if p.low > p.Channel_High:   #Over Bought
+				if p.Low > p.Channel_High:   #Over Bought
 					pass
-				elif p.low < p.Channel_Low and p.high > p. Channel_Low: #Deep correction
+				elif p.Low < p.Channel_Low and p.High > p. Channel_Low: #Deep correction
 					pass
 				else:
 					pass
 			elif p.EMA_LongSlope < -minActionableSlope and p.EMA_ShortSlope < -minActionableSlope: 
 				trendState='--' #-- Negative trend, get out
-				if p.high < p.Channel_Low: #Over sold
+				if p.High < p.Channel_Low: #Over sold
 					pass
-				elif p.low < p.Channel_Low and p.high > p.Channel_Low: #Low below channel, possible early up or continuation of trend
+				elif p.Low < p.Channel_Low and p.High > p.Channel_Low: #Low below channel, possible early up or continuation of trend
 					pass
 				tm.PlaceSell(ticker=ticker, price=targetSell, marketOrder=True)
 			elif p.EMA_LongSlope < (-1 * minActionableSlope) and p.EMA_ShortSlope < (-1 * minActionableSlope): #-+ Bounce or early recovery
 				trendState='-+' #Short term positive, long term not yet
-				if p.high < p.Channel_Low: #Over sold
+				if p.High < p.Channel_Low: #Over sold
 					pass
-				elif p.low < p.Channel_Low and p.high > p.Channel_Low: #Straddle Low
+				elif p.Low < p.Channel_Low and p.High > p.Channel_Low: #Straddle Low
 					pass
 				else:
 					pass
 				if available > 0 :tm.PlaceBuy(ticker=ticker, price=targetBuy, marketOrder=True)	
 			else:																	    			 
 				trendState='Flat' #flat, target buy and sell to pass the time
-				if p.low > p.Channel_High:   #Over Bought, targeted sell
+				if p.Low > p.Channel_High:   #Over Bought, targeted sell
 					if longPositions > 0 and sellPending < 2 :tm.PlaceSell(ticker=ticker, price=targetSell, marketOrder=False)	
-				elif p.high < p.Channel_Low: #Over sold, targeted buy
+				elif p.High < p.Channel_Low: #Over sold, targeted buy
 					if available > 0 and buyPending < 2 :tm.PlaceBuy(ticker=ticker, price=targetBuy, marketOrder=False)	
 				else:
 					pass
@@ -242,30 +242,30 @@ def RunTradingModelSwingTrend(tm: TradingModel, ticker:str):
 	if not p == None:
 		available, buyPending, sellPending, longPositions = tm.PositionSummary()
 		maxPositions = available + buyPending + sellPending + longPositions
-		targetBuy = p.Target_1Day * (1 + p.Deviation_5Day/2)
-		targetSell = p.Target_1Day * (1 - p.Deviation_5Day/2)
-		for i in range(tm._tranchCount):
+		targetBuy = p.Target * (1 + p.Deviation_5Day/2)
+		targetSell = p.Target * (1 - p.Deviation_5Day/2)
+		for i in range(tm._trancheCount):
 			if p.EMA_LongSlope >= minActionableSlope and p.EMA_ShortSlope >= minActionableSlope:	 
 				trendState='++' #++	Positive trend, 100% long
-				if p.low > p.Channel_High:   #Over Bought
+				if p.Low > p.Channel_High:   #Over Bought
 					tm.PlaceBuy(ticker=ticker, price=targetBuy, marketOrder=True)	
-				elif p.low < p.Channel_Low:	#Still early
+				elif p.Low < p.Channel_Low:	#Still early
 					tm.PlaceBuy(ticker=ticker, price=targetBuy, marketOrder=True)	
 				else:
 					tm.PlaceBuy(ticker=ticker, price=targetBuy, marketOrder=True)	
 			elif p.EMA_LongSlope >= minActionableSlope and p.EMA_ShortSlope < minActionableSlope:  
 				trendState='+-' #+- Correction or early downturn, recent price drop
-				if p.low > p.Channel_High:   #Over Bought, sell profit
+				if p.Low > p.Channel_High:   #Over Bought, sell profit
 					if sellPending < 3 and longPositions > 7: tm.PlaceSell(ticker=ticker, price=targetSell * .98, marketOrder=False, expireAfterDays=3)
-				elif p.low < p.Channel_Low and p.high > p. Channel_Low: #Deep correction
+				elif p.Low < p.Channel_Low and p.High > p. Channel_Low: #Deep correction
 					if sellPending < 3 and longPositions > 7: tm.PlaceSell(ticker=ticker, price=targetSell * .98, marketOrder=False, expireAfterDays=3)
 				else:
 					pass
 			elif p.EMA_LongSlope < -minActionableSlope and p.EMA_ShortSlope < -minActionableSlope: #-- Negative trend, get out
 				trendState='--'
-				if p.high < p.Channel_Low: #Over sold
+				if p.High < p.Channel_Low: #Over sold
 					if buyPending < 3 and longPositions < 6: tm.PlaceBuy(ticker, targetBuy * .95, False, 2)
-				elif p.low < p.Channel_Low and p.high > p.Channel_Low: #Straddle Low, possible early up
+				elif p.Low < p.Channel_Low and p.High > p.Channel_Low: #Straddle Low, possible early up
 					pass
 				else:
 					tm.PlaceSell(ticker=ticker, price=targetSell, marketOrder=True)
@@ -277,17 +277,17 @@ def RunTradingModelSwingTrend(tm: TradingModel, ticker:str):
 					tm.PlaceSell(ticker=ticker, price=targetSell, marketOrder=True)
 			elif p.EMA_LongSlope < (-1 * minActionableSlope) and p.EMA_ShortSlope < (-1 * minActionableSlope): #-+ Bounce or early recovery
 				trendState='-+' #Short term positive, long term not yet
-				if p.high < p.Channel_Low: #Over sold
+				if p.High < p.Channel_Low: #Over sold
 					if buyPending < 3 and longPositions < 6: tm.PlaceBuy(ticker, targetBuy * .95, False, 2)
-				elif p.low < p.Channel_Low and p.high > p.Channel_Low: #Straddle Low
+				elif p.Low < p.Channel_Low and p.High > p.Channel_Low: #Straddle Low
 					if buyPending < 3 and longPositions < 6: tm.PlaceBuy(ticker, targetBuy * .95, False, 2)
 				else:
 					pass
 			else:																	    			 #flat, aim for 70% long
 				trendState='Flat'
-				if p.low > p.Channel_High:   #Over Bought
+				if p.Low > p.Channel_High:   #Over Bought
 					pass
-				elif p.high < p.Channel_Low: #Over sold
+				elif p.High < p.Channel_Low: #Over sold
 					if buyPending < 3 and longPositions < 8: tm.PlaceBuy(ticker=ticker, price=targetBuy, marketOrder=False, expireAfterDays=5)
 					if buyPending < 4: tm.PlaceBuy(ticker=ticker, price=targetBuy, marketOrder=False, expireAfterDays=5)
 				else:
@@ -321,19 +321,19 @@ def RunTradingModelSwingTrade(tm: TradingModel, ticker:str):
 	if not p == None:
 		available, buyPending, sellPending, longPositions = tm.PositionSummary()
 		maxPositions = available + buyPending + sellPending + longPositions
-		targetBuy = p.Target_1Day * (1 + p.Deviation_5Day/2)
-		targetSell = p.Target_1Day * (1 - p.Deviation_5Day/2)
+		targetBuy = p.Target * (1 + p.Deviation_5Day/2)
+		targetSell = p.Target * (1 - p.Deviation_5Day/2)
 		MarketBuy = False
 		MarketSell = False
-		for i in range(tm._tranchCount):
+		for i in range(tm._trancheCount):
 			if p.EMA_LongSlope >= minActionableSlope and p.EMA_ShortSlope >= minActionableSlope:	 
 				#++	Positive trend
 				#Actions: stick with it, sell 1/4 if it gets too high, repurchase at 3% discount
 				trendState='++' 
 				MarketBuy = (longPositions < maxPositions * .7) 
-				if p.low > p.Channel_High:   #Over Bought
+				if p.Low > p.Channel_High:   #Over Bought
 					pass
-				elif p.low < p.Channel_Low:	#Very early in trend, possibly not possible
+				elif p.Low < p.Channel_Low:	#Very early in trend, possibly not possible
 					MarketBuy = True
 				else:
 					pass
@@ -341,9 +341,9 @@ def RunTradingModelSwingTrade(tm: TradingModel, ticker:str):
 				#+- Correction or early downturn, recent price drop
 				#Actions: wait for bounce, sell and repurchase near recent low, need to consider state of chunks
 				trendState='+-' 
-				if p.low > p.Channel_High:   #Over Bought, sell profit
+				if p.Low > p.Channel_High:   #Over Bought, sell profit
 					pass
-				elif p.low < p.Channel_Low and p.high > p. Channel_Low: #Deep correction
+				elif p.Low < p.Channel_Low and p.High > p. Channel_Low: #Deep correction
 					MarketBuy = True
 				else:
 					pass
@@ -352,18 +352,18 @@ def RunTradingModelSwingTrade(tm: TradingModel, ticker:str):
 				#Actions: wait for bounce, sell and repurchase near recent low, need to consider state of chunks
 				trendState='--' 
 				MarketSell = True
-				if p.high < p.Channel_Low: #Over sold
+				if p.High < p.Channel_Low: #Over sold
 					pass
-				elif p.low < p.Channel_Low and p.high > p.Channel_Low: #Straddle Low, possible early up
+				elif p.Low < p.Channel_Low and p.High > p.Channel_Low: #Straddle Low, possible early up
 					pass
 				else:
 					pass
 			elif p.EMA_LongSlope < (-1 * minActionableSlope) and p.EMA_ShortSlope < (-1 * minActionableSlope): #-+ Bounce or early recovery
 				#Short term positive, long term not yet, early return to trend, expect large upward movement to resume trend
 				trendState='-+' 
-				if p.high < p.Channel_Low: #Over sold
+				if p.High < p.Channel_Low: #Over sold
 					pass
-				elif p.low < p.Channel_Low and p.high > p.Channel_Low: #Straddle Low
+				elif p.Low < p.Channel_Low and p.High > p.Channel_Low: #Straddle Low
 					pass
 				else:
 					pass
@@ -371,9 +371,9 @@ def RunTradingModelSwingTrade(tm: TradingModel, ticker:str):
 				#Flat
 				#Action: plot high/low and swing trade them
 				trendState='Flat'
-				if p.low > p.Channel_High:   #Over Bought
+				if p.Low > p.Channel_High:   #Over Bought
 					pass
-				elif p.high < p.Channel_Low: #Over sold
+				elif p.High < p.Channel_Low: #Over sold
 					pass
 				else:
 					pass
