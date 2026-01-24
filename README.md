@@ -1,6 +1,6 @@
 
 
-This is a Python 3.0 project for analyzing stock prices and methods of stock trading. It uses native Python tools and Google TensorFlow machine learning. It has two main class modules PriceTradeAnalyzer and SeriesPrediction described below.
+This is a Python 3 project for analyzing stock prices and methods of stock trading. It uses native Python tools and Google TensorFlow machine learning. It has two main class modules PriceTradeAnalyzer and SeriesPrediction described below.
 
 Module: PriceTradeAnalyzer
 Class PricingData
@@ -19,26 +19,20 @@ TrainPrices.py shows samples of using the StockPredictionNN class to train and t
 
 PredictionExperiment.py tests three methods of predicting future stock prices.  Linear (future price in x days with be a straight line from the previous x days), CNN Learning, and LSTM learning.  This tests three questions:  1) Linear - How often can future prices be directly determined by plotting a straight line from past prices? 2) CNN - to what extent does the visual shape of past prices determine future prices 3) LSTM - are there patterns in the series of prices which can be used to predict future prices?  The answers certainly surpised me.  Feel free to run your own tests.  The results in "Prediction Accuracy Tests.ods" are from the models used in the March version of the code which has since been reworked. I haven't re-run all the same tests.  The tests were for 750 epochs using the SP500 index data from 1950 to the present with prices normalized.  I stopped at 750 epochs because I didn't find the accuracy improving much with futher interations.  I was surprised that normalization improved the accuracy, while converting the numbers to percentage change from the previous day greatly reduced the accuracy, as did introducing additional features to the input.  If you would like to do your own tests I recommend using TestPredictionModels from TrainPrices.py as it will do all the work of conversions and plotting for you with just a few parameter values.  
 
-I've added support for using SQL as a back-end instead of .csv files.  There is a PTAGenerate.sql file to help you get started.  If you populate the Database information in the config.ini then the code will attempt to use the SQL database.
+I've added support for using SQL as a back-end instead of .csv files.  There is a PTAGenerate.sql file to help you get started.  I use sqlalchemy which supports a lot of ODBC data sources.  I use Microsoft "ODBC Driver 18 for SQL Server". If you populate the Database information in the config.ini then the code will attempt to use the SQL database.  Create a ConnectionString setting in the .ini or if you are using MS SQL with ODBC 18 then DatabaseServer, DatabaseName, and optinal DatabaseUsername and DatabasePasswor.
 
 Special thanks to these people for helping me understand deep neural network machine learning:
 Siraj Raval: https://www.linkedin.com/in/sirajraval/
 Magnus Erik Hvass Pedersen: https://github.com/Hvass-Labs/TensorFlow-Tutorials
 Nicholas T. Smith https://nicholastsmith.wordpress.com/ 
 Luka Anicin: https://github.com/lucko515/tesla-stocks-prediction
+And of course, special thanks to ChatGPT and Gemini for helping my modernize my code.
 
-I've tested this on both Windows 10 Python 3.6.4  and AWS Linux Python 3.6.2.  Both versions use TensorFlow 2.1.0.
-Requirements: happily all native Python 3.6 and no C++ compilers
+I've tested this on both Windows Python 3.10-3.13, TensorFlow 2.20.0, Keras 3.11.3.
+Requirements: happily all native Python and no C++ compilers
 Windows PIP install requirements with:
-pip install numpy pandas matplotlib requests pyodbc sqlalchemy yahoofinancials
+pip install tqdm, pandas numpy matplotlib requests pyodbc yfinance sqlalchemy curl_cffi
 pip install tensorflow keras
-
-AWS install requirements with:
-python3 -m pip install numpy --upgrade
-python3 -m pip install pandas --upgrade
-etc...
-
-Note about using an AWS instance:  There is no GUI so I've added a switch to enable the Agg non-interactive back-end for matplotlib.  Also, it can be difficult to access web sites from within AWS as some sites block hosted IP ranges and python response headers, so I've added a web-proxy option to get around this.  We should bear in mind that the reason sites put these blocks in place is to avoid abuse of their services, so please be kind and don't abuse free services.
 
 Have fun and keep programming!
 -Tim
