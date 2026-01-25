@@ -618,77 +618,127 @@ class TradingModel(Portfolio):
 				print( ' Addticker: Unable to download price history for ticker ' + ticker)
 		return r
 
-	def AlignPositions(self, targetPositions:pd.DataFrame, rateLimitTransactions:bool=False, shopBuyPercent:int=0, shopSellPercent:int=0, trimProfitsPercent:int=0, verbose:bool=False): 
+	def AlignPositions(self, targetPositions: pd.DataFrame, rateLimitTransactions: bool = False, shopBuyPercent: int = 0, shopSellPercent: int = 0, trimProfitsPercent: int = 0, verbose: bool = False): 
 		#Performs necessary Buy/Sells to get from current positions to target positions
 		#Input ['Ticker']['TargetHoldings'] combo which indicates proportion of desired holdings
 		#rateLimitTransactions will limit number of buys/sells per day to one per ticker
 		#if not tradeAtMarket then will shop for a good buy and sell price, so far all attempts at shopping or trimming profits yield 3%-13% less average profit
-
-		expireAfterDays=3
-		tradeAtMarket = (shopBuyPercent ==0) and (shopSellPercent ==0) 
+		expireAfterDays = 3
+		tradeAtMarket = (shopBuyPercent == 0) and (shopSellPercent == 0) 
 		TotalTranches = self._trancheCount
-		TotalTargets = targetPositions['TargetHoldings'].sum()  #Sum the TargetHoldings, allocate by Rount(TotalTranches/TargetHoldings)
-		scale = 1
+		TotalTargets = targetPositions['TargetHoldings'].sum() 
+		scale = 1.0
 		if TotalTargets > 0:
-			scale = TotalTranches/TotalTargets
+			scale = TotalTranches / TotalTargets
 			targetPositions.loc[:, 'TargetHoldings'] = (targetPositions['TargetHoldings'] * scale).astype(float).round()
-			#targetPositions.TargetHoldings = (targetPositions.TargetHoldings * scale).astype(float).round() 
 		if verbose:
-			print('AlignPositions: Target Positions Scaled')
-			print(' Scale (TotalTargets, TotalTranches, Scale):', TotalTargets, TotalTranches, scale)
-			print(targetPositions)
+			print(f'AlignPositions: Target Positions Scaled. Scale: {scale}')
 		currentPositions = self.GetPositions(asDataFrame=True)
-		
-		#evaluate the difference between current holdings and target, act accordingly, sorts sells ascending, buys descending
 		targetPositions = targetPositions.join(currentPositions, how='outer')
-		targetPositions.fillna(value=0, inplace=True)				
-		if len(currentPositions) ==0: #no current positions
-			targetPositions['Difference'] = targetPositions['TargetHoldings'] 
-		else:
-			targetPositions['Difference'] = targetPositions['TargetHoldings'] - targetPositions['CurrentHoldings']
+		targetPositions.fillna(value=0, inplace=True)		
+		targetPositions['Difference'] = targetPositions['TargetHoldings'] - targetPositions['CurrentHoldings']
+		
+		# Sort Sells (Difference < 0) and Buys (Difference > 0)
 		sells = targetPositions[targetPositions['Difference'] < 0].copy()
-		sells.sort_values(by=['Difference'], axis=0, ascending=True, inplace=True, kind='quicksort', na_position='last') 
-		buys = targetPositions[targetPositions['Difference'] >= 0].copy()
-		buys.sort_values(by=['Difference'], axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last') 
-		if verbose: print(self.currentDate)
-		if verbose: print('AlignPositions: Target Positions with Current Positions')
-		targetPositions = pd.concat([sells, buys]) #Re-ordered sells ascending, buys descending
-		if verbose: print(targetPositions)
-		for i in range(len(targetPositions)): #for each ticker
-			orders = int(targetPositions.iloc[i]['Difference'])
-			t = targetPositions.index.values[i]
-			if t != 'CASH':
-				sn = self.GetPriceSnapshot(t)
-				if sn != None:
-					price = sn.Average
-					target_buy = round(min(sn.Average, sn.Target)*(1-shopBuyPercent/100),2)
-					target_sell = round(max(sn.Average, sn.Target)*(1+shopSellPercent/100), 2)
-					trim_sell = round(max(sn.Average, sn.Target)*(1+trimProfitsPercent/100), 2)
-					#print(f"Ticker: {t} Average: {sn.Average} Target: {sn.Target} Range: {target_buy} to {target_sell} ")
-					if orders < 0:
-						if not tradeAtMarket: 
-							price = target_sell
-							#if abs(orders) > 2: price = sn.Average
-						if rateLimitTransactions and abs(orders) > 1: orders = -1
-						print(f"Sell {t} for ${price} vs ${sn.Average}")
-						for _ in range(abs(orders)): 
-							self.PlaceSell(ticker=t, price=price, marketOrder=tradeAtMarket, expireAfterDays=expireAfterDays, verbose=verbose)
-					elif orders > 0 and self.TranchesAvailable() > 0:
-						if not tradeAtMarket: 
-							price = target_buy
-							#if abs(orders) > 1: price = sn.Target
-							#if abs(orders) > 3: price = sn.Average
-						if rateLimitTransactions and abs(orders) > 1: orders = 1
-						print(f"Buy {t} for ${price} vs ${sn.Average}")
-						for _ in range(orders):
-							self.PlaceBuy(ticker=t, price=price, marketOrder=tradeAtMarket, expireAfterDays=expireAfterDays, verbose=verbose)											
-					elif trimProfitsPercent > 0:
-						price = trim_sell
-						print(f"Sell for trim profits {t} for ${price} vs ${sn.Average}")
-						self.PlaceSell(ticker=t, price=price, marketOrder=False, expireAfterDays=expireAfterDays, verbose=verbose)			
-					self.ProcessDay(withIncrement=False)
-		self.ProcessDay(withIncrement=False)
-		if verbose: print(self.PositionSummary())
+		sells.sort_values(by=['Difference'], ascending=True, inplace=True) 
+		buys = targetPositions[targetPositions['Difference'] > 0].copy()
+		buys.sort_values(by=['Difference'], ascending=False, inplace=True) 	
+		executionList = pd.concat([sells, buys])
+		for ticker, row in executionList.iterrows():
+			if ticker == 'CASH':
+				continue				
+			orders = int(row['Difference'])
+			sn = self.GetPriceSnapshot(ticker)
+			if sn is not None:
+				target_buy = round(min(sn.Average, sn.Target) * (1 - shopBuyPercent / 100), 2)
+				target_sell = round(max(sn.Average, sn.Target) * (1 + shopSellPercent / 100), 2)
+				trim_sell = round(max(sn.Average, sn.Target) * (1 + trimProfitsPercent / 100), 2)				
+				if orders < 0:  # --- EXECUTE SELLS ---
+					price = target_sell if not tradeAtMarket else sn.Average
+					if rateLimitTransactions: orders = -1					
+					print(f"Sell {ticker} for ${price} (Mkt: {tradeAtMarket})")
+					for _ in range(abs(orders)): 
+						self.PlaceSell(ticker=ticker, price=price, marketOrder=tradeAtMarket, expireAfterDays=expireAfterDays, verbose=verbose)				
+				elif orders > 0 and self.TranchesAvailable() > 0: # --- EXECUTE BUYS ---
+					price = target_buy if not tradeAtMarket else sn.Average
+					if rateLimitTransactions: orders = 1					
+					print(f"Buy {ticker} for ${price} (Mkt: {tradeAtMarket})")
+					for _ in range(orders):
+						self.PlaceBuy(ticker=ticker, price=price, marketOrder=tradeAtMarket, expireAfterDays=expireAfterDays, verbose=verbose)								
+				elif trimProfitsPercent > 0 and row['CurrentHoldings'] > 0: # --- TRIM PROFITS (Only if no other orders pending for this ticker) ---
+					print(f"Sell for trim profits {ticker} for ${trim_sell}")
+					self.PlaceSell(ticker=ticker, price=trim_sell, marketOrder=False, expireAfterDays=expireAfterDays, verbose=verbose)
+		if verbose: 
+			print(self.PositionSummary())
+		
+	# def AlignPositions(self, targetPositions:pd.DataFrame, rateLimitTransactions:bool=False, shopBuyPercent:int=0, shopSellPercent:int=0, trimProfitsPercent:int=0, verbose:bool=False): 
+		# #Performs necessary Buy/Sells to get from current positions to target positions
+		# #Input ['Ticker']['TargetHoldings'] combo which indicates proportion of desired holdings
+		# #rateLimitTransactions will limit number of buys/sells per day to one per ticker
+		# #if not tradeAtMarket then will shop for a good buy and sell price, so far all attempts at shopping or trimming profits yield 3%-13% less average profit
+
+		# expireAfterDays=3
+		# tradeAtMarket = (shopBuyPercent ==0) and (shopSellPercent ==0) 
+		# TotalTranches = self._trancheCount
+		# TotalTargets = targetPositions['TargetHoldings'].sum()  #Sum the TargetHoldings, allocate by Rount(TotalTranches/TargetHoldings)
+		# scale = 1
+		# if TotalTargets > 0:
+			# scale = TotalTranches/TotalTargets
+			# targetPositions.loc[:, 'TargetHoldings'] = (targetPositions['TargetHoldings'] * scale).astype(float).round()
+		# if verbose:
+			# print('AlignPositions: Target Positions Scaled')
+			# print(' Scale (TotalTargets, TotalTranches, Scale):', TotalTargets, TotalTranches, scale)
+			# print(targetPositions)
+		# currentPositions = self.GetPositions(asDataFrame=True)
+		
+		# #evaluate the difference between current holdings and target, act accordingly, sorts sells ascending, buys descending
+		# targetPositions = targetPositions.join(currentPositions, how='outer')
+		# targetPositions.fillna(value=0, inplace=True)				
+		# if len(currentPositions) ==0: #no current positions
+			# targetPositions['Difference'] = targetPositions['TargetHoldings'] 
+		# else:
+			# targetPositions['Difference'] = targetPositions['TargetHoldings'] - targetPositions['CurrentHoldings']
+		# sells = targetPositions[targetPositions['Difference'] < 0].copy()
+		# sells.sort_values(by=['Difference'], axis=0, ascending=True, inplace=True, kind='quicksort', na_position='last') 
+		# buys = targetPositions[targetPositions['Difference'] >= 0].copy()
+		# buys.sort_values(by=['Difference'], axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last') 
+		# if verbose: print(self.currentDate)
+		# if verbose: print('AlignPositions: Target Positions with Current Positions')
+		# targetPositions = pd.concat([sells, buys]) #Re-ordered sells ascending, buys descending
+		# if verbose: print(targetPositions)
+		# for i in range(len(targetPositions)): #for each ticker
+			# row = targetPositions.iloc[i]
+			# orders = int(row['Difference'])
+			# ticker = targetPositions.index.values[i]
+			# if ticker != 'CASH':
+				# sn = self.GetPriceSnapshot(t)
+				# if sn != None:
+					# price = sn.Average
+					# target_buy = round(min(sn.Average, sn.Target)*(1-shopBuyPercent/100),2)
+					# target_sell = round(max(sn.Average, sn.Target)*(1+shopSellPercent/100), 2)
+					# trim_sell = round(max(sn.Average, sn.Target)*(1+trimProfitsPercent/100), 2)
+					# if verbose and not tradeAtMarket: print(f" AlignPositions: shopping prices for Ticker: {ticker} Average: {sn.Average} Target: {sn.Target} Range: {target_buy} to {target_sell} ")
+					# if orders < 0:
+						# if not tradeAtMarket: 
+							# price = target_sell
+							# #if abs(orders) > 2: price = sn.Average
+						# if rateLimitTransactions and abs(orders) > 1: orders = -1
+						# print(f"Sell {t} for ${price} vs ${sn.Average}")
+						# for _ in range(abs(orders)): 
+							# self.PlaceSell(ticker=ticker, price=price, marketOrder=tradeAtMarket, expireAfterDays=expireAfterDays, verbose=verbose)
+					# elif orders > 0 and self.TranchesAvailable() > 0:
+						# if not tradeAtMarket: 
+							# price = target_buy
+						# if rateLimitTransactions and abs(orders) > 1: orders = 1
+						# print(f"Buy {t} for ${price} vs ${sn.Average}")
+						# for _ in range(orders):
+							# self.PlaceBuy(ticker=ticker, price=price, marketOrder=tradeAtMarket, expireAfterDays=expireAfterDays, verbose=verbose)											
+					# elif trimProfitsPercent > 0 and row['CurrentHoldings'] > 0:
+						# price = trim_sell
+						# if verbose: print(f"Sell for trim profits {ticker} for ${price} vs ${sn.Average}")
+						# self.PlaceSell(ticker=t, price=price, marketOrder=False, expireAfterDays=expireAfterDays, verbose=verbose)			
+					# self.ProcessDay(withIncrement=False)
+		# if verbose: print(self.PositionSummary())
 
 	def CancelAllOrders(self): super(TradingModel, self).CancelAllOrders(self.currentDate)
 	
