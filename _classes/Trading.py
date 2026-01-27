@@ -239,6 +239,14 @@ class Portfolio:
 		a, b, s, l = self.PositionSummary()
 		return (b+s > 0)
 
+	def _ActiveTickers(self):
+		# Returns positions or open orders
+		result = set()
+		for t in self._tranches:
+			if not t.available:
+				result.add(t.ticker)
+		return result
+
 	def GetPositions(self, ticker:str='', asDataFrame:bool=False):	#returns reference to the tranche of active positions or a dataframe with counts
 		r = []
 		for t in self._tranches:
@@ -343,7 +351,6 @@ class Portfolio:
 	def CancelAllOrders(self, currentDate:datetime):
 		for t in self._tranches:
 			t.CancelOrder()
-		#for t in self._tranches:						self.CheckOrders(t.ticker, t.latestPrice, currentDate) 
 
 	def PlaceBuy(self, ticker:str, price:float, datePlaced:datetime, marketOrder:bool=False, expireAfterDays:int=10, verbose:bool=False):
 		#Place with first available tranch, returns True if order was placed
@@ -550,6 +557,7 @@ class TradingModel(Portfolio):
 		self.modelReady = False
 		self.currentDate = None
 		self.priceHistory = []  #list of price histories for each stock in _tickerList
+		self._priceMap = {} #Mapping between tickers and priceHistory elements
 		self.startingValue = 0 
 		self.verbose = False
 		self._tickerList = []	#list of stocks currently held
@@ -581,6 +589,7 @@ class TradingModel(Portfolio):
 			valid_dates = p.historicalPrices.index[(p.historicalPrices.index >= startDate) & (p.historicalPrices.index <= endDate)]
 			if not valid_dates.empty:
 				self.priceHistory = [p] #add to list
+				self._priceMap[p.ticker] = p
 				self.modelStartDate = valid_dates[0]
 				self.modelEndDate = valid_dates[-1]
 				self.currentDate = self.modelStartDate
@@ -588,17 +597,9 @@ class TradingModel(Portfolio):
 				self.modelReady = len(p.historicalPrices) > 30
 			else:
 				self.modelReady = False #We don't have enough data
-		super(TradingModel, self).__init__(portfolioName=modelName, startDate=startDate, totalFunds=totalFunds, trancheSize=trancheSize, trackHistory=trackHistory, useDatabase=useDatabase, verbose=verbose)
-		
-	def __del__(self):
-		self._tickerList = None
-		del self.priceHistory[:] 
-		self.priceHistory = None
-		self.modelStartDate  = None	
-		self.modelEndDate = None
-		self.modelReady = False
+		super(TradingModel, self).__init__(portfolioName=modelName, startDate=startDate, totalFunds=totalFunds, trancheSize=trancheSize, trackHistory=trackHistory, useDatabase=useDatabase, verbose=verbose)	
 
-	def Addticker(self, ticker:str):
+	def AddTicker(self, ticker:str):
 		r = False
 		if not ticker in self._tickerList:
 			p = PricingData(ticker, useDatabase=self.useDatabase)
@@ -612,10 +613,16 @@ class TradingModel(Portfolio):
 					self.priceHistory.append(p)
 					self._tickerList.append(ticker)
 				r = True
-				print(' Addticker: Added ticker ' + ticker)
+				self._priceMap[p.ticker] = p
+				print(' AddTicker: Added ticker ' + ticker)
 			else:
-				print( ' Addticker: Unable to download price history for ticker ' + ticker)
+				print( ' AddTicker: Unable to download price history for ticker ' + ticker)
 		return r
+
+	def RemoveTicker(self, ticker):
+		self.priceHistory = [p for p in self.priceHistory if p.ticker != ticker]
+		self._priceMap.pop(ticker, None)
+		self._tickerList.remove(ticker)
 
 	def AlignPositions(self, targetPositions: pd.DataFrame, rateLimitTransactions: bool = False, shopBuyPercent: int = 0, shopSellPercent: int = 0, trimProfitsPercent: int = 0, verbose: bool = False): 
 		#Performs necessary Buy/Sells to get from current positions to target positions
@@ -724,7 +731,7 @@ class TradingModel(Portfolio):
 		if ticker =='':
 			r = self.priceHistory[0].GetPrice(forDate)
 		else:
-			if not ticker in self._tickerList:	self.Addticker(ticker)
+			if not ticker in self._tickerList:	self.AddTicker(ticker)
 			if ticker in self._tickerList:
 				for ph in self.priceHistory:
 					if ph.ticker == ticker: r = ph.GetPrice(forDate) 
@@ -737,7 +744,7 @@ class TradingModel(Portfolio):
 		if ticker =='':
 			r = self.priceHistory[0].GetPriceSnapshot(forDate)
 		else:
-			if not ticker in self._tickerList:	self.Addticker(ticker)
+			if not ticker in self._tickerList:	self.AddTicker(ticker)
 			if ticker in self._tickerList:
 				for ph in self.priceHistory:
 					if ph.ticker == ticker: r = ph.GetPriceSnapshot(forDate) 
@@ -758,7 +765,7 @@ class TradingModel(Portfolio):
 			if not p.pricesNormalized: p.NormalizePrices()
 		
 	def PlaceBuy(self, ticker:str, price:float, marketOrder:bool=False, expireAfterDays:bool=10, verbose:bool=False):
-		if not ticker in self._tickerList: self.Addticker(ticker)	
+		if not ticker in self._tickerList: self.AddTicker(ticker)	
 		if ticker in self._tickerList:	
 			if marketOrder or price ==0: price = self.GetPrice(ticker)
 			super(TradingModel, self).PlaceBuy(ticker, price, self.currentDate, marketOrder, expireAfterDays, verbose)
@@ -781,12 +788,27 @@ class TradingModel(Portfolio):
 		dfTemp = dfTemp.join(sells)
 		PlotDataFrame(dfTemp, modelName, 'Date', 'Value')
 
-	def ProcessDay(self, withIncrement:bool=True, allowWeekEnd:bool=False):
+	def ProcessDay(self, withIncrement: bool = True, allowWeekEnd: bool = False):
 		#Process current day and increment the current date, allowWeekEnd is for model closing only
 		if self.currentDate.weekday() < 5 or allowWeekEnd:
-			for ph in self.priceHistory:
+			active_tickers = self._ActiveTickers()
+			for ticker in active_tickers:
+				ph = self._priceMap.get(ticker)
+				if ph is None:
+					continue 
 				sn = ph.GetPriceSnapshot(self.currentDate)
-				self.ProcessDaysOrders(ph.ticker, sn.Open, sn.High, sn.Low, sn.Close, self.currentDate)
+				for t in self._tranches:
+					if t.ticker != ticker or not t.purchased:
+						continue
+					if sn.Close == 0:# Delisted: forced liquidation
+						if t.sellOrderPrice == 0:
+							print(f"ProcessDay: Forcing sell of {ticker} due to delisting.")
+							forced_price = round(t.latestPrice * 0.9, 3)
+							sn.Open = forced_price, sn.Close = forced_price, sn.High = forced_price, sn.Low = forced_price
+							t.PlaceSell(price=forced_price, datePlaced=self.currentDate, marketOrder=True, expireAfterDays=5, verbose=True)
+					else:						
+						t.latestPrice = sn.Close # Normal price update
+				self.ProcessDaysOrders(ticker, sn.Open, sn.High, sn.Low, sn.Close, self.currentDate)
 		self.UpdateDailyValue()
 		if self.pbar and self.verbose:
 			c = self._cash
