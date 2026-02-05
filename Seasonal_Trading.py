@@ -13,7 +13,7 @@ def RecordPerformance(ModelName, StartDate, EndDate, StartValue, EndValue, Trade
 			f = open(filename,"w+")
 			f.write('ModelName, StartDate, EndDate, StartValue, EndValue, TotalPercentageGain, TradeCount, Ticker, TimeStamp\n')
 		TotalPercentageGain = (EndValue/StartValue)-1
-		f.write(ModelName + ',' + str(StartDate) + ',' + str(EndDate) + ',' + str(StartValue) + ',' + str(EndValue) + ',' + str(TotalPercentageGain) + ',' + str(TradeCount) + ',' + Ticker + ',' + str(GetTodaysDate()) + '\n')
+		f.write(ModelName + ',' + str(StartDate) + ',' + str(EndDate) + ',' + str(StartValue) + ',' + str(EndValue) + ',' + str(TotalPercentageGain) + ',' + str(TradeCount) + ',' + Ticker + ',' + str(GetLatestBDay()) + '\n')
 		f.close() 
 	except:
 		print('Unable to write performance report to ' + filename)
@@ -46,10 +46,9 @@ def RunModel(modelName:str, modelFunction, ticker:str, startDate:str, durationIn
 		ticker = tm.priceHistory[0].ticker
 		RecordPerformance(ModelName=modelName, StartDate=startDate, EndDate=tm.currentDate, StartValue=portfolioSize, EndValue=(cash + asset), TradeCount=tradeCount, Ticker=ticker)
 		if returndailyValues:
-			tm.CloseModel(verbose, saveHistoryToFile)
-			return tm.GetDailyValue()   							#return daily value for model comparisons
+			return tm.GetDailyValue()
 		else:
-			return tm.CloseModel(verbose, saveHistoryToFile)		#return simple closing value to view net effect
+			return cv1
 
 def PlotModeldailyValue(modelName:str, modelFunction, ticker:str, startDate:str, durationInYears:int, portfolioSize:int=30000):
 	#Plot daily returns of the given model

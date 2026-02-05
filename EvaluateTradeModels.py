@@ -2,36 +2,23 @@
 #Then give it a date range, some money, and a stock, it will execute a strategy and return the results
 #WARNING: "Far more money has been lost by investors preparing for corrections or trying to anticipate corrections than has been lost in corrections themselves." - Peter Lynch.
 import pandas as pd
-from _classes.PriceTradeAnalyzer import TradingModel, PlotHelper, PriceSnapshot, Position
+import _classes.Constants as CONSTANTS
+from _classes.Graphing import PlotHelper
+from _classes.Prices import PricingData, PriceSnapshot
+from _classes.Trading import TradingModel, TradeModelParams, Position
+from _classes.Selection import StockPicker
+from _classes.TickerLists import TickerLists
 from _classes.Utility import *
 
 #------------------------------------------- Global model functions  ----------------------------------------------		
-def RecordPerformance(ModelName, StartDate, EndDate, StartValue, EndValue, TradeCount, Ticker):
-	#Record trade performance to output file, each model run will append to the same files so you can easily compare the results
-	filename = 'data/trademodel/PerfomanceComparisons.csv'
-	try:
-		if FileExists(filename):
-			f = open(filename,"a")
-		else:
-			f = open(filename,"w+")
-			f.write('ModelName, StartDate, EndDate, StartValue, EndValue, TotalPercentageGain, TradeCount, Ticker, TimeStamp\n')
-		TotalPercentageGain = (EndValue/StartValue)-1
-		f.write(ModelName + ',' + str(StartDate) + ',' + str(EndDate) + ',' + str(StartValue) + ',' + str(EndValue) + ',' + str(TotalPercentageGain) + ',' + str(TradeCount) + ',' + Ticker + ',' + str(GetTodaysDate()) + '\n')
-		f.close() 
-	except:
-		print('Unable to write performance report to ' + filename)
-
-def RunModel(modelName:str, modelFunction, ticker:str, startDate:str, durationInYears:int, portfolioSize:int, saveHistoryToFile:bool=True, returndailyValues:bool=False, verbose:bool=False):	
+def RunModel(ticker:str, modelFunction, params: TradeModelParams):
 	#Performs the logic of the given model over a period of time to evaluate the performance
-	modelName = modelName + '_' + ticker
+	modelName = params.modelName + '_' + ticker
 	print('Running model ' + modelName)
-	tm = TradingModel(modelName=modelName, startingTicker=ticker, startDate=startDate, durationInYears=durationInYears, totalFunds=portfolioSize, trancheSize=round(portfolioSize/10), verbose=verbose)
-	startDate = tm.modelStartDate
-	endDate = tm.modelEndDate
+	tm = TradingModel(modelName=modelName, startingTicker=ticker, startDate = params.startDate, durationInYears = params.durationInYears, totalFunds = params.portfolioSize, trancheSize=params.trancheSize, verbose=params.verbose)
 	if not tm.modelReady:
-		print('Unable to initialize price history for model for ' + str(startDate))
-		if returndailyValues: return pd.DataFrame()
-		else:return portfolioSize
+		print('Unable to initialize price history for model for ' + str(params.startDate))
+		return params.portfolioSize
 	else:
 		while not tm.ModelCompleted():
 			modelFunction(tm, ticker)
@@ -41,52 +28,64 @@ def RunModel(modelName:str, modelFunction, ticker:str, startDate:str, durationIn
 				tm.PositionSummary()
 				#tm.PrintPositions()
 				break
-		cash, asset = tm.Value()
-		#print('Ending Value: ', cash + asset, '(Cash', cash, ', Asset', asset, ')')
-		tradeCount = len(tm.tradeHistory)
-		ticker = tm.priceHistory[0].ticker
-		RecordPerformance(ModelName=modelName, StartDate=startDate, EndDate=tm.currentDate, StartValue=portfolioSize, EndValue=(cash + asset), TradeCount=tradeCount, Ticker=ticker)
+		return tm.CloseModel(params)	#return simple closing value to view net effect, detail gets saved with saveHistoryToFile
 
-		if returndailyValues:
-			tm.CloseModel(verbose, saveHistoryToFile)
-			return tm.GetDailyValue()   							#return daily value for model comparisons
-		else:
-			return tm.CloseModel(verbose, saveHistoryToFile)		#return simple closing value to view net effect
-
-def ExtendedDurationTest(modelName:str, modelFunction, ticker:str, portfolioSize:int=30000):
+def ExtendedDurationTest(ticker:str, modelFunction, params: TradeModelParams):
 	#test the model over an extended range of periods and years, output result to .csv file
 	TestResults = pd.DataFrame([['1/1/1982','1/1/1982',0,0]], columns=list(['StartDate','EndDate','Duration','EndingValue']))
 	TestResults.set_index(['StartDate'], inplace=True)		
+	params.verbose = False
 	for duration in range(1,10,2):
 		for year in range(1982,2017):
 			for month in range(1,12,3):
 				startDate = str(month) + '/1/' + str(year)
 				endDate = str(month) + '/1/' + str(year + duration)
-				endValue = RunModel(modelName, modelFunction, ticker, startDate, duration, portfolioSize, saveHistoryToFile=False, returndailyValues=False, verbose=False)
+				params.startDate = startDate
+				params.durationInYears = duration
+				endValue = RunModel(ticker, modelFunction, params)
 				y = pd.DataFrame([[startDate,endDate,duration,endValue]], columns=list(['StartDate','EndDate','Duration','EndingValue']))
 				TestResults = TestResults.append(y, ignore_index=True)
 	TestResults.to_csv('data/trademodel/' + modelName + '_' + ticker +'_extendedTest.csv')
 	print(TestResults)
 
-def PlotModeldailyValue(modelName:str, modelFunction, ticker:str, startDate:str, durationInYears:int, portfolioSize:int=30000):
-	#Plot daily returns of the given model
-	m1 = RunModel(modelName, modelFunction, ticker, startDate, durationInYears, portfolioSize, saveHistoryToFile=True, returndailyValues=True, verbose=False)
-	if m1.shape[0] > 0:
-		print(m1)
-		plot = PlotHelper()
-		plot.PlotDataFrame(m1, modelName + ' Daily Value (' + ticker + ')', 'Date', 'Value') 
-
-def CompareModels(modelOneName:str, modelOneFunction, modelTwoName:str, modelTwoFunction, ticker:str, startDate:str, durationInYears:int, portfolioSize:int=30000):
+def CompareModels(modelOneName:str, modelOneFunction, modelTwoName:str, modelTwoFunction, ticker:str, params: TradeModelParams):
 	#Compare two models to measure the difference in returns
-	m1 = RunModel(modelOneName, modelOneFunction, ticker, startDate, durationInYears, portfolioSize, saveHistoryToFile=False, returndailyValues=True, verbose=False)
-	m2 = RunModel(modelTwoName, modelTwoFunction, ticker, startDate, durationInYears, portfolioSize, saveHistoryToFile=False, returndailyValues=True, verbose=False)
-	if m1.shape[0] > 0 and m2.shape[0] > 0:
-		m1 = m1.join(m2, lsuffix='_' + modelOneName, rsuffix='_' + modelTwoName)
-		plot = PlotHelper()
-		plot.PlotDataFrame(m1, ticker + ' Model Comparison', 'Date', 'Value') 
+	params.modelName = modelOneName
+	m1 = RunModel(ticker, modelOneFunction, params)
+	params.modelName = modelTwoName
+	m2 = RunModel(ticker, modelTwoFunction, params)
+	print(f"{modelOneName}:{m1} {modelTwoName}:{m2}")
 
 #------------------------------------------- Your models go here ----------------------------------------------		
 #Each trading function should define what actions should be taken in the given day from the TradingModel, Buy/Sell/Hold, given the current and recent price information
+
+def ModelSP500(startDate: str = '1/1/2000', durationInYears:int = 10):
+	#Baseline model to compare against.  Buy on day one, hold for the duration and then sell
+	ticker = '.INX'
+	modelName = 'ModelSP500_' + str(startDate)[:10]
+	params = TradeModelParams()
+	params.startDate = startDate
+	params.durationInYears = durationInYears
+	params.saveResults = True
+	tm = TradingModel(modelName=modelName, startingTicker=ticker, startDate=params.startDate, durationInYears=params.durationInYears, totalFunds=params.portfolioSize, trancheSize=params.trancheSize, verbose=False)
+	if not tm.modelReady:
+		print(' ModelSP500: Unable to initialize price history for date ' + str(startDate))
+		return 0
+	else:
+		dayCounter =0
+		while not tm.ModelCompleted():
+			if dayCounter ==0:
+				i=0
+				while tm.TranchesAvailable() and i < 100: 
+					tm.PlaceBuy(ticker=ticker, price=1, marketOrder=True, expireAfterDays=5, verbose=params.verbose)
+					i +=1
+			dayCounter+=1
+			if dayCounter >= params.reEvaluationInterval: dayCounter=0
+			tm.ProcessDay()
+		cash, asset = tm.Value()
+		if params.verbose: print(' ModelSP500: Ending Value: ', cash + asset, '(Cash', cash, ', Asset', asset, ')')
+		params = TradeModelParams()
+		return tm.CloseModel(params)		
 
 def RunTradingModelBuyHold(tm: TradingModel, ticker:str):
 #Baseline model, buy and hold
@@ -311,8 +310,7 @@ def RunTradingModelSwingTrade(tm: TradingModel, ticker:str):
 	#Normal Trending, generally stick with it, trim highs
 	#Flat, Consolidating
 	#Correction, Initial shock, Bounce, New Low, Resuming: Track recent high/lows, approach of those values
-	
-	
+		
 	minActionableSlope = 0.002
 	prevTrendState, trendDuration = tm.GetCustomValues()
 	if prevTrendState == None: prevTrendState = ''
@@ -386,29 +384,44 @@ def RunTradingModelSwingTrade(tm: TradingModel, ticker:str):
 			trendDuration=0
 		tm.SetCustomValues(prevTrendState, trendDuration)	
 
-def TestAllModels(tickerList:str, startDate:str, duration:int, portfolioSize:int=30000):
+def TestAllModels(tickerList:list, params: TradeModelParams):
 	for ticker in tickerList:
-		RunModel('BuyAndHold', RunTradingModelBuyHold, ticker, startDate, duration, portfolioSize, verbose=False)
-		RunModel('RunTradingTestTrading', RunTradingTestTrading, ticker, startDate, duration, portfolioSize, verbose=False)
-		#RunModel('Seasonal', RunTradingModelSeasonal, ticker, startDate, duration, portfolioSize, verbose=False)
-		#RunModel('FirstHalfOfMonth', RunTradingModelFirstHalfOfMonth, ticker, startDate, duration, portfolioSize, verbose=False)
-		#RunModel('Trending', RunTradingModelTrending, ticker, startDate, duration, portfolioSize, verbose=False)
+		params.modelName = 'BuyAndHold'
+		RunModel(ticker, RunTradingModelBuyHold, params)
+		params.modelName = 'Seasonal'
+		RunModel(ticker, RunTradingModelSeasonal, params)
+		params.modelName = 'FirstHalfOfMonth'
+		RunModel(ticker, RunTradingModelFirstHalfOfMonth, params)
+		params.modelName = 'RunTradingTestTrading'
+		RunModel(ticker, RunTradingTestTrading, params)
+		params.modelName = 'Trending'
+		RunModel(ticker, RunTradingModelTrending, params)
+		params.modelName = 'SwingTrend'
+		RunModel(ticker, RunTradingModelSwingTrend, params)
+		params.modelName = 'SwingTrade'
+		RunModel(ticker, RunTradingModelSwingTrade, params)
 
-def TestAllTickers(tickerList:list, startDate:str, duration:int, portfolioSize:int=30000):
+def TestAllTickers(tickerList:list, params: TradeModelParams):
 	for ticker in tickerList:
-		#RunModel('Trending', RunTradingModelTrending, ticker, startDate, duration, portfolioSize, verbose=False)
-		RunModel('Swing', RunTradingModelSwingTrade, ticker, startDate, duration, portfolioSize, verbose=False)
+		params.modelName = 'Swing'
+		RunModel(ticker, RunTradingModelSwingTrade, params)
 	
 if __name__ == '__main__':
-	#tickerList=['GOOGL']
-	startDate = '1/1/1999'
-	duration = 20
+	params = TradeModelParams()
+	params.startDate = '1/1/1999'
+	params.durationInYears = 20
+	params.reEvaluationInterval = 20
+	params.stockCount = 10
+	params.saveResults = True
+	params.verbose = False
+
+	ModelSP500(params.startDate, params.durationInYears)
+	params.modelName = 'BuyAndHold'
+	RunModel('XOM', RunTradingModelBuyHold, params=params)
 	tickerList=['BAC','XOM','JNJ','GOOGL','F','MSFT'] 
-	TestAllModels(tickerList, startDate, duration)
-	TestAllTickers(tickerList, startDate, duration)
-	CompareModels('BuyHold',RunTradingModelBuyHold,'Trending', RunTradingModelTrending, '.INX','1/1/1987',20)
-	PlotModeldailyValue('Trending',RunTradingModelTrending, 'GOOGL','1/1/2005',15)
-	RunModel('BuyAndHold', RunTradingModelBuyHold, '.INX', '1/1/2020', 1, 100000, verbose=False)
+	TestAllModels(tickerList, params=params)
+	TestAllTickers(tickerList, params=params)
+	CompareModels('BuyHold',RunTradingModelBuyHold,'Trending', RunTradingModelTrending, '.INX', params=params)
 
 
 

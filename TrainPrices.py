@@ -1,92 +1,171 @@
-import sys, pandas
-from _classes.PriceTradeAnalyzer import PricingData, PriceSnapshot, PlotHelper
-from _classes.SeriesPrediction import StockPredictionNN
-dataFolder = 'data/prediction/'
+import sys, os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from _classes.Prices import PriceSnapshot, PricingData
+from _classes.SeriesPrediction import StateSurprisePredictionNN
+from _classes.Utility import *
 
-def TestPredictionModels(ticker:str='^SPX', numberOfLearningPasses:int = 300):
-	#Simple procedure to test different prediction methods 4,20,60 days in the future
-	plot = PlotHelper()
-	prices = PricingData(ticker)
-	if prices.LoadHistory():
-		print('Loading ' + ticker)
-		for daysForward in [4,15,25]: 
-			for predictionMethod in range(0,5):
-				modelDescription = ticker + '_method' + str(predictionMethod) + '_epochs' + str(numberOfLearningPasses) + '_daysforward' + str(daysForward) 
-				print('Predicting ' + str(daysForward) + ' days using method ' + modelDescription)
-				prices.PredictPrices(predictionMethod, daysForward, numberOfLearningPasses)
-				predDF = prices.GetPriceHistory(includePredictions=True)
-				predDF['PercentageDeviation'] = abs((predDF['Average']-predDF['estAverage'])/predDF['Average'])
-				averageDeviation = predDF['PercentageDeviation'].tail(round(predDF.shape[0]/4)).mean() #Average of the last 25% to account for training.
-				print('Average deviation: ', averageDeviation * 100, '%')
-				predDF.to_csv(dataFolder + modelDescription + '.csv')
-				plot.PlotDataFrame(predDF[['estAverage','Average']], modelDescription, 'Date', 'Price', True, dataFolder + modelDescription) 
-				plot.PlotDataFrameDateRange(predDF[['Average','estAverage']], None, 160, modelDescription + '_last160ays', 'Date', 'Price', dataFolder + modelDescription + '_last160Days') 
-				plot.PlotDataFrameDateRange(predDF[['Average','estAverage']], None, 500, modelDescription + '_last500Days', 'Date', 'Price', dataFolder + modelDescription + '_last500Days') 
-			
-def TrainTickerRaw(ticker:str = '.INX', model_type:str='LSTM', use_generic_model:bool=False, prediction_target_days:int = 5, time_steps:int=30, epochs:int = 300):
-	use_percentage_change=False
-	#, hidden_layer_size:int=256, dropout_rate:float=0.01, learning_rate:float=0.00001
-	plot = PlotHelper()
-	prices = PricingData(ticker)
-	print('Loading ' + ticker)
-	if prices.LoadHistory():
-		if use_percentage_change: 
-			prices.ConvertToPercentages() #Percentages don't work well I suspect because small errors have a huge impact when you revert back to the original prices and they roll forward
-		else:
-			prices.NormalizePrices()
-		prices.CalculateStats()
-		base_model_name = ticker
-		if use_generic_model: base_model_name = 'Prices'
-		model = StockPredictionNN(base_model_name=base_model_name, model_type=model_type)
-		#time_steps = 16 * prediction_target_days
-		if model_type =='CNN': #For CNN the field order is significant since it is treated as an image
-			field_list = ['Average','EMA_Short','EMA_Long','Deviation_5Day','Deviation_15Day','LossStd_1Year','PC_1Month','PC_6Month','PC_1Year','PC_2Year']
-		else:
-			#field_list = ['Average']
-			field_list = ['Average','EMA_Short','EMA_Long','Deviation_5Day','Deviation_15Day','LossStd_1Year','PC_1Month','PC_6Month','PC_1Year','PC_2Year']
-		df = prices.GetPriceHistory()
-		df['Average']=df['Average_5Day'] #Too much noise in the daily
-		model.LoadSource(sourceDF=prices.GetPriceHistory(), field_list=field_list, time_steps=time_steps, use_percentage_change=use_percentage_change)
-		model.LoadTarget(targetDF=None, prediction_target_days=prediction_target_days)
-		model.MakeTrainTest(batch_size=32, train_test_split=.93)
-		#model.DisplayDataSample()
-		model.BuildModel(dropout_rate=0, use_BatchNormalization=False)
-		if epochs == 0:
-			if (not model.Load()): epochs=300
-		elif use_generic_model:
-			model.Load()
-		if epochs > 0:
-			model.Train(epochs=epochs)
-		model.Predict(use_full_data_set=True)
-		#if epochs >= 10: model.Save()
-		model.PredictionResultsSave(filename=model.model_name, include_target=True, include_accuracy=False, include_input=True)
-		model.PredictionResultsSave(filename=model.model_name + '_Accuracy', include_target=True, include_accuracy=True, include_input=False)
-		model.PredictionResultsPlot(filename=model.model_name, include_target=True, include_accuracy=False)
-		
-if __name__ == '__main__':
-	switch = 1
-	if len(sys.argv[1:]) > 0: switch = sys.argv[1:][0]
-	if switch == '1':
-		for t in [60, 90, 120]:
-			TrainTickerRaw('XOM', model_type='LSTM', use_generic_model=False, prediction_target_days=10, time_steps=t, epochs=350)
-			TrainTickerRaw('XOM', model_type='BiLSTM', use_generic_model=False, prediction_target_days=10, time_steps=t, epochs=350)
-	elif switch == '2':
-		for t in [60, 90, 120]:
-			TrainTickerRaw('XOM', model_type='GRU', use_generic_model=False, prediction_target_days=1, time_steps=t, epochs=350)
-	elif switch == '3':
-		for t in [90, 120, 160]:
-			TrainTickerRaw('XOM', model_type='CNN_LSTM', use_generic_model=False, prediction_target_days=1, time_steps=t, epochs=350)
-			TrainTickerRaw('XOM', model_type='CNN', use_generic_model=False, prediction_target_days=1, time_steps=t, epochs=350)
-	elif switch == '4':
-		for t in [1, 10, 30, 90, 120]:
-			TrainTickerRaw('XOM', model_type='GRU', use_generic_model=False, prediction_target_days=10, time_steps=t, epochs=350)
-	elif switch == '5':
-		TrainTickerRaw('XOM', model_type='Simple', use_generic_model=False, prediction_target_days=10, epochs=350)
-	TrainTickerRaw('MSFT', model_type='LSTN', use_generic_model=True, prediction_target_days = 5, epochs = 400)
-	#TrainTickerRaw('XOM', model_type='LSTN', use_generic_model=True, prediction_target_days = 5, epochs = 400)	
-	#TrainTickerRaw('.INX', model_type='CNN', prediction_target_days = 5, epochs = 4)
-	#TestPredictionModels('.INX', numberOfLearningPasses=400)
-	TestPredictionModels('MSFT', numberOfLearningPasses=100)
-	#TestPredictionModels('TSLA', numberOfLearningPasses=400)
-	#TrainTickerRaw('CEIX', model_type='LSTN', use_generic_model=True, prediction_target_days = 10, epochs = 750)
-	#TestPredictionModels('CEIX', numberOfLearningPasses=400)
+dataFolder = 'data/prediction/'
+CreateFolder(dataFolder)
+
+def train_model(sourceDF, prediction_target_days:int = 5, epochs:int = 300):
+	model = StateSurprisePredictionNN(horizon=prediction_target_days)
+	model.LoadSource(sourceDF)
+	model.LoadTarget()
+	model.MakeTrainTest()
+	model.BuildModel()
+	model.Train(epochs=epochs)
+	return model.Predict()
+
+def evaluate_model(rawSourceDF, predictions, horizon):
+# predictions: DataFrame from model.Predict() or PredictOnNewData()
+# Must contain: baseline, predicted_price, direction_prob, magnitude
+# rawSourceDF: original OHLCV DataFrame used for prediction
+# horizon: prediction horizon (same as model.horizon)
+	future_price = (rawSourceDF['Average'].shift(-horizon).loc[predictions.index])
+	df = predictions.copy()
+	df['actual_price'] = future_price
+	df = df.dropna()
+	b = df['baseline'].values
+	p = df['predicted_price'].values
+	y = df['actual_price'].values
+	r = y - b                 # true residual
+	r_hat = p - b             # predicted residual
+	# ----------------------------
+	# 1️ Residual RMSE
+	# ----------------------------
+	rmse_baseline = np.sqrt(np.mean(r ** 2))
+	rmse_model = np.sqrt(np.mean((r - r_hat) ** 2))
+
+	print("\n=== Residual RMSE ===")
+	print(f"Baseline (zero residual): {rmse_baseline:.4f}")
+	print(f"Model residual RMSE:      {rmse_model:.4f}")
+	print(f"Improvement:              {rmse_baseline - rmse_model:.4f}")
+
+	# ----------------------------
+	# 2️ Residual correlation
+	# ----------------------------
+	corr = np.corrcoef(r, r_hat)[0, 1]
+	print("\n=== Residual Correlation ===")
+	print(f"Corr(true, predicted): {corr:.4f}")
+
+	# ----------------------------
+	# 3 Directional accuracy (conditional)
+	# ----------------------------
+	# Only evaluate where model says magnitude is large
+	mag_threshold = np.percentile(np.abs(r_hat), 70)
+	mask = np.abs(r_hat) > mag_threshold
+
+	if mask.sum() > 0:
+		direction_acc = np.mean(
+			np.sign(r[mask]) == np.sign(r_hat[mask])
+		)
+		print("\n=== Directional Accuracy (Top 30% Magnitude) ===")
+		print(f"Accuracy: {direction_acc:.4f}")
+		print(f"Samples:  {mask.sum()}")
+	else:
+		print("\n=== Directional Accuracy ===")
+		print("No samples above magnitude threshold.")
+
+	# ----------------------------
+	# 4️ Calibration by decile
+	# ----------------------------
+	calib_df = pd.DataFrame({        'r_hat': r_hat,        'r': r    })
+	calib_df['decile'] = pd.qcut(calib_df['r_hat'], 10, duplicates='drop')
+	calib = calib_df.groupby('decile').mean()
+	print("\n=== Calibration (Mean True Residual by Decile) ===")
+	print(calib)
+
+	# Plot calibration
+	plt.figure(figsize=(6, 4))
+	plt.plot(calib['r_hat'], calib['r'], marker='o')
+	plt.axhline(0, color='gray', linestyle='--')
+	plt.xlabel("Predicted Residual (Decile Mean)")
+	plt.ylabel("Actual Residual (Mean)")
+	plt.title("Residual Calibration")
+	plt.grid(True)
+	plt.show()
+
+	# ----------------------------
+	# 5 Simple PnL sanity check (optional)
+	# ----------------------------
+	position = np.sign(r_hat) #1 = Buy, 2 = Short
+	pnl = position * r		  #return from that decision
+	sharpe_daily = (pnl.mean() / pnl.std() if pnl.std() > 0 else 0.0) #Returns.mean()/Returns.std()
+	sharpe_annualized = sharpe_daily * np.sqrt(252)
+	print("\n=== Simple PnL Sanity Check ===")
+	print(f"Mean PnL: {pnl.mean():.6f}")
+	print(f"Sharpe Daily (naive): {sharpe_daily:.3f}")
+	print(f"Sharpe Annualized (naive): {sharpe_annualized:.3f}")
+
+	# ----------------------------
+	# Return metrics for programmatic use
+	# ----------------------------
+	return {
+		'rmse_baseline': rmse_baseline,
+		'rmse_model': rmse_model,
+		'residual_corr': corr,
+		'directional_accuracy': direction_acc if mask.sum() > 0 else np.nan,
+		'mean_pnl': pnl.mean(),
+		'sharpe_daily': sharpe_daily,
+		'sharpe_annualized': sharpe_annualized
+	}
+
+def plot_results(df, start_date, latest_date):
+	df = df.reset_index()
+	df = df[(df['Date'] >= start_date) & (df['Date'] <= latest_date)].copy()
+	# Create a two-panel subplot
+	fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+
+	# Panel 1: Price Comparison
+	ax1.plot(df['Date'], df['baseline'], label='Baseline Price', marker='o', color='#1f77b4', linewidth=2)
+	ax1.plot(df['Date'], df['predicted_price'], label='Predicted Price', marker='x', linestyle='--', color='#ff7f0e', linewidth=2)
+	ax1.set_ylabel('Price Value')
+	ax1.set_title('Financial Forecast: Price vs. Baseline')
+	ax1.legend()
+	ax1.grid(True, alpha=0.3)
+
+	# Panel 2: Confidence Metrics (Probability and Magnitude)
+	ax2.bar(df['Date'], df['direction_prob'], color='lightgray', label='Direction Prob', width=0.4)
+	ax2.set_ylabel('Probability', color='gray')
+	ax2.set_ylim(0, 1.1)
+	ax2.set_title('Model Confidence & Movement Magnitude')
+
+	# Secondary axis for Magnitude
+	ax3 = ax2.twinx()
+	ax3.plot(df['Date'], df['magnitude'], color='red', marker='s', label='Magnitude', linewidth=1)
+	ax3.set_ylabel('Magnitude', color='red')
+	ax3.tick_params(axis='y', labelcolor='red')
+
+	plt.xticks(df['Date'], rotation=45)
+	plt.xticks(rotation=45) 
+	ax2.xaxis.set_major_locator(mdates.WeekdayLocator(interval=1)) 
+	#ax2.xaxis.set_major_locator(mdates.DayLocator(interval=7))
+	ax2.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+	fig.autofmt_xdate()
+	plt.tight_layout()
+	plt.show()
+
+ticker = 'GOOGL'
+do_training = True
+print('Loading ' + ticker)
+prices = PricingData(ticker, useDatabase=False)
+startDate = '1/1/2005'
+endDate = '1/1/2026'
+prediction_target_days = 22
+
+if prices.LoadHistory(requestedStartDate=startDate, requestedEndDate=endDate):
+	csvFile = os.path.join(dataFolder, f"{ticker}_{prediction_target_days}_days_predictions.csv")
+	sourceDF = prices.historicalPrices
+	print(sourceDF)
+	if do_training:
+		predictions  = train_model(sourceDF, prediction_target_days, 450)
+		predictions.reset_index().to_csv(csvFile, index=False)
+	else:
+		predictions = pd.read_csv(csvFile, index_col=0, parse_dates=['Date'])
+	evaluate_model(sourceDF, predictions, prediction_target_days)
+	end_date = predictions.index.max()
+	start_date = end_date - pd.Timedelta(days=90)
+	plot_results(predictions, start_date, end_date)
