@@ -1,7 +1,34 @@
-import os, configparser, ast
+import os, configparser, ast, sys
 import numpy as np, pandas as pd
 import urllib.error, urllib.request as webRequest
 from datetime import datetime, timedelta, date
+
+def get_git_commit():
+	import subprocess
+	try:
+		return subprocess.check_output(
+			['git', 'rev-parse', 'HEAD'],
+			stderr=subprocess.DEVNULL
+		).decode('utf-8').strip()
+	except Exception:
+		return None
+
+def get_env_versions(include_machine_learning:bool = False):
+	if include_machine_learning:
+		import keras
+		return {
+			'python': sys.version.split()[0],
+			'numpy': np.__version__,
+			'pandas': pd.__version__,
+			'keras': keras.__version__
+			}
+	else:
+		return {
+			'python': sys.version.split()[0],
+			'numpy': np.__version__,
+			'pandas': pd.__version__
+			}
+	
 
 def ReadConfig(section_name:str, value_name:str, verbose: bool = False):
 	settingsFile = os.path.join(os.path.abspath(os.path.dirname(os.path.dirname(__file__)))) + '/config.ini'
@@ -105,31 +132,31 @@ def ToDateTime(given_date):
 	return r
 
 def ToTimestamp(given_date):
-    """
-    Returns a pandas.Timestamp, safely converting from
-    str, date, datetime, np.datetime64, or Timestamp.
-    """
-    if given_date is None:
-        return None
+	"""
+	Returns a pandas.Timestamp, safely converting from
+	str, date, datetime, np.datetime64, or Timestamp.
+	"""
+	if given_date is None:
+		return None
 
-    if isinstance(given_date, pd.Timestamp):
-        return given_date
+	if isinstance(given_date, pd.Timestamp):
+		return given_date
 
-    if isinstance(given_date, np.datetime64):
-        return pd.Timestamp(given_date)
+	if isinstance(given_date, np.datetime64):
+		return pd.Timestamp(given_date)
 
-    if isinstance(given_date, datetime):
-        return pd.Timestamp(given_date)
+	if isinstance(given_date, datetime):
+		return pd.Timestamp(given_date)
 
-    if isinstance(given_date, date):
-        return pd.Timestamp(datetime.combine(given_date, datetime.min.time()))
+	if isinstance(given_date, date):
+		return pd.Timestamp(datetime.combine(given_date, datetime.min.time()))
 
-    if isinstance(given_date, str):
-        # pandas handles almost all formats safely
-        return pd.to_datetime(given_date)
+	if isinstance(given_date, str):
+		# pandas handles almost all formats safely
+		return pd.to_datetime(given_date)
 
-    # Last-resort: assume caller knows what they’re doing
-    return pd.Timestamp(given_date)
+	# Last-resort: assume caller knows what they’re doing
+	return pd.Timestamp(given_date)
 
 def DateFormatDatabase(given_date):
 	#returns datetime object, technically should be np.datetime64
@@ -140,12 +167,12 @@ def GetDateTimeStamp():
 	d = datetime.now()
 	return d.strftime('%Y%m%d%H%M')
 
-def GetTodaysDate():
+def GetLatestBDay():
 	d = datetime.now()
 	return d.date()
 
-def GetLastBusinessDate():
-	d = datetime.now() - pd.offsets.BDay(0)
+def GetLatestBDay():
+	d = pd.offsets.BDay().rollback(datetime.now())
 	return d.date()
 	
 def GetTodaysDateString():

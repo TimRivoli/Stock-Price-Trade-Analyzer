@@ -1,35 +1,333 @@
-import time
+import time, json
 import numpy as np, pandas as pd
+import _classes.Constants as CONSTANTS
 from tqdm import tqdm
 from math import floor
+from typing import Dict, Union, Optional
+from dataclasses import dataclass, asdict, field, fields, is_dataclass
 from datetime import datetime, timedelta
 from _classes.DataIO import PTADatabase
 from _classes.Prices import PriceSnapshot, PricingData
 from _classes.Utility import *
 
-class Tranche: #interface for handling actions on a chunk of funds
-	ticker = ''
-	size = 0
-	units = 0
-	available = True
-	purchased = False
-	marketOrder = False
-	sold = False
-	expired = False
-	dateBuyOrderPlaced = None
-	dateBuyOrderFilled = None
-	dateSellOrderPlaced = None
-	dateSellOrderFilled = None
-	buyOrderPrice = 0
-	purchasePrice = 0
-	sellOrderPrice = 0
-	sellPrice = 0
-	latestPrice = 0
-	expireAfterDays = 0
-	_verbose = False
+class SQLFriendlyMixin:
+    def to_sql_dict(self):
+        """Converts dataclass to a flat dict with SQL-compatible types."""
+        fields = getattr(self, 'export_fields', [k for k in self.__dict__ if not k.startswith('_')])       
+        final_data = {}
+        for field_name in fields:
+            val = getattr(self, field_name, None)           
+            if isinstance(val, (dict, list)):
+                continue
+            if isinstance(val, (pd.Timestamp, datetime)):
+                final_data[field_name] = val.to_pydatetime() if hasattr(val, 'to_pydatetime') else val
+            elif isinstance(val, (np.float64, np.float32)):
+                final_data[field_name] = float(val)
+            elif isinstance(val, (np.int64, np.int32)):
+                final_data[field_name] = int(val)
+            elif isinstance(val, bool):
+                final_data[field_name] = 1 if val else 0
+            else:
+                final_data[field_name] = val                
+        return final_data
+		
+@dataclass
+class TradeModelParams(SQLFriendlyMixin):
+	_startDate: pd.Timestamp = field(init=False, repr=False)
+	modelName: str = ''
+	init_startDate: str = '1/1/1980'
+	durationInYears: int = 12
+	portfolioSize: int = 100000
+	trancheSize: int = 8181
+	reEvaluationInterval: int = 20
+	longHistory: int = 365
+	shortHistory: int = 90
 	
+	# Filters & Constraints
+	stockCount: int = 9
+	filterOption: int = 3
+	filterByFundamentals: bool = False
+	minPercentGain: float = 0.05
+	SP500Only: bool = False
+	marketCapMin: int = 0
+	marketCapMax: int = 0
+	
+	# System & Execution
+	shopBuyPercent: int = 0
+	shopSellPercent: int = 0
+	trimProfitsPercent: int = 0
+	allocateByPointValue: bool = False
+	rateLimitTransactions: bool = False
+	saveTradeHistory: bool = True
+	use_sql: bool = True
+	saveResults: bool = False
+	verbose: bool = False
+	
+	batchName: str = ''
+	processing_minutes: int = 0	
+	export_fields = [
+		'modelName', 'startDate', 'endDate', 'durationInYears', 'stockCount', 'reEvaluationInterval', 'SP500Only', 	'longHistory', 'shortHistory', 'minPercentGain', 'startValue', 'endValue',
+		'trancheSize', 'shopBuyPercent', 'shopSellPercent', 'trimProfitsPercent', 'allocateByPointValue', 'filterOption', 'filterByFundamentals', 'rateLimitTransactions','marketCapMin', 'marketCapMax', 'processing_minutes', 'batchName'
+	]		
+	def __post_init__(self):		
+		self.startDate = self.init_startDate # Trigger the setters to convert types immediately on startup
+	@property
+	def startDate(self) -> pd.Timestamp:
+		return self._startDate
+	@startDate.setter
+	def startDate(self, value):
+		self._startDate = pd.to_datetime(value)	
+		self.init_startDate = self._startDate
+	@property
+	def endDate(self) -> pd.Timestamp: return self.startDate + pd.Timedelta(days=CONSTANTS.CALENDAR_YEAR * self.durationInYears)	
+
+@dataclass
+class TradeModelPerformanceMetrics(SQLFriendlyMixin):
+	# --- Core ---
+	batchName: str = ''
+	startValue: int = 0
+	endValue: int  = 0
+	startDate:  pd.Timestamp = None 
+	endDate:  pd.Timestamp = None 
+	durationInYears: int = 0
+	total_gain: float = 0.0
+	cagr: float = 0.0
+	annualized_vol: float = 0.0
+	sharpe_ratio: float = 0.0
+	calmar_ratio: float = 0.0
+
+	# --- Drawdowns ---
+	max_drawdown: float = 0.0
+	max_drawdown_start: pd.Timestamp = None 
+	max_drawdown_low: pd.Timestamp = None 
+	max_drawdown_end: Optional[pd.Timestamp] = None 
+	max_drawdown_duration: int = 0
+
+	avg_drawdown: float = 0.0
+	dd_95pct: float = 0.0
+	dd_99pct: float = 0.0
+	pct_time_in_drawdown: float = 0.0
+
+	avg_drawdown_duration: float = 0.0
+	median_drawdown_duration: float = 0.0
+
+	avg_recovery_days: float = 0.0
+	median_recovery_days: float = 0.0
+	max_recovery_days: int = 0
+
+	# --- Calendar effects ---
+	worst_jan_drawdown_year: int = 0
+	worst_jan_drawdown_value: float = 0.0
+	years_negative: int = 0
+
+	# --- Convexity / tail behavior ---
+	return_concentration_10pct: float = 0.0
+	return_concentration_20pct: float = 0.0
+	best_1yr_return: float = 0.0
+	best_3yr_cagr: float = 0.0
+
+	# --- Adaptive diagnostics ---
+	avg_convex_weight: float = 0.0
+	std_convex_weight: float = 0.0
+	pct_time_convex_dominant: float = 0.0
+	export_fields = [
+		'startDate', 'endDate', 'durationInYears', 'total_gain', 'cagr', 'annualized_vol', 'sharpe_ratio', 'calmar_ratio',
+		'max_drawdown', 'max_drawdown_start', 'max_drawdown_low', 'max_drawdown_end', 'max_drawdown_duration', 'avg_drawdown','dd_95pct','dd_99pct', 'pct_time_in_drawdown', 'avg_drawdown_duration', 'median_drawdown_duration',
+		'avg_recovery_days','median_recovery_days', 'max_recovery_days', 'worst_jan_drawdown_year', 'worst_jan_drawdown_value', 'years_negative',
+		'return_concentration_10pct','return_concentration_20pct','best_1yr_return', 'best_3yr_cagr', 'avg_convex_weight','std_convex_weight', 'pct_time_convex_dominant', 'batchName'
+	]		
+
+def load_convex_weight_series(db, modelName: str) -> Optional[pd.Series]:
+	sql = f"SELECT asOfDate, convex_weight FROM {CONSTANTS.ADAPTIVE_CONVEX_STATE_TABLE} WHERE modelName = :modelName ORDER BY asOfDate"
+	df = db.DataFrameFromSQL(sql, params={"modelName": modelName}, indexName="asOfDate")
+	if df is None or df.empty:
+		return None
+	df.index = pd.to_datetime(df.index)
+	return df["convex_weight"].astype(float)
+
+def analyze_portfolio_performance( df: pd.DataFrame, risk_free_rate: float = 0.0, convex_weight_series: Optional[pd.Series] = None) -> TradeModelPerformanceMetrics:
+	df = df.copy()
+	df['Daily_Return'] = (df['TotalValue'].pct_change().replace([np.inf, -np.inf], 0).fillna(0))
+	# --- 1. Returns ---
+	start_val = df['TotalValue'].iloc[0]
+	end_val   = df['TotalValue'].iloc[-1]
+	total_gain = (end_val / start_val - 1) if start_val != 0 else 0
+	num_days = (df.index[-1] - df.index[0]).days
+	years = max(num_days / CONSTANTS.CALENDAR_YEAR, 1 / CONSTANTS.TRADING_YEAR)
+	cagr = (1 + total_gain) ** (1 / years) - 1 if total_gain > -1 else 0
+
+	# --- 2. Drawdown series ---
+	df['Cumulative_Max'] = df['TotalValue'].cummax()
+	df['Drawdown'] = ((df['TotalValue'] - df['Cumulative_Max']) / df['Cumulative_Max']).fillna(0)
+	drawdown_series = df['Drawdown']
+	mdd_value = drawdown_series.min() # Worst drawdown
+	low_date = drawdown_series.idxmin()
+	start_date = df.loc[:low_date, 'TotalValue'].idxmax()
+	peak_val = df.loc[start_date, 'TotalValue']
+	recovery_df = df.loc[low_date:]
+	recovered = recovery_df[recovery_df['TotalValue'] >= peak_val]
+	if not recovered.empty:
+		end_date = recovered.index[0]
+		max_dd_duration = (end_date - start_date).days
+	else:
+		end_date = None
+		max_dd_duration = (df.index[-1] - start_date).days
+
+	# --- 3. Drawdown segments & recovery metrics ---
+	in_dd = drawdown_series < 0
+	pct_time_in_drawdown = float(in_dd.mean())
+	dd_groups = (in_dd != in_dd.shift()).cumsum()
+	drawdown_durations = []
+	recovery_durations = []
+	for _, seg in df[in_dd].groupby(dd_groups):
+		start = seg.index[0]
+		trough = seg['Drawdown'].idxmin()
+		trough_val = seg.loc[trough, 'TotalValue']
+		after = df.loc[trough:]
+		recovery = after[after['TotalValue'] >= df.loc[start, 'TotalValue']]
+		drawdown_durations.append((seg.index[-1] - start).days)
+		if not recovery.empty:
+			recovery_durations.append((recovery.index[0] - trough).days)
+	avg_drawdown_duration = float(np.mean(drawdown_durations)) if drawdown_durations else 0.0
+	median_drawdown_duration = float(np.median(drawdown_durations)) if drawdown_durations else 0.0
+	avg_recovery_days = float(np.mean(recovery_durations)) if recovery_durations else 0.0
+	median_recovery_days = float(np.median(recovery_durations)) if recovery_durations else 0.0
+	max_recovery_days = int(max(recovery_durations)) if recovery_durations else 0
+	avg_drawdown = float(drawdown_series[drawdown_series < 0].mean()) if (drawdown_series < 0).any() else 0.0
+	dd_95pct = float(np.percentile(drawdown_series, 5))
+	dd_99pct = float(np.percentile(drawdown_series, 1))
+
+	# --- 4. Yearly drawdowns ---
+	year_first = df.groupby(df.index.year)['TotalValue'].first()
+	yoy_change = year_first.pct_change().fillna(0)
+	years_negative = int((yoy_change < 0).sum())
+	df['Year_Baseline'] = df.groupby(df.index.year)['TotalValue'].transform('first')
+	df['Year_Relative_DD'] = (
+		(df['TotalValue'] - df['Year_Baseline']) / df['Year_Baseline']
+	).fillna(0)
+
+	yearly_series = df.groupby(df.index.year)['Year_Relative_DD'].min().clip(upper=0)
+	worst_year = int(yearly_series.idxmin())
+	worst_year_val = float(yearly_series.min())
+
+	# --- 5. Risk ratios ---
+	vol = df['Daily_Return'].std() * np.sqrt(CONSTANTS.TRADING_YEAR)
+	vol = 0 if np.isnan(vol) else vol
+
+	daily_rf = risk_free_rate / CONSTANTS.TRADING_YEAR
+	dr_std = df['Daily_Return'].std()
+	sharpe = ((df['Daily_Return'].mean() - daily_rf) / dr_std * np.sqrt(CONSTANTS.TRADING_YEAR)) if dr_std != 0 else 0
+	calmar = cagr / abs(mdd_value) if mdd_value != 0 else 0
+
+	# --- 6. Convexity / return concentration ---
+	monthly = df['TotalValue'].resample('ME').last().pct_change().dropna()
+	top_10pct = int(len(monthly) * 0.10)
+	top_20pct = int(len(monthly) * 0.20)
+
+	return_concentration_10pct = monthly.nlargest(top_10pct).sum() / monthly.sum() if monthly.sum() != 0 else 0
+	return_concentration_20pct = monthly.nlargest(top_20pct).sum() / monthly.sum() if monthly.sum() != 0 else 0
+
+	rolling_1y = df['TotalValue'].pct_change(CONSTANTS.TRADING_YEAR).dropna()
+	best_1yr_return = float(rolling_1y.max()) if not rolling_1y.empty else 0.0
+
+	rolling_3y = (df['TotalValue'].pct_change(CONSTANTS.TRADING_YEAR * 3) + 1) ** (1 / 3) - 1
+	best_3yr_cagr = float(rolling_3y.max()) if not rolling_3y.empty else 0.0
+
+	# --- 7. Adaptive diagnostics ---
+	if convex_weight_series is not None and not convex_weight_series.empty:
+		aligned = convex_weight_series.reindex(df.index).fillna(0).astype(float)
+		avg_convex_weight = float(aligned.mean())
+		std_convex_weight = float(aligned.std())
+		pct_time_convex_dominant = float((aligned > 0.5).mean())
+	else:
+		avg_convex_weight = 0.0
+		std_convex_weight = 0.0
+		pct_time_convex_dominant = 0.0
+
+	# --- 8. Return ---
+	return TradeModelPerformanceMetrics(
+		total_gain = total_gain,
+		cagr = cagr,
+		annualized_vol = vol,
+		sharpe_ratio = sharpe,
+		calmar_ratio = calmar,
+		max_drawdown = mdd_value,
+		max_drawdown_start = start_date,
+		max_drawdown_low = low_date,
+		max_drawdown_end = end_date,
+		max_drawdown_duration = max_dd_duration,
+		avg_drawdown = avg_drawdown,
+		dd_95pct = dd_95pct,
+		dd_99pct = dd_99pct,
+		pct_time_in_drawdown = pct_time_in_drawdown,
+		avg_drawdown_duration = avg_drawdown_duration,
+		median_drawdown_duration = median_drawdown_duration,
+		avg_recovery_days = avg_recovery_days,
+		median_recovery_days = median_recovery_days,
+		max_recovery_days = max_recovery_days,
+		worst_jan_drawdown_year = worst_year,
+		worst_jan_drawdown_value = worst_year_val,
+		years_negative = years_negative,
+		return_concentration_10pct = return_concentration_10pct,
+		return_concentration_20pct = return_concentration_20pct,
+		best_1yr_return = best_1yr_return,
+		best_3yr_cagr = best_3yr_cagr,
+		avg_convex_weight = avg_convex_weight,
+		std_convex_weight = std_convex_weight,
+		pct_time_convex_dominant = pct_time_convex_dominant
+	)
+
+def UpdateTradeModelComparisonsFromDailyValue(batchName: str):
+	db = PTADatabase()
+	if not db.Open():
+		return
+	sql_models = "SELECT DISTINCT TradeModel FROM TradeModel_DailyValue WHERE BatchName = :batchName"
+	model_names = db.ScalarListFromSQL(sql_models, params={"batchName": batchName}, column="TradeModel")
+	for model_name in model_names:
+		sql_dv = "SELECT Date, TotalValue FROM TradeModel_DailyValue WHERE BatchName = :batchName ORDER BY Date"
+		df = db.DataFrameFromSQL(sql_dv, params={"batchName": batchName}, indexName="Date")        
+		if df is None or df.empty or len(df) < 2:
+			continue           
+		df.index = pd.to_datetime(df.index)
+		convex_weight_series = load_convex_weight_series(db, model_name)
+		metrics = analyze_portfolio_performance(df=df, convex_weight_series=convex_weight_series)        
+		metrics.startDate = df.index.min()
+		metrics.endDate = df.index.max()
+		metrics.startValue = df['TotalValue'].iloc[0]
+		metrics.endValue = df['TotalValue'].iloc[-1]
+		metrics.modelName = model_name
+		metrics.batchName = batchName       
+		days = (metrics.endDate - metrics.startDate).days
+		metrics.durationInYears = int(round(days / CONSTANTS.CALENDAR_YEAR))
+		update_params = metrics.to_sql_dict()
+		update_params = {k: (None if isinstance(v, float) and np.isnan(v) else v) for k, v in update_params.items()}
+		cols_to_update = [k for k in update_params.keys() if k not in ['modelName', 'batchName']]
+		set_clause = ", ".join([f"{col} = :{col}" for col in cols_to_update])  
+		sql_update = f"UPDATE TradeModelComparisons SET {set_clause} WHERE batchName = :batchName"
+		db.ExecSQL(sql_update, params=update_params)
+	db.Close()
+	
+class Tranche: #interface for handling actions on a chunk of funds
 	def __init__(self, size:int=1000):
+		self.ticker = ''
 		self.size = size
+		self.units = 0
+		self.available = True
+		self.purchased = False
+		self.marketOrder = False
+		self.sold = False
+		self.expired = False
+		self.dateBuyOrderPlaced = None
+		self.dateBuyOrderFilled = None
+		self.dateSellOrderPlaced = None
+		self.dateSellOrderFilled = None
+		self.buyOrderPrice = 0
+		self.purchasePrice = 0
+		self.sellOrderPrice = 0
+		self.sellPrice = 0
+		self.latestPrice = 0
+		self.expireAfterDays = 0
+		self._verbose = False
 		
 	def AdjustBuyUnits(self, newValue:int):	
 		if self._verbose: print(' Adjusting Buy from ' + str(self.units) + ' to ' + str(newValue) + ' units (' + self.ticker + ')')
@@ -173,14 +471,13 @@ class Position:	#Simple interface for open positions
 	def CancelSell(self): 
 		if self._t.purchased: self._t.CancelOrder(verbose=True)
 	def CurrentValue(self): return self._t.units * self._t.latestPrice
-	def Sell(self, price:float, datePlaced:datetime, marketOrder:bool=False, expireAfterDays:int=90): self._t.PlaceSell(price=price, datePlaced=datePlaced, marketOrder=marketOrder, expireAfterDays=expireAfterDays, verbose=True)
+	def Sell(self, price:float, datePlaced:datetime, marketOrder:bool=False, expireAfterDays:int=90): self._t.PlaceSell(price=price, datePlaced=datePlaced, marketOrder=marketOrder, expireAfterDays=expireAfterDays, verbose=False)
 	def SellPending(self): return (self._t.sellOrderPrice >0) and not (self._t.sold or  self._t.expired)
 	def LatestPrice(self): return self._t.latestPrice
 
 class Portfolio:
 	def __init__(self, portfolioName:str, startDate:datetime, totalFunds:int=10000, trancheSize:int=1000, trackHistory:bool=True, useDatabase:bool=True, verbose:bool=False):
 		self.tradeHistory = None #DataFrame of trades.  Note: though you can trade more than once a day it is only going to keep one entry per day per stock
-		self.dailyValue = None	  #DataFrame for the value at the end of each day
 		self._commisionCost = 0
 		self.portfolioName = portfolioName
 		self._initialValue = totalFunds
@@ -346,7 +643,6 @@ class Portfolio:
 					availableTranches -=1
 				i -=1
 
-
 	#--------------------------------------  Order interface  ---------------------------------------
 	def CancelAllOrders(self, currentDate:datetime):
 		for t in self._tranches:
@@ -460,22 +756,22 @@ class Portfolio:
 						fundsavailable = self._cash - abs(self._fundsCommittedToOrders)
 						if t.marketOrder:
 							actualCost = t.units*price
-							if self._verbose: print(t.ticker, " purchased for ",price, dateChecked)
+							if self._verbose: print(f" CheckOrders: {t.ticker} purchased for {price} on {dateChecked}")
 							if (fundsavailable - actualCost - self._commisionCost) < 25:	#insufficient funds
 								unitsCanAfford = max(floor((fundsavailable - self._commisionCost)/price)-1, 0)
 								if self._verbose:
-									print(' Ajusting units on market order for ' + ticker + ' Price: ', price, ' Requested Units: ', t.units,  ' Can afford:', unitsCanAfford)
-									print(' Cash: ', self._cash, ' Committed Funds: ', self._fundsCommittedToOrders, ' Available: ', fundsavailable)
+									print(f" CheckOrders: Ajusting units on market order for {ticker} price {price} units {t.units},  can afford {unitsCanAfford} units")
+									print(f" CheckOrders: Cash: {self._cash} Committed Funds: {self._fundsCommittedToOrders} Available: {fundsavailable}")
 								if unitsCanAfford ==0:
 									t.Recycle()
 								else:
 									t.AdjustBuyUnits(unitsCanAfford)
 						if t.units == 0:
-							if self._verbose: print( 'Can not afford any ' + ticker + ' at market ' + str(price) + ' canceling Buy', dateChecked)
+							if self._verbose: print(f" CheckOrders: Cannot afford any {ticker} at market {price}... canceling Buy on {dateChecked}")
 							t.Recycle()
 						else:
 							self._cash = self._cash - (t.units*price) - self._commisionCost 
-							if self._verbose and self._commisionCost > 0: print(' Commission charged for Buy: ' + str(self._commisionCost))		
+							if self._verbose and self._commisionCost > 0: print(' CheckOrders: Commission charged for Buy: ' + str(self._commisionCost))		
 							if self.trackHistory:							
 								self.tradeHistory.loc[(t.dateBuyOrderPlaced,t.ticker), 'dateBuyOrderFilled']=t.dateBuyOrderFilled #Create the row
 								self.tradeHistory.loc[(t.dateBuyOrderPlaced,t.ticker)]=[t.dateBuyOrderFilled,t.dateSellOrderPlaced,t.dateSellOrderFilled,t.units,t.buyOrderPrice,t.purchasePrice,t.sellOrderPrice,t.sellPrice,''] 
@@ -511,20 +807,22 @@ class Portfolio:
 
 	def UpdateDailyValue(self):
 		_cashValue, assetValue = self.Value()
-		positions = self.GetPositions(asDataFrame=True)
-		x = positions.index.to_numpy() + ':' + positions['Percentage'].to_numpy(dtype=str)
-		for i in range(len(x)): x[i] = x[i][:12]
-		while len(x) < 11: x = np.append(x, [''])
-		self.dailyValue.loc[self.currentDate]=[_cashValue,assetValue,_cashValue + assetValue, x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7], x[8], x[9], x[10]]
-		#print(self.dailyValue)
+		positions = self.GetPositions(asDataFrame=True)	
+		x = (positions.index.astype(str) + ':' + positions['Percentage'].astype(str))	
+		x = x.str[:12].tolist()		
+		padding_needed = max(0, 11 - len(x))
+		x += [''] * padding_needed		
+		new_row = [_cashValue, assetValue, _cashValue + assetValue] + x[:11]
+		self.dailyValue.loc[self.currentDate] = new_row	
 
 	#--------------------------------------  Closing Reporting ---------------------------------------
 	def SaveTradeHistory(self, foldername:str, addTimeStamp:bool = False):
 		if self.trackHistory:
 			if self.useDatabase:
 				if self.database.Open():
-					df = self.tradeHistory
-					df['TradeModel'] = self.portfolioName 
+					df = self.tradeHistory.copy()
+					df['TradeModel'] = self.modelName 
+					df['BatchName'] = self.batchName 				
 					self.database.DataFrameToSQL(df, 'TradeModel_Trades', indexAsColumn=True)
 					self.database.Close()
 			if CreateFolder(foldername):
@@ -537,7 +835,8 @@ class Portfolio:
 		if self.useDatabase:
 			if self.database.Open():
 				df = self.dailyValue.copy()
-				df['TradeModel'] = self.portfolioName 
+				df['TradeModel'] = self.modelName 
+				df['BatchName'] = self.batchName 				
 				self.database.DataFrameToSQL(df, 'TradeModel_DailyValue', indexAsColumn=True)
 				self.database.Close()
 		if CreateFolder(foldername):
@@ -548,7 +847,6 @@ class Portfolio:
 		
 class TradingModel(Portfolio):
 	#Extends Portfolio to trading environment for testing models
-
 	def __init__(self, modelName:str, startingTicker:str, startDate:datetime, durationInYears:int, totalFunds:int, trancheSize:int=1000, trackHistory:bool=True, useDatabase:bool=True, useFullStats:bool=True, verbose:bool=False):
 		#pricesAsPercentages:bool=False would be good but often results in NaN values
 		#expects date format in local format, from there everything will be converted to database format				
@@ -559,21 +857,25 @@ class TradingModel(Portfolio):
 		self.priceHistory = []  #list of price histories for each stock in _tickerList
 		self._priceMap = {} #Mapping between tickers and priceHistory elements
 		self.startingValue = 0 
-		self.verbose = False
+		self.verbose = verbose
 		self._tickerList = []	#list of stocks currently held
 		self._dataFolderTradeModel = 'data/trademodel/'
 		self.Custom1 = None	#can be used to store custom values when using the model
 		self.Custom2 = None
 		self._NormalizePrices = False
-		self.useFullStats = False
+		self.useFullStats = useFullStats
 		self.startingValue = totalFunds
 		startDate = ToDateTime(startDate)
-		endDate = startDate + timedelta(days=365 * durationInYears)
+		endDate = startDate + timedelta(days=CONSTANTS.CALENDAR_YEAR * durationInYears)
 		CreateFolder(self._dataFolderTradeModel)
+		self.start_processing = datetime.today()
+		self.end_processing = None
 		self.modelName = modelName
+		self.batchName = modelName[:30] + '_' + self.start_processing.strftime('%Y%m%d-%H%M%S')
 		self.database = None
-		total_days = (endDate - startDate).days    	
-		self.pbar = tqdm(total=total_days, desc=f"Running {modelName}", unit="day")
+		self.pbar = None
+		#total_days = (endDate - startDate).days    	
+		total_days = len(pd.bdate_range(start=startDate, end=endDate))
 		if useDatabase:
 			db = PTADatabase()
 			if db.database_configured:
@@ -584,7 +886,6 @@ class TradingModel(Portfolio):
 		p = PricingData(startingTicker, useDatabase=self.useDatabase)
 		if p.LoadHistory(requestedStartDate=startDate, requestedEndDate=endDate, verbose=verbose): 
 			if verbose: print(' Loading ' + startingTicker)
-			self.useFullStats = useFullStats
 			p.CalculateStats(fullStats=self.useFullStats)
 			valid_dates = p.historicalPrices.index[(p.historicalPrices.index >= startDate) & (p.historicalPrices.index <= endDate)]
 			if not valid_dates.empty:
@@ -594,6 +895,7 @@ class TradingModel(Portfolio):
 				self.modelEndDate = valid_dates[-1]
 				self.currentDate = self.modelStartDate
 				self._tickerList = [startingTicker]
+				self.pbar = tqdm(total=total_days, desc=f"Running {self.modelName} from {self.modelStartDate} to {self.modelEndDate}", unit="day")
 				self.modelReady = len(p.historicalPrices) > 30
 			else:
 				self.modelReady = False #We don't have enough data
@@ -637,8 +939,7 @@ class TradingModel(Portfolio):
 		if TotalTargets > 0:
 			scale = TotalTranches / TotalTargets
 			targetPositions.loc[:, 'TargetHoldings'] = (targetPositions['TargetHoldings'] * scale).astype(float).round()
-		if verbose:
-			print(f'AlignPositions: Target Positions Scaled. Scale: {scale}')
+		if verbose: print(f" AlignPositions: Target Positions Scaled. Scale: {scale}")
 		currentPositions = self.GetPositions(asDataFrame=True)
 		targetPositions = targetPositions.join(currentPositions, how='outer')
 		targetPositions.fillna(value=0, inplace=True)		
@@ -651,8 +952,11 @@ class TradingModel(Portfolio):
 		buys.sort_values(by=['Difference'], ascending=False, inplace=True) 	
 		executionList = pd.concat([sells, buys])
 		for ticker, row in executionList.iterrows():
-			if ticker == 'CASH':
-				continue				
+			if ticker == CONSTANTS.CASH_TICKER:
+				shopBuyPercent = 0
+				shopSellPercent = 0
+				trimProfitsPercent = 0
+				rateLimitTransactions = False
 			orders = int(row['Difference'])
 			sn = self.GetPriceSnapshot(ticker)
 			if sn is not None:
@@ -662,24 +966,67 @@ class TradingModel(Portfolio):
 				if orders < 0:  # --- EXECUTE SELLS ---
 					price = target_sell if not tradeAtMarket else sn.Average
 					if rateLimitTransactions: orders = -1					
-					print(f"Sell {ticker} for ${price} (Mkt: {tradeAtMarket})")
+					if verbose: print(f" AlignPositions: Sell {ticker} for ${price} (Mkt: {tradeAtMarket})")
 					for _ in range(abs(orders)): 
 						self.PlaceSell(ticker=ticker, price=price, marketOrder=tradeAtMarket, expireAfterDays=expireAfterDays, verbose=verbose)				
 				elif orders > 0 and self.TranchesAvailable() > 0: # --- EXECUTE BUYS ---
 					price = target_buy if not tradeAtMarket else sn.Average
 					if rateLimitTransactions: orders = 1					
-					print(f"Buy {ticker} for ${price} (Mkt: {tradeAtMarket})")
+					if verbose: print(f" AlignPositions: Buy {ticker} for ${price} (Mkt: {tradeAtMarket})")
 					for _ in range(orders):
 						self.PlaceBuy(ticker=ticker, price=price, marketOrder=tradeAtMarket, expireAfterDays=expireAfterDays, verbose=verbose)								
 				elif trimProfitsPercent > 0 and row['CurrentHoldings'] > 0: # --- TRIM PROFITS (Only if no other orders pending for this ticker) ---
 					print(f"Sell for trim profits {ticker} for ${trim_sell}")
 					self.PlaceSell(ticker=ticker, price=trim_sell, marketOrder=False, expireAfterDays=expireAfterDays, verbose=verbose)
-		if verbose: 
-			print(self.PositionSummary())	
+		if verbose: print(self.PositionSummary())	
 
 	def CancelAllOrders(self): super(TradingModel, self).CancelAllOrders(self.currentDate)
 	
-	def CloseModel(self, plotResults:bool=True, saveHistoryToFile:bool=True, folderName:str='data/trademodel/', dpi:int=600):	
+	def _recordTradeModelComparisonToSQL(self, params: TradeModelParams):
+		flat_data = params.to_sql_dict()    	
+		columns = ", ".join(flat_data.keys())
+		placeholders = ", ".join([f":{key}" for key in flat_data.keys()])   
+		sql = f"INSERT INTO TradeModelComparisons ({columns}) VALUES ({placeholders})"		
+		db = PTADatabase()
+		if db.Open():
+			db.ExecSQL(sql, params=flat_data)
+			db.Close()	
+
+	def _recordTradeModelComparisonToCSV(self, params: TradeModelParams, perf: TradeModelPerformanceMetrics, csv_filename="TradeModelComparisons.csv"):
+		flat_params = params.to_flat_dict()
+		flat_perf = perf.to_flat_dict()
+		combined_data = flat_params | flat_perf
+		df = pd.DataFrame([combined_data])
+		csvFile = os.path.join(self._dataFolderTradeModel, csv_filename)
+		file_exists = os.path.isfile(csvFile)
+		df.to_csv(csvFile, mode='a', index=False, header=not file_exists)
+		print(f"Results appended to {csvFile}")
+
+	def _recordResults(self, params: TradeModelParams):
+		df = self.dailyValue.copy()
+		params.startValue = df['TotalValue'].iloc[0]
+		params.endValue = df['TotalValue'].iloc[-1]
+		params.modelName = self.modelName
+		params.batchName = self.batchName
+		params.processing_minutes = int((self.end_processing - self.start_processing).seconds /60)
+		perf = analyze_portfolio_performance(df)
+		perf.batchName = self.batchName		
+		perf.startDate = df.index.min()
+		perf.endDate = df.index.max()
+		perf.startValue = df['TotalValue'].iloc[0]
+		perf.endValue = df['TotalValue'].iloc[-1]
+		perf.modelName = self.modelName
+		perf.batchName = self.batchName       
+		days = (perf.endDate - perf.startDate).days
+		perf.durationInYears = int(round(days / CONSTANTS.CALENDAR_YEAR))		
+		if params.use_sql:
+			self._recordTradeModelComparisonToSQL(params)
+			UpdateTradeModelComparisonsFromDailyValue(self.batchName)
+		else:
+			self._recordTradeModelComparisonToCSV(params, perf)	
+			
+	def CloseModel(self, params: TradeModelParams = None):	
+		if not params: params = TradeModelParams()
 		cashValue, assetValue = self.Value()
 		self.CancelAllOrders()
 		if assetValue > 0:
@@ -688,15 +1035,17 @@ class TradingModel(Portfolio):
 		cashValue, assetValue = self.Value()
 		netChange = cashValue + assetValue - self.startingValue 
 		if self.pbar: self.pbar.close()
-		if saveHistoryToFile:
-			self.SaveDailyValue(folderName)
-			self.SaveTradeHistory(folderName)
+		self.end_processing = datetime.today()
+		params.processing_minutes = int((self.end_processing - self.start_processing).seconds /60)
 		print('Model ' + self.modelName + ' from ' + str(self.modelStartDate)[:10] + ' to ' + str(self.modelEndDate)[:10])
 		print('Cash: ' + str(round(cashValue)) + ' asset: ' + str(round(assetValue)) + ' total: ' + str(round(cashValue + assetValue)))
 		print('Net change: ' + str(round(netChange)), str(round((netChange/self.startingValue) * 100, 2)) + '%')
+		print(f"Processing time: {params.processing_minutes} minutes")
 		print('')
-		if plotResults and self.trackHistory: 
-			self.PlotTradeHistoryAgainstHistoricalPrices(self.tradeHistory, self.priceHistory[0].GetPriceHistory(), self.modelName)
+		if params.saveTradeHistory:
+			self._recordResults(params)
+			self.SaveDailyValue(self._dataFolderTradeModel)
+			self.SaveTradeHistory(self._dataFolderTradeModel)
 		return cashValue + assetValue
 		
 	def CalculateGain(self, startDate:datetime, endDate:datetime):
@@ -712,6 +1061,7 @@ class TradingModel(Portfolio):
 		return gain, percentageGain
 			
 	def GetCustomValues(self): return self.Custom1, self.Custom2
+		
 	def GetDailyValue(self): 
 		return self.dailyValue.copy() #returns dataframe with daily value of portfolio
 
@@ -805,15 +1155,15 @@ class TradingModel(Portfolio):
 							print(f"ProcessDay: Forcing sell of {ticker} due to delisting.")
 							forced_price = round(t.latestPrice * 0.9, 3)
 							sn.Open = forced_price, sn.Close = forced_price, sn.High = forced_price, sn.Low = forced_price
-							t.PlaceSell(price=forced_price, datePlaced=self.currentDate, marketOrder=True, expireAfterDays=5, verbose=True)
+							t.PlaceSell(price=forced_price, datePlaced=self.currentDate, marketOrder=True, expireAfterDays=5, verbose=self.verbose)
 					else:						
 						t.latestPrice = sn.Close # Normal price update
 				self.ProcessDaysOrders(ticker, sn.Open, sn.High, sn.Low, sn.Close, self.currentDate)
 		self.UpdateDailyValue()
-		if self.pbar and self.verbose:
+		if self.pbar:
 			c = self._cash
 			a = self.assetValue
-			tqdm.write(f"Model: {self.modelName} Date: {self.currentDate} Cash: ${int(c)} Assets: ${int(a)} Total: ${int(c+a)} Return: {round(100*(((c+a)/self._initialValue)-1), 2)}%")
+			self.pbar.set_description(f"Model: {self.modelName} from {self.modelStartDate} to {self.modelEndDate} currentDate: {self.currentDate} Cash: ${int(c)} Assets: ${int(a)} Total: ${int(c+a)} Return: {round(100*(((c+a)/self._initialValue)-1), 2)}%")
 		self.ReEvaluateTrancheCount()
 		if withIncrement:
 			idx = self.priceHistory[0].historicalPrices.index		
@@ -838,7 +1188,7 @@ class ForcastModel():	#used to forecast the effect of a series of trade actions,
 		self.daysToForecast = daysToForecast
 		self.daysToForecast = daysToForecast
 		self.startDate = mirroredModel.modelStartDate 
-		durationInYears = (mirroredModel.modelEndDate-mirroredModel.modelStartDate).days/365
+		durationInYears = (mirroredModel.modelEndDate-mirroredModel.modelStartDate).days/CONSTANTS.CALENDAR_YEAR
 		self.tm = TradingModel(modelName=modelName, startingTicker=mirroredModel._tickerList[0], startDate=mirroredModel.modelStartDate, durationInYears=durationInYears, totalFunds=mirroredModel.startingValue, verbose=False, trackHistory=False)
 		self.savedModel = TradingModel(modelName=modelName, startingTicker=mirroredModel._tickerList[0], startDate=mirroredModel.modelStartDate, durationInYears=durationInYears, totalFunds=mirroredModel.startingValue, verbose=False, trackHistory=False)
 		self.mirroredModel = mirroredModel
@@ -932,3 +1282,117 @@ class ForcastModel():	#used to forecast the effect of a series of trade actions,
 		return endingValue - self.startingValue
 		
 
+class ExtensiveTesting:
+	"""
+	SQL-backed FIFO queue for TradeModelParams used in extensive model testing.
+	"""
+
+	QUEUE_TABLE = "dbo.TradeModelQueue"
+
+	def __init__(self, verbose: bool = False):
+		self.db = PTADatabase()
+		if not self.db.Open():
+			print(" ExtensiveTesting: database initialization failed.")
+			assert False
+		self.verbose = verbose
+
+	# ---------- Table Setup ----------
+
+	def ensure_queue_table(self):
+		sql = f"""
+		IF OBJECT_ID('{self.QUEUE_TABLE}', 'U') IS NULL
+		BEGIN
+			CREATE TABLE {self.QUEUE_TABLE} (
+				QueueID     INT IDENTITY(1,1) PRIMARY KEY,
+				EnqueuedAt  DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+				ParamsJson  NVARCHAR(MAX) NOT NULL,
+				Processing  BIT NOT NULL DEFAULT 0
+			)
+		END
+		"""
+		self.db.ExecSQL(sql)
+		if self.verbose:
+			print("ExtensiveTesting: Queue table verified")
+
+	# ---------- Serialization ----------
+
+
+
+	@staticmethod
+	def _serialize(params: TradeModelParams) -> str:
+		data = {}
+		for f in fields(params):
+			if not f.init:
+				continue  # skip _startDate and any future non-init fields
+			value = getattr(params, f.name)
+			if isinstance(value, pd.Timestamp):
+				value = value.isoformat()
+			data[f.name] = value
+			data["startDate"] = params.startDate.isoformat()
+		return json.dumps(data)
+
+
+	@staticmethod
+	def _deserialize(json_str: str) -> TradeModelParams:
+		data = json.loads(json_str)
+		start_date = data.pop("startDate", None)
+		params = TradeModelParams(**data)
+		if start_date is not None:
+			params.startDate = start_date  # uses setter → pd.Timestamp
+		return params
+
+	# ---------- Queue Operations ----------
+
+	def add_to_queue(self, params: TradeModelParams):
+		sql = f"""
+			INSERT INTO {self.QUEUE_TABLE} (ParamsJson)
+			VALUES (:params)
+		"""
+		self.db.ExecSQL(sql, {"params": self._serialize(params)})
+		if self.verbose:
+			print(f"ExtensiveTesting: Enqueued {params.modelName}")
+
+	def pop_from_queue(self) -> TradeModelParams | None:
+		"""
+		Atomically dequeue the oldest unprocessed TradeModelParams.
+		Safe for multiple workers.
+		"""
+		sql = f"""
+		;WITH cte AS (
+			SELECT TOP (1) *
+			FROM {self.QUEUE_TABLE} WITH (ROWLOCK, READPAST, UPDLOCK)
+			WHERE Processing = 0
+			ORDER BY QueueID
+		)
+		UPDATE cte
+		SET Processing = 1
+		OUTPUT inserted.QueueID, inserted.ParamsJson;
+		"""
+
+		df = self.db.DataFrameFromSQL(sql)
+		if df.empty:
+			return None
+
+		queue_id = int(df.iloc[0]["QueueID"])
+		params = self._deserialize(df.iloc[0]["ParamsJson"])
+		
+		# Remove after successful pop
+		self.db.ExecSQL(
+			f"DELETE FROM {self.QUEUE_TABLE} WHERE QueueID = :id",
+			{"id": queue_id}
+		)
+
+		if self.verbose:
+			print(f"ExtensiveTesting: Dequeued job {queue_id}")
+		return params
+
+	# ---------- Utilities ----------
+
+	def queue_depth(self) -> int:
+		sql = f"SELECT COUNT(*) FROM {self.QUEUE_TABLE} WHERE Processing = 0"
+		return int(self.db.ScalarListFromSQL(sql)[0])
+
+	def clear_queue(self):
+		self.db.ExecSQL(f"DELETE FROM {self.QUEUE_TABLE}")
+		if self.verbose:
+			print("ExtensiveTesting: Queue cleared")

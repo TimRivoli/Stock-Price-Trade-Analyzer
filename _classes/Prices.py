@@ -1,5 +1,6 @@
 import time, random, os, logging
 import numpy as np, pandas as pd
+import _classes.Constants as CONSTANTS
 from datetime import datetime, timedelta
 from pandas.tseries.offsets import BDay
 from _classes.DataIO import DataDownload, PTADatabase
@@ -8,10 +9,23 @@ from _classes.Utility import *
 
 #-------------------------------------------- Global settings -----------------------------------------------
 logger = logging.getLogger(__name__)	
-BASE_FIELD_LIST = ['Open','Close','High','Low']
-TRADING_MONTH = 21
-TRADING_YEAR = 252
-REQUIRED_LOOKBACK = (365 * 2) + 15 #Calendar days, for when dates are trimmed this amount will be privetly held for calcuations
+def _standardize_datetime_index(df: pd.DataFrame) -> pd.DataFrame | None:
+	if df is None or df.empty:
+		return None
+	df = df.copy()	
+	df.index = pd.to_datetime(df.index, errors="coerce") # Force DatetimeIndex 	
+	df = df[~df.index.isna()] # Drop bad dates		
+	if df.index.tz is not None: # Force timezone naive
+		df.index = df.index.tz_convert(None)		
+	df.index = df.index.normalize() # Normalize time to midnight		
+	df = df.sort_index() # Sort and remove duplicates
+	df = df[~df.index.duplicated(keep="last")]
+	df.ffill(inplace=True)
+	df.bfill(inplace=True)
+	if not isinstance(df.index, pd.DatetimeIndex):
+		logging.warning(f"{self.ticker} CSV index is not DatetimeIndex")
+		return None
+	return df
 
 #-------------------------------------------- Classes PriceSnapshot and PricingData -----------------------------------------------
 class PriceSnapshot:
@@ -27,6 +41,8 @@ class PriceSnapshot:
 			return cls(**dict(zip(columns, empty_values)))
 	
 class PricingData:
+	_failed_tickers = set() #Global class variable for tracking lookup failures to prevent spamming download requests
+	
 	#Historical prices for a given stock, along with statistics, and future estimated prices
 	def __init__(self, ticker:str, dataFolderRoot:str='', useDatabase:bool=True):
 		self.ticker = ticker
@@ -42,8 +58,6 @@ class PricingData:
 		self.pricesInPercentages = False
 		self.database = None
 		self._lookbackBuffer = None
-		self._last_refresh_attempt = None
-		self._refresh_cooldown = timedelta(minutes=5)
 		self._dataFolderhistoricalPrices = 'data/historical/'
 		self._dataFolderCharts = 'data/charts/'
 		self._dataFolderDailyPicks = 'data/dailypicks/'
@@ -143,13 +157,13 @@ class PricingData:
 			self.pricesNormalized = False
 			if verbose: print(' Prices have been un-normalized.')
 		x['Average'] = (x['Open'] + x['Close'] + x['High'] + x['Low'])/4
-		#x['Average'] = x.loc[:,BASE_FIELD_LIST].mean(axis=1, skipna=True) #Wow, this doesn't work.
+		#x['Average'] = x.loc[:,CONSTANTS.BASE_FIELD_LIST].mean(axis=1, skipna=True) #Wow, this doesn't work.
 		if (x['Average'] < x['Low']).any() or (x['Average'] > x['High']).any(): 
 			print(x.loc[x['Average'] < x['Low']])
 			print(x.loc[x['Average'] > x['High']])
 			print(x.loc[x['Low'] > x['High']])
 			print(self.PreNormalizationLow, self.PreNormalizationHigh, self.PreNormalizationDiff, self.PreNormalizationHigh-self.PreNormalizationLow)
-			#print(x.loc[:,BASE_FIELD_LIST].mean(axis=1))
+			#print(x.loc[:,CONSTANTS.BASE_FIELD_LIST].mean(axis=1))
 			print(' NormalizePrices: Stop! averages not computed correctly.')
 			assert(False)
 		x[['Average']] = x[['Average']].round(2)
@@ -179,18 +193,18 @@ class PricingData:
 		df['Average_3Day'] = avg.rolling(3).mean()
 		df['Average_5Day'] = avg.rolling(5).mean()
 		df[['Average_2Day', 'Average_3Day', 'Average_5Day']] = df[['Average_2Day', 'Average_3Day', 'Average_5Day']].round(2)
-		df['HP_1Mo'] = df['Average_5Day'].shift(TRADING_MONTH)
-		df['HP_2Mo'] = df['Average_5Day'].shift(TRADING_MONTH * 2)
-		df['HP_3Mo'] = df['Average_5Day'].shift(TRADING_MONTH * 3)
-		df['HP_6Mo'] = df['Average_5Day'].shift(TRADING_MONTH * 6)
-		df['HP_1Yr'] = df['Average_5Day'].shift(TRADING_YEAR)
-		df['HP_2Yr'] = df['Average_5Day'].shift(TRADING_YEAR * 2)
-		df['Gain_Monthly'] = (df['Average_3Day'] / df['Average_3Day'].shift(TRADING_MONTH)) - 1
+		df['HP_1Mo'] = df['Average_5Day'].shift(CONSTANTS.TRADING_MONTH)
+		df['HP_2Mo'] = df['Average_5Day'].shift(CONSTANTS.TRADING_MONTH * 2)
+		df['HP_3Mo'] = df['Average_5Day'].shift(CONSTANTS.TRADING_MONTH * 3)
+		df['HP_6Mo'] = df['Average_5Day'].shift(CONSTANTS.TRADING_MONTH * 6)
+		df['HP_1Yr'] = df['Average_5Day'].shift(CONSTANTS.TRADING_YEAR)
+		df['HP_2Yr'] = df['Average_5Day'].shift(CONSTANTS.TRADING_YEAR * 2)
+		df['Gain_Monthly'] = (df['Average_3Day'] / df['Average_3Day'].shift(CONSTANTS.TRADING_MONTH)) - 1
 		df['Gain_Monthly'] = df['Gain_Monthly'].fillna(0)
 		df['Losses_Monthly'] = df['Gain_Monthly'].where(df['Gain_Monthly'] < 0, 0)
-		df['LossStd_1Year'] = (df['Losses_Monthly'].rolling(TRADING_YEAR).std().fillna(0))
-		df['PC_1Year'] = (df['Average_3Day'] / df['Average_3Day'].shift(TRADING_YEAR)) - 1
-		df['PC_1Month'] = ((df['Average_3Day'] / df['Average_3Day'].shift(TRADING_MONTH)) - 1) * 12.5
+		df['LossStd_1Year'] = (df['Losses_Monthly'].rolling(CONSTANTS.TRADING_YEAR).std().fillna(0))
+		df['PC_1Year'] = (df['Average_3Day'] / df['Average_3Day'].shift(CONSTANTS.TRADING_YEAR)) - 1
+		df['PC_1Month'] = ((df['Average_3Day'] / df['Average_3Day'].shift(CONSTANTS.TRADING_MONTH)) - 1) * 12.5
 		df['PC_1Month3WeekEMA'] = ( df['PC_1Month'].ewm(span=15, adjust=True).mean())
 		pv_base = (10 * df['PC_1Year'] + 100 * df['LossStd_1Year']- BASE_OFFSET)
 		pv_base = pv_base.where(df['PC_1Month'] >= MIN_MONTH_MOMENTUM,pv_base - EARLY_EXIT_PENALTY)
@@ -200,11 +214,12 @@ class PricingData:
 		pv_cvx_scaled = pv_base ** PV_ALPHA_CONVEX
 		df['Point_Value_CONVEX'] = (pv_cvx_scaled / (1.0 + pv_cvx_scaled / PV_CAP_CONVEX)).clip(lower=0)
 		df['Point_Value'] = df['Point_Value_CONVEX']
+
 		if fullStats:
-			df['EMA_1Month'] = avg.ewm(span=TRADING_MONTH).mean()
-			df['EMA_3Month'] = avg.ewm(span=TRADING_MONTH*3).mean()
-			df['EMA_6Month'] = avg.ewm(span=TRADING_MONTH*6).mean()
-			df['EMA_1Year']  = avg.ewm(span=TRADING_YEAR).mean()
+			df['EMA_1Month'] = avg.ewm(span=CONSTANTS.TRADING_MONTH).mean()
+			df['EMA_3Month'] = avg.ewm(span=CONSTANTS.TRADING_MONTH*3).mean()
+			df['EMA_6Month'] = avg.ewm(span=CONSTANTS.TRADING_MONTH*6).mean()
+			df['EMA_1Year']  = avg.ewm(span=CONSTANTS.TRADING_YEAR).mean()
 			df['EMA_12Day'] = avg.ewm(span=12).mean()
 			df['EMA_26Day'] = avg.ewm(span=26).mean()
 			df['MACD_Line'] = df['EMA_12Day'] - df['EMA_26Day']
@@ -223,9 +238,10 @@ class PricingData:
 			df['Target'] = (df['Average_2Day'] * (1 + df['Gain_10Day'] / 9)).round(2)
 			df['Channel_High'] = df['EMA_Long'] + (avg * df['Deviation_15Day'])
 			df['Channel_Low']  = df['EMA_Long'] - (avg * df['Deviation_15Day'])
-			df['PC_1Day'] = avg.pct_change(1) * TRADING_YEAR
+			df['PC_1Day'] = avg.pct_change(1) * CONSTANTS.TRADING_YEAR
 			df['PC_3Day'] = avg.pct_change(3) * 83.33
 			df['PC_2Month'] = (df['Average_3Day'] / df['Average_3Day'].shift(41) - 1) * 6.097
+			#df['PC_2Month'] = (    (df['Average_5Day'] / df['HP_2Mo']) - 1) * 5.952
 			df['PC_3Month'] = (df['Average_3Day'] / df['Average_3Day'].shift(62) - 1) * 4.03
 			df['PC_6Month'] = (df['Average_3Day'] / df['Average_3Day'].shift(125) - 1) * 2
 			df['PC_18Month'] = (df['Average_3Day'] / df['Average_3Day'].shift(375) - 1) * 0.667
@@ -293,6 +309,7 @@ class PricingData:
 		self.predictionsLoaded = False
 		self.pricePredictions = pd.DataFrame()	#Clear any previous data
 		if not self.statsLoaded: self.CalculateStats(fullStats=True)
+		if method >= 2: method = 2
 		if method < 3:
 			minActionableSlope = 0.001
 			if method==0:	#Same as previous day
@@ -381,57 +398,57 @@ class PricingData:
 				self.pricePredictions.loc[d + BDay(i+1), 'Predicted_Low'] = l
 				self.pricePredictions.loc[d + BDay(i+1), 'Predicted_High'] = h								
 			self.pricePredictions['estAverage']	= (self.pricePredictions['Predicted_Low'] + self.pricePredictions['Predicted_High'])/2
-		elif method==3:	#Use LSTM to predict prices
-			from _classes.SeriesPrediction import StockPredictionNN
-			temporarilyNormalize = False
-			if not self.pricesNormalized:
-				temporarilyNormalize = True
-				self.NormalizePrices()
-			model = StockPredictionNN(base_model_name='Prices', model_type='LSTM')
-			field_list = ['Average']
-			model.LoadSource(sourceDF=self.historicalPrices, field_list=field_list, time_steps=1)
-			model.LoadTarget(targetDF=None, prediction_target_days=daysIntoFuture)
-			model.MakeTrainTest(batch_size=32, train_test_split=.93)
-			model.BuildModel()
-			if (not model.Load() and NNTrainingEpochs == 0): NNTrainingEpochs = TRAINING_EPOCHS
-			if (NNTrainingEpochs > 0): 
-				model.Train(epochs=NNTrainingEpochs)
-				model.Save()
-			model.Predict(True)
-			self.pricePredictions = model.GetTrainingResults(False, False)
-			self.pricePredictions = self.pricePredictions.rename(columns={'Average':'estAverage'})
-			deviation = self.historicalPrices['Deviation_15Day'].iloc[-1]/2
-			self.pricePredictions['Predicted_Low'] = self.pricePredictions['estAverage'] * (1 - deviation)
-			self.pricePredictions['Predicted_High'] = self.pricePredictions['estAverage'] * (1 + deviation)
-			if temporarilyNormalize: 
-				self.predictionsLoaded = True
-				self.NormalizePrices()
-		elif method==4:	#Use CNN to predict prices
-			from _classes.SeriesPrediction import StockPredictionNN
-			temporarilyNormalize = False
-			if not self.pricesNormalized:
-				temporarilyNormalize = True
-				self.NormalizePrices()
-			model = StockPredictionNN(base_model_name='Prices', model_type='CNN')
-			field_list = BASE_FIELD_LIST
-			model.LoadSource(sourceDF=self.historicalPrices, field_list=field_list, time_steps=daysIntoFuture*16)
-			model.LoadTarget(targetDF=None, prediction_target_days=daysIntoFuture)
-			model.MakeTrainTest(batch_size=32, train_test_split=.93)
-			model.BuildModel()
-			if (not model.Load() and NNTrainingEpochs == 0): NNTrainingEpochs = TRAINING_EPOCHS
-			if (NNTrainingEpochs > 0): 
-				model.Train(epochs=NNTrainingEpochs)
-				model.Save()
-			model.Predict(True)
-			self.pricePredictions = model.GetTrainingResults(False, False)
-			self.pricePredictions = self.pricePredictions.rename(columns={'Average':'estAverage'})
-			deviation = self.historicalPrices['Deviation_15Day'].iloc[-1]/2
-			self.pricePredictions['Predicted_Low'] = self.pricePredictions['estAverage'] * (1 - deviation)
-			self.pricePredictions['Predicted_High'] = self.pricePredictions['estAverage'] * (1 + deviation)
-			self.pricePredictions = self.pricePredictions[['Predicted_Low','estAverage','Predicted_High']]
-			if temporarilyNormalize: 
-				self.predictionsLoaded = True
-				self.NormalizePrices()
+		# elif method==3:	#Use LSTM to predict prices
+			# from _classes.SeriesPrediction import StockPredictionNN
+			# temporarilyNormalize = False
+			# if not self.pricesNormalized:
+				# temporarilyNormalize = True
+				# self.NormalizePrices()
+			# model = StockPredictionNN(base_model_name='Prices', model_type='LSTM')
+			# field_list = ['Average']
+			# model.LoadSource(sourceDF=self.historicalPrices, field_list=field_list, time_steps=1)
+			# model.LoadTarget(targetDF=None, prediction_target_days=daysIntoFuture)
+			# model.MakeTrainTest(batch_size=32, train_test_split=.93)
+			# model.BuildModel()
+			# if (not model.Load() and NNTrainingEpochs == 0): NNTrainingEpochs = TRAINING_EPOCHS
+			# if (NNTrainingEpochs > 0): 
+				# model.Train(epochs=NNTrainingEpochs)
+				# model.Save()
+			# model.Predict(True)
+			# self.pricePredictions = model.GetTrainingResults(False, False)
+			# self.pricePredictions = self.pricePredictions.rename(columns={'Average':'estAverage'})
+			# deviation = self.historicalPrices['Deviation_15Day'].iloc[-1]/2
+			# self.pricePredictions['Predicted_Low'] = self.pricePredictions['estAverage'] * (1 - deviation)
+			# self.pricePredictions['Predicted_High'] = self.pricePredictions['estAverage'] * (1 + deviation)
+			# if temporarilyNormalize: 
+				# self.predictionsLoaded = True
+				# self.NormalizePrices()
+		# elif method==4:	#Use CNN to predict prices
+			# from _classes.SeriesPrediction import StockPredictionNN
+			# temporarilyNormalize = False
+			# if not self.pricesNormalized:
+				# temporarilyNormalize = True
+				# self.NormalizePrices()
+			# model = StockPredictionNN(base_model_name='Prices', model_type='CNN')
+			# field_list = CONSTANTS.BASE_FIELD_LIST
+			# model.LoadSource(sourceDF=self.historicalPrices, field_list=field_list, time_steps=daysIntoFuture*16)
+			# model.LoadTarget(targetDF=None, prediction_target_days=daysIntoFuture)
+			# model.MakeTrainTest(batch_size=32, train_test_split=.93)
+			# model.BuildModel()
+			# if (not model.Load() and NNTrainingEpochs == 0): NNTrainingEpochs = TRAINING_EPOCHS
+			# if (NNTrainingEpochs > 0): 
+				# model.Train(epochs=NNTrainingEpochs)
+				# model.Save()
+			# model.Predict(True)
+			# self.pricePredictions = model.GetTrainingResults(False, False)
+			# self.pricePredictions = self.pricePredictions.rename(columns={'Average':'estAverage'})
+			# deviation = self.historicalPrices['Deviation_15Day'].iloc[-1]/2
+			# self.pricePredictions['Predicted_Low'] = self.pricePredictions['estAverage'] * (1 - deviation)
+			# self.pricePredictions['Predicted_High'] = self.pricePredictions['estAverage'] * (1 + deviation)
+			# self.pricePredictions = self.pricePredictions[['Predicted_Low','estAverage','Predicted_High']]
+			# if temporarilyNormalize: 
+				# self.predictionsLoaded = True
+				# self.NormalizePrices()
 		self.pricePredictions.fillna(0, inplace=True)
 		x = self.pricePredictions.join(self.historicalPrices)
 		x['PercentageDeviation'] = abs((x['Average']-x['estAverage'])/x['Average'])
@@ -641,26 +658,6 @@ class PricingData:
 		if verbose and save_path !=None: print(f" GraphData: Saved to {save_path}")
 			
 #-------------------------------------------- IO Helper functions -----------------------------------------------
-	def _load_from_csv(self):
-		csvFile = os.path.join(self._dataFolderhistoricalPrices, f"{self.ticker}.csv")
-		if not os.path.isfile(csvFile):
-			return None
-		df = pd.read_csv(csvFile, index_col=0, parse_dates=True, na_values=['nan'])
-		missing = set(BASE_FIELD_LIST) - set(df.columns)
-		if missing:
-			logging.warning(f"{self.ticker} CSV missing required fields: {missing}")
-			return None
-		df = df[BASE_FIELD_LIST].copy()
-		if df.empty:
-			return None
-		df = df.sort_index()
-		df = df[~df.index.duplicated(keep='last')]
-		df.ffill(inplace=True)
-		df.bfill(inplace=True)
-		if not isinstance(df.index, pd.DatetimeIndex):
-			logging.warning(f"{self.ticker} CSV index is not DatetimeIndex")
-			return None
-		return df
 
 	def _save_to_csv(self, df):
 		csvFile = os.path.join(self._dataFolderhistoricalPrices, f"{self.ticker}.csv")
@@ -685,7 +682,6 @@ class PricingData:
 			return None
 		sql = "SELECT [Date], [Open], [High], [Low], [Close], [Volume] FROM PricesDaily WHERE Ticker = :ticker"
 		params = {"ticker": self.ticker}
-
 		if loadStartDate is not None:
 			sql += " AND [Date] >= :start_date"
 			params["start_date"] = loadStartDate.to_pydatetime()
@@ -694,35 +690,41 @@ class PricingData:
 			sql += " AND [Date] <= :end_date"
 			params["end_date"] = loadEndDate.to_pydatetime()
 		sql += " ORDER BY [Date]"
-		if verbose:	print(f"{self.ticker}: loading from SQL [{loadStartDate}, {loadEndDate}]")
+		if verbose:	print(f"{self.ticker}: loading from SQL dates [{loadStartDate}, {loadEndDate}]")
 		df = self.database.DataFrameFromSQL(sql=sql, params=params, indexName="Date")
 		self.database.Close()
 		if df is None or df.empty or len(df) < 2:
 			return None
-		df.sort_index(inplace=True)
-		df = df[~df.index.duplicated()]
-		return df
+		return _standardize_datetime_index(df)
 
 	def _load_history_csv(self, verbose: bool = False) -> pd.DataFrame | None:
 		if verbose:
 			print(f"{self.ticker}: loading from CSV")
-		return self._load_from_csv()
+		csvFile = os.path.join(self._dataFolderhistoricalPrices, f"{self.ticker}.csv")
+		if not os.path.isfile(csvFile):
+			return None
+		df = pd.read_csv(csvFile, index_col=0, parse_dates=True, na_values=['nan'])
+		missing = set(CONSTANTS.BASE_FIELD_LIST) - set(df.columns)
+		if missing:
+			logging.warning(f"{self.ticker} CSV missing required fields: {missing}")
+			return None
+		df = df[CONSTANTS.BASE_FIELD_LIST].copy()
+		if df.empty:
+			return None
+		return _standardize_datetime_index(df)
 		
 	def _load_history_yahoo(self, verbose: bool = False) -> pd.DataFrame | None:
-		if self._last_refresh_attempt is not None:
-			if datetime.now() - self._last_refresh_attempt < self._refresh_cooldown:
-				if verbose: print(f"{self.ticker}: Yahoo refresh blocked by cooldown")
-				return None
+		if self.ticker in self._failed_tickers:
+			if verbose: print(f"{self.ticker}: Yahoo refresh blocked by cooldown")
+			return None
 		if verbose:
 			print(f"{self.ticker}: downloading full history from Yahoo")
 		dd = DataDownload()
 		df = dd.DownloadPriceDataYahooFinance(self.ticker)
-		self._last_refresh_attempt = datetime.now()
 		if df is None or df.empty or len(df) < 2:
+			self._failed_tickers.add(self.ticker)
 			return None
-		df.sort_index(inplace=True)
-		df = df[~df.index.duplicated()]
-		return df
+		return _standardize_datetime_index(df)
 
 	def _save_history(self, df: pd.DataFrame, verbose: bool = False):
 		if self.useDatabase:
@@ -747,7 +749,7 @@ class PricingData:
 			self.historyEndDate   = df.index.max()
 			self.pricesLoaded = True
 			return
-		lookbackStart = (requestedStartDate - timedelta(days=REQUIRED_LOOKBACK)	if requestedStartDate else None	)
+		lookbackStart = (requestedStartDate - timedelta(days=CONSTANTS.REQUIRED_LOOKBACK)	if requestedStartDate else None	)
 		core = df
 		if lookbackStart is not None:
 			core = core.loc[core.index >= lookbackStart]
@@ -770,7 +772,14 @@ class PricingData:
 		self._assert_lookback_validity()
 		self.pricesLoaded = True
 
-#-------------------------------------------- IO Funcitons -----------------------------------------------
+	def _generate_cash_history(self, start_date: pd.Timestamp | None, end_date: pd.Timestamp | None) -> pd.DataFrame:
+		"""Generates a synthetic DataFrame for the CASH ticker."""
+		if start_date is None: start_date = pd.Timestamp('1980-01-01') + pd.offsets.BusinessDay(1)
+		if end_date is None: end_date = pd.Timestamp.now().normalize() - pd.offsets.BusinessDay(1)
+		date_range = pd.bdate_range(start=start_date, end=end_date)	
+		df = pd.DataFrame({'Open': 1.0, 'High': 1.0, 'Low': 1.0, 'Close': 1.0, 'Volume': 1.0 }, index=date_range)
+		return df
+	#-------------------------------------------- IO Funcitons -----------------------------------------------
 
 	def LoadHistory(self, requestedStartDate:datetime=None, requestedEndDate:datetime=None, verbose:bool=False)-> bool:
 		#Note: specifying an requestedEndDate will automatically force a data update if required.  Keep that in mind for backtesting
@@ -791,12 +800,13 @@ class PricingData:
 			if verbose:
 				print(f" LoadHistory: invalid date range start date {requestedStartDate} > end date {requestedEndDate}")
 			return False
-
-		if self.useDatabase:
+		if self.ticker == CONSTANTS.CASH_TICKER:
+			df = self._generate_cash_history(requestedStartDate,	requestedEndDate)
+		elif self.useDatabase:
 			loadStartDate = None 
 			loadEndDate = requestedEndDate
 			if requestedStartDate is not None:
-				loadStartDate = requestedStartDate - timedelta(days=REQUIRED_LOOKBACK)
+				loadStartDate = requestedStartDate - timedelta(days=CONSTANTS.REQUIRED_LOOKBACK)
 			df = self._load_history_sql(loadStartDate, loadEndDate, verbose)
 		else:
 			df = self._load_history_csv(verbose)
@@ -812,7 +822,7 @@ class PricingData:
 				if (gap_bdays > 5) or (is_recent and gap_bdays > 0): #More than 5 busness days or recent
 					print(f" LoadHistory Warning: historical end date {df.index.max()} is less than requested {requestedEndDate} for {self.ticker}")
 					needs_refresh = True
-		if needs_refresh:
+		if needs_refresh and not CONSTANTS.BLOCK_REFRESHING_FOR_BACKTESTING:
 			if verbose:	print(f" {self.ticker}: refreshing from Yahoo to fill gap {gap_bdays}")
 			df_yahoo = self._load_history_yahoo(verbose)
 			if df_yahoo is None:
