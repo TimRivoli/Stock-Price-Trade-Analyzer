@@ -24,7 +24,6 @@ def isfloat(num):
 		return False
 
 def retry_sql_on_timeout(retries=3, delay=5):
-	"""Decorator to catch transient SQL connection timeouts and retry."""
 	def decorator(func):
 		@functools.wraps(func)
 		def wrapper(*args, **kwargs):
@@ -34,21 +33,21 @@ def retry_sql_on_timeout(retries=3, delay=5):
 					return func(*args, **kwargs)
 				except (OperationalError, RuntimeError, SQLAlchemyError) as e:
 					err_msg = str(e).lower()
-					if "08001" in err_msg or "timeout" in err_msg or "delay" in err_msg:
-						print(f" PTADatabase: Timeout detected. Retrying ({i+1}/{retries}) in {delay}s...")
+					if any(term in err_msg for term in ["08001", "08s01", "timeout", "link failure"]):
+						print(f" PTADatabase: Wi-Fi/Network glitch detected ({i+1}/{retries}). Retrying in {delay}s...")
 						time.sleep(delay)
 						last_ex = e
 						continue
 					raise e
 			raise last_ex
 		return wrapper
-	return decorator
+	return decorator	
 
 def SQLAlchemy_Connection_URL(server: str | None, database: str | None, username: str | None, password: str | None, use_trusted: bool = True):
 	if not server or not database:
 		return None
 	driver = "ODBC+Driver+18+for+SQL+Server"
-	params = f"driver={driver}&LoginTimeout=60"
+	params = f"driver={driver}&LoginTimeout=30&timeout=60&KeepAlive=30"
 	if username and password:
 		return f"mssql+pyodbc://{username}:{password}@{server}/{database}?{params}"
 	if use_trusted:
@@ -559,7 +558,7 @@ class DataDownload:
 class PTADatabase:
 	def _CreateEngine(self, url: str):
 		try:
-			self.engine = create_engine(url, connect_args={"trusted_connection": "yes",	"Encrypt": "no","TrustServerCertificate": "yes"	},	fast_executemany=True,	pool_pre_ping=True)
+			self.engine = create_engine(url, connect_args={'trusted_connection': 'yes', 'Encrypt': 'no', 'TrustServerCertificate': 'yes'}, 	fast_executemany=True, pool_pre_ping=True, pool_recycle=60, pool_timeout=30)
 			with self.engine.connect() as conn:
 				conn.execute(text("SELECT 1"))
 			self.Session = sessionmaker(bind=self.engine)

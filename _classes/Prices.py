@@ -181,10 +181,9 @@ class PricingData:
 			lookback_cutoff = self._lookbackBuffer.index.max()
 		MIN_EMA_TREND = -0.00175
 		MIN_MONTH_MOMENTUM = 0.00175
+		MIN_PC_GAIN_DAILY = 0.05/CONSTANTS.TRADING_YEAR
 		BASE_OFFSET = 6
 		EARLY_EXIT_PENALTY = 3
-		PV_CAP_LINEAR   = 10.0
-		PV_ALPHA_LINEAR = 1.0
 		PV_CAP_CONVEX   = 40.0
 		PV_ALPHA_CONVEX = 1.25
 		df = self._get_full_price_frame().copy()
@@ -203,17 +202,30 @@ class PricingData:
 		df['Gain_Monthly'] = df['Gain_Monthly'].fillna(0)
 		df['Losses_Monthly'] = df['Gain_Monthly'].where(df['Gain_Monthly'] < 0, 0)
 		df['LossStd_1Year'] = (df['Losses_Monthly'].rolling(CONSTANTS.TRADING_YEAR).std().fillna(0))
-		df['PC_1Year'] = (df['Average_3Day'] / df['Average_3Day'].shift(CONSTANTS.TRADING_YEAR)) - 1
 		df['PC_1Month'] = ((df['Average_3Day'] / df['Average_3Day'].shift(CONSTANTS.TRADING_MONTH)) - 1) * 12.5
-		df['PC_1Month3WeekEMA'] = ( df['PC_1Month'].ewm(span=15, adjust=True).mean())
-		pv_base = (10 * df['PC_1Year'] + 100 * df['LossStd_1Year']- BASE_OFFSET)
-		pv_base = pv_base.where(df['PC_1Month'] >= MIN_MONTH_MOMENTUM,pv_base - EARLY_EXIT_PENALTY)
-		pv_base = pv_base.where((df['PC_1Month3WeekEMA'] >= MIN_EMA_TREND) & (pv_base >= 2), 0.0)
-		pv_lin_scaled = pv_base ** PV_ALPHA_LINEAR
-		df['Point_Value_LINEAR'] = ( pv_lin_scaled / (1.0 + pv_lin_scaled / PV_CAP_LINEAR)).clip(lower=0)
-		pv_cvx_scaled = pv_base ** PV_ALPHA_CONVEX
-		df['Point_Value_CONVEX'] = (pv_cvx_scaled / (1.0 + pv_cvx_scaled / PV_CAP_CONVEX)).clip(lower=0)
-		df['Point_Value'] = df['Point_Value_CONVEX']
+		df['PC_1Month3WeekEMA'] = (df['PC_1Month'].ewm(span=15, adjust=True).mean())
+		df['PC_6Month'] = (df['Average_3Day'] / df['Average_3Day'].shift(125) - 1) * 2
+		df['PC_1Year'] = (df['Average_3Day'] / df['Average_3Day'].shift(CONSTANTS.TRADING_YEAR)) - 1
+		# pv_base = (10 * df['PC_1Year'] + 100 * df['LossStd_1Year']- BASE_OFFSET)
+		# pv_base = pv_base.where(df['PC_1Month'] >= MIN_MONTH_MOMENTUM,pv_base - EARLY_EXIT_PENALTY)
+		# pv_base = pv_base.where((df['PC_1Month3WeekEMA'] >= MIN_EMA_TREND) & (pv_base >= 2), 0.0)
+		# pv_cvx_scaled = pv_base ** PV_ALPHA_CONVEX
+		# #df['Point_Value_CONVEX'] = (pv_cvx_scaled / (1.0 + pv_cvx_scaled / PV_CAP_CONVEX)).clip(lower=0)
+		# df['Point_Value'] = pv_base ** PV_ALPHA_CONVEX 
+		score_f1 = 0.0
+		score_f2 = 0.0
+		score_f3 = 0.0
+		score_f6 = 0.0
+		score_f1 = np.where(df['PC_1Month3WeekEMA'] > MIN_PC_GAIN_DAILY, np.clip(df['PC_1Year'], 0, 2.0), 0.0)
+		score_f2 = np.clip(df['PC_1Year'], 0, 2.0)
+		score_f3 = np.where(df['PC_1Month3WeekEMA'] > 0, np.clip(df['PC_1Year'], 0, 2.0), 0.0)
+		score_f6 = np.clip(df['PC_6Month'], 0, 1.5)
+		pv_base = (25.0 * score_f1 + 25.0 * score_f2 + 25.0 * score_f3 + 25.0 * score_f6)
+		pv_base = pv_base / (1.0 + 3.0 * df['LossStd_1Year']) # Optional penalty: high downside volatility should reduce score		
+		pv_base = np.where(df['PC_1Month3WeekEMA'] < -0.02, pv_base * 0.25, pv_base) # Optional hard kill: if 1M EMA trend is negative, heavily reduce score	
+		pv_base = pd.Series(pv_base, index=df.index)
+		pv_base_clipped = pv_base.clip(lower=0.0)
+		df['Point_Value'] = pv_base_clipped.ewm(span=20, adjust=False).mean()
 
 		if fullStats:
 			df['EMA_1Month'] = avg.ewm(span=CONSTANTS.TRADING_MONTH).mean()
@@ -241,9 +253,7 @@ class PricingData:
 			df['PC_1Day'] = avg.pct_change(1) * CONSTANTS.TRADING_YEAR
 			df['PC_3Day'] = avg.pct_change(3) * 83.33
 			df['PC_2Month'] = (df['Average_3Day'] / df['Average_3Day'].shift(41) - 1) * 6.097
-			#df['PC_2Month'] = (    (df['Average_5Day'] / df['HP_2Mo']) - 1) * 5.952
 			df['PC_3Month'] = (df['Average_3Day'] / df['Average_3Day'].shift(62) - 1) * 4.03
-			df['PC_6Month'] = (df['Average_3Day'] / df['Average_3Day'].shift(125) - 1) * 2
 			df['PC_18Month'] = (df['Average_3Day'] / df['Average_3Day'].shift(375) - 1) * 0.667
 			df['PC_2Year'] = (df['Average_3Day'] / df['Average_3Day'].shift(500) - 1) / 2
 		if fancyPantsStats:
@@ -530,15 +540,14 @@ class PricingData:
 		"""
 
 		if self.historicalPrices is None or self.historicalPrices.empty:
-			if verbose:
-				print(f" GetPriceData: {self.ticker}: no historical prices loaded")
+			if verbose: print(f" GetPriceData: {self.ticker}: no historical prices loaded")
 			return None
 		forDate = ToTimestamp(forDate)
 
 		try:
 			if tradingDaysOnly:	# Exact trading-day lookup
 				if forDate not in self.historicalPrices.index:
-					if verbose: print(f" GetPriceData: {self.ticker}: {forDate} not a trading day")
+					if verbose: print(f" GetPriceData: {self.ticker}: {FormatDate(forDate)} not a trading day")
 					return None
 				row = self.historicalPrices.loc[forDate]
 			else: # Legacy behavior (calendar-date tolerant)			
@@ -547,7 +556,7 @@ class PricingData:
 					return None
 				row = self.historicalPrices.iloc[i]
 			if requireFullLookback and not row.get("HasFullLookback", True):
-				if verbose:	print(f" GetPriceData: {self.ticker}: insufficient lookback at {forDate}")
+				if verbose:	print(f" GetPriceData: {self.ticker}: insufficient lookback at {FormatDate(forDate)}")
 				return None
 			data = row[field_list]
 			if returnType == "series":
@@ -558,7 +567,7 @@ class PricingData:
 				return data.values
 		except Exception as e:
 			if verbose:
-				print(f" GetPriceData: Unable to get price data for {self.ticker} on {forDate}")
+				print(f" GetPriceData: Unable to get price data for {self.ticker} on {FormatDate(forDate)}")
 				print(e)
 			return None
 
@@ -573,22 +582,15 @@ class PricingData:
 		except:
 			result = pd.DataFrame(columns=self.historicalPrices)
 			result.fillna(0, inplace=True)
-			if verbose: print(f" GetPriceSnapshotDF: Unable to get price snapshot for {self.ticker} on {forDate}")	
+			if verbose: print(f" GetPriceSnapshotDF: Unable to get price snapshot for {self.ticker} on {FormatDate(forDate)}")	
 		result['Ticker'] = self.ticker
 		result.set_index('Ticker', inplace=True)
 		result = result.fillna(0)
 		return result
 
-	def GetPriceSnapshot(self, forDate:datetime, verbose:bool=False, regime:str="CONVEX"):
+	def GetPriceSnapshot(self, forDate:datetime, verbose:bool=False):
 		snapDF = self.GetPriceSnapshotDF(forDate)
 		sn = PriceSnapshot.generate(self.ticker, columns=snapDF.columns, valuesDF=snapDF)	
-		regime = regime.upper()
-		if regime == "CONVEX":
-			sn.Point_Value = sn.Point_Value_CONVEX
-		elif regime == "LINEAR":
-			sn.Point_Value = sn.Point_Value_LINEAR
-		else:
-			sn.Point_Value = 0.0
 		sn.Comments = ''
 		if sn.Low > sn.Channel_High: 
 			sn.Comments += 'Overbought; '
@@ -690,7 +692,7 @@ class PricingData:
 			sql += " AND [Date] <= :end_date"
 			params["end_date"] = loadEndDate.to_pydatetime()
 		sql += " ORDER BY [Date]"
-		if verbose:	print(f"{self.ticker}: loading from SQL dates [{loadStartDate}, {loadEndDate}]")
+		if verbose and loadStartDate: print(f"{self.ticker}: loading from SQL dates [{FormatDate(loadStartDate)}, {FormatDate(loadEndDate)}]")
 		df = self.database.DataFrameFromSQL(sql=sql, params=params, indexName="Date")
 		self.database.Close()
 		if df is None or df.empty or len(df) < 2:
@@ -698,8 +700,7 @@ class PricingData:
 		return _standardize_datetime_index(df)
 
 	def _load_history_csv(self, verbose: bool = False) -> pd.DataFrame | None:
-		if verbose:
-			print(f"{self.ticker}: loading from CSV")
+		if verbose: print(f"{self.ticker}: loading from CSV")
 		csvFile = os.path.join(self._dataFolderhistoricalPrices, f"{self.ticker}.csv")
 		if not os.path.isfile(csvFile):
 			return None
@@ -717,8 +718,7 @@ class PricingData:
 		if self.ticker in self._failed_tickers:
 			if verbose: print(f"{self.ticker}: Yahoo refresh blocked by cooldown")
 			return None
-		if verbose:
-			print(f"{self.ticker}: downloading full history from Yahoo")
+		if verbose:	print(f"{self.ticker}: downloading full history from Yahoo")
 		dd = DataDownload()
 		df = dd.DownloadPriceDataYahooFinance(self.ticker)
 		if df is None or df.empty or len(df) < 2:
@@ -797,8 +797,7 @@ class PricingData:
 		self.predictionsLoaded = False
 		self.pricesLoaded = False
 		if requestedStartDate and requestedEndDate and requestedStartDate > requestedEndDate:
-			if verbose:
-				print(f" LoadHistory: invalid date range start date {requestedStartDate} > end date {requestedEndDate}")
+			if verbose: print(f" LoadHistory: invalid date range start date {FormatDate(requestedStartDate)} > end date {FormatDate(requestedEndDate)}")
 			return False
 		if self.ticker == CONSTANTS.CASH_TICKER:
 			df = self._generate_cash_history(requestedStartDate,	requestedEndDate)
@@ -820,7 +819,7 @@ class PricingData:
 				gap_bdays = len(pd.bdate_range(start=dataEnd, end=requestedEndDate)) - 1 #How many business days
 				is_recent = requestedEndDate >= (latestBusinessDay - pd.offsets.BusinessDay(5))
 				if (gap_bdays > 5) or (is_recent and gap_bdays > 0): #More than 5 busness days or recent
-					print(f" LoadHistory Warning: historical end date {df.index.max()} is less than requested {requestedEndDate} for {self.ticker}")
+					if gap_bdays > 3: print(f" LoadHistory Warning: historical end date {FormatDate(df.index.max())} is less than requested {FormatDate(requestedEndDate)} for {self.ticker}")
 					needs_refresh = True
 		if needs_refresh and not CONSTANTS.BLOCK_REFRESHING_FOR_BACKTESTING:
 			if verbose:	print(f" {self.ticker}: refreshing from Yahoo to fill gap {gap_bdays}")
@@ -884,19 +883,16 @@ class PricingData:
 			df_sql = None
 
 		if df_csv is None and df_sql is None:
-			if verbose:
-				print(f"{self.ticker}: no data found in SQL or CSV")
+			if verbose:	print(f"{self.ticker}: no data found in SQL or CSV")
 			return None
 
 		if df_csv is None:
-			if verbose:
-				print(f"{self.ticker}: CSV missing, syncing SQL → CSV")
+			if verbose:	print(f"{self.ticker}: CSV missing, syncing SQL → CSV")
 			self._save_to_csv(df_sql)
 			return "SQL"
 
 		if df_sql is None:
-			if verbose:
-				print(f"{self.ticker}: SQL missing, syncing CSV → SQL")
+			if verbose:	print(f"{self.ticker}: SQL missing, syncing CSV → SQL")
 			self._save_to_sql(df_csv)
 			return "CSV"
 		csv_start, csv_end = df_csv.index.min(), df_csv.index.max()
@@ -911,25 +907,21 @@ class PricingData:
 		else:
 			authoritative = "CSV" if len(df_csv) > len(df_sql) else "SQL"
 		if authoritative == "CSV":
-			if verbose:
-				print(f"{self.ticker}: CSV authoritative, syncing → SQL")
+			if verbose:	print(f"{self.ticker}: CSV authoritative, syncing → SQL")
 			self._save_to_sql(df_csv)
 		else:
-			if verbose:
-				print(f"{self.ticker}: SQL authoritative, syncing → CSV")
+			if verbose:	print(f"{self.ticker}: SQL authoritative, syncing → CSV")
 			self._save_to_csv(df_sql)
 		return authoritative
 
 	def LoadTickerFromCSVToSQL(self, verbose: bool = True) -> bool:
-		if verbose:
-			print(f"Loading {self.ticker} CSV into SQL...")
+		if verbose:	print(f"Loading {self.ticker} CSV into SQL...")
 		if self.database is None:
 			self.database = PTADatabase()
 		df_csv = self._load_from_csv()
 
 		if df_csv is None or df_csv.empty:
-			if verbose:
-				print(f"No CSV data found for {self.ticker}")
+			if verbose:	print(f"No CSV data found for {self.ticker}")
 			return False
 		if verbose:	print(f"Saving {len(df_csv)} records to SQL")
 		self._save_to_sql(df_csv)

@@ -103,6 +103,20 @@ def FileExists(f): return 	os.path.isfile(f)
 
 def GetMyDateFormat(): return '%m/%d/%Y'
 
+from datetime import datetime
+from dateutil import parser
+
+def FormatDate(value):
+    if value is None:
+        return "None"
+    try:
+        if isinstance(value, (int, float)): return datetime.fromtimestamp(value).strftime("%Y-%m-%d")       
+        if isinstance(value, str): return parser.parse(value).strftime("%Y-%m-%d")       
+        if isinstance(value, datetime): return value.strftime("%Y-%m-%d")           
+    except Exception as e:
+        return f" FormatDate: Invalid Input: {e}"
+    return str(value)
+	
 def ToDate(given_date):
 #returns date object, converting from string or datetime if necessary
 	if type(given_date) == str:
