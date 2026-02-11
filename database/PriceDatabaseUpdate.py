@@ -130,7 +130,7 @@ def RefreshPricesWorkingSet():
 	watchlist = pd.concat([forced_included, additions],	axis=0,	sort=True)
 	watchlist = watchlist[~watchlist.index.duplicated()]
 	watchlist.sort_index(inplace=True)
-	adaptive_alloc = picker.GetAdaptiveConvex(currentDate=current_date, modelName='PricesWorkingSet') 
+	adaptive_alloc = picker.GetAdaptiveConvexPicks(currentDate=current_date) 
 	watchlist = watchlist.join(adaptive_alloc, how="left")
 	print(adaptive_alloc)
 	if CONSTANTS.CASH_TICKER in adaptive_alloc.index:
