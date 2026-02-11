@@ -7,32 +7,33 @@ from _classes.Selection import StockPicker
 from _classes.TickerLists import TickerLists
 from _classes.Utility import *
 
-def RunBuyHold(ticker: str, startDate:str, durationInYears:int, reEvaluationInterval:int=20, portfolioSize:int=100000, verbose:bool=False):
+def ModelSP500(startDate: str = '1/1/2000', durationInYears:int = 10):
 	#Baseline model to compare against.  Buy on day one, hold for the duration and then sell
-	startDate = ToDate(startDate)
-	modelName = 'BuyHold_' + (ticker) + '_' + str(startDate)[:10]
-	startDate = ToDate(startDate)
-	endDate =  AddDays(startDate, 365 * durationInYears)
-	tm = TradingModel(modelName=modelName, startingTicker=ticker, startDate=startDate, durationInYears=durationInYears, totalFunds=portfolioSize, verbose=verbose)
+	ticker = '.INX'
+	modelName = 'ModelSP500_' + str(startDate)[:10]
+	params = TradeModelParams()
+	params.startDate = startDate
+	params.durationInYears = durationInYears
+	params.saveResults = True
+	tm = TradingModel(modelName=modelName, startingTicker=ticker, startDate=params.startDate, durationInYears=params.durationInYears, totalFunds=params.portfolioSize, verbose=False)
 	if not tm.modelReady:
-		print(' RunBuyHold: Unable to initialize price history for model BuyHold date ' + str(startDate))
+		print(' ModelSP500: Unable to initialize price history for date ' + str(startDate))
 		return 0
 	else:
-		dayCounter =0
+		dayCounter = 0
 		while not tm.ModelCompleted():
-			if dayCounter ==0:
+			if dayCounter == 0:
 				cash = tm.GetAvailableCash()
 				price = tm.GetPrice(ticker)
 				if price:
 					units = int(cash/price)
 					if units > 0:
-						tm.PlaceBuy(ticker=ticker, units=units, price=price, marketOrder=True, expireAfterDays=5, verbose=verbose)
+						tm.PlaceBuy(ticker=ticker, units=units, price=price, marketOrder=True, expireAfterDays=5, verbose=params.verbose)
 			dayCounter+=1
-			if dayCounter >= reEvaluationInterval: dayCounter=0
+			if dayCounter >= params.reEvaluationInterval: dayCounter=0
 			tm.ProcessDay()
-		cash, asset = tm.GetValue()
-		if verbose: print(' RunBuyHold: Ending Value: ', cash + asset, '(Cash', cash, ', Asset', asset, ')')
-		return tm.CloseModel()	
+		params = TradeModelParams()
+		return tm.CloseModel(params)		
 
 def RunPriceMomentum(tickerList:list, startDate:str='1/1/1982', durationInYears:int=36, stockCount:int=9, reEvaluationInterval:int=20, filterOption:int=3, longHistory:int=365, shortHistory:int=90, minPercentGain=0.05, portfolioSize:int=30000, returndailyValues:bool=False, verbose:bool=False):
 	#Choose stockCount stocks with the greatest long term (longHistory days) price appreciation, using different filter options defined in the StockPicker class
@@ -76,7 +77,7 @@ def ComparePMToBH(startYear:int=1982, endYear:int=2018, durationInYears:int=1, s
 	trials = int((endYear - startYear)/durationInYears) 
 	for i in range(trials):
 		startDate = '1/2/' + str(startYear + i * durationInYears)
-		m1ev = RunBuyHold('.INX', startDate=startDate, durationInYears=durationInYears, reEvaluationInterval=reEvaluationInterval, portfolioSize=portfolioSize)
+		m1ev = ModelSP500(startDate=startDate, durationInYears=durationInYears)
 		m2ev = RunPriceMomentum(tickerList = TickerLists.SPTop70(), startDate=startDate, durationInYears=durationInYears, stockCount=stockCount, reEvaluationInterval=reEvaluationInterval, filterOption=filterOption,  longHistory=longHistory, shortHistory=shortHistory, portfolioSize=portfolioSize, returndailyValues=False, verbose=False)
 		m1pg = (m1ev/portfolioSize) - 1 
 		m2pg = (m2ev/portfolioSize) - 1
@@ -106,7 +107,7 @@ def ModelPastYear():
 	#Show how each strategy performs on the past years data
 	startDate = AddDays(GetLatestBDay(), -370)
 	RunPriceMomentum(tickerList = tickers, startDate=startDate, durationInYears=1, stockCount=5, reEvaluationInterval=20, verbose=True)
-	RunBuyHold(ticker='.INX', startDate=startDate, durationInYears=1)
+	ModelSP500(startDate=startDate, durationInYears=1)
 
 if __name__ == '__main__':
 	switch = 0
@@ -127,7 +128,7 @@ if __name__ == '__main__':
 	else:
 		tickers = TickerLists.SPTop70()
 		print('Running default option on ' + str(len(tickers)) + ' stocks.')
-		#RunBuyHold('.INX', startDate='1/1/2000', durationInYears=10, reEvaluationInterval=5, portfolioSize=30000, verbose=False)	#Baseline
+		ModelSP500(startDate='1/1/2000', durationInYears=10)	#Baseline
 		RunPriceMomentum(tickerList = tickers, startDate='1/1/2000', durationInYears=10, stockCount=5, reEvaluationInterval=20, filterOption=4, longHistory=365, shortHistory=90) #Shows how the strategy works over a long time period
 		ComparePMToBH(startYear=2000,endYear=2018, durationInYears=1, reEvaluationInterval=20, stockCount=5, filterOption=1, longHistory=365, shortHistory=60) #Runs the model in one year intervals, comparing each to BuyHold
 		#ComparePMToBH(startYear=1982,endYear=2018, durationInYears=1, reEvaluationInterval=20, stockCount=5, filterOption=2, longHistory=365, shortHistory=60) #Runs the model in one year intervals, comparing each to BuyHold
