@@ -430,6 +430,7 @@ if __name__ == '__main__':
 	duration = 10
 	ticker = 'BAC'
 	tickerList=['BAC','XOM','JNJ','GOOGL','F','MSFT'] 
+	portfolioSize=30000
 	RunModel('Seasonal', RunTradingModelSeasonal, ticker, startDate, duration, portfolioSize, verbose=False)
 	PlotModeldailyValue('Trending',RunTradingModelTrending, ticker,'1/1/2005',15)
 	RunModel('BuyAndHold', RunTradingModelBuyHold, '.INX', '1/1/2020', 1, 100000, verbose=False)
