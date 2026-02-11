@@ -7,13 +7,13 @@ from _classes.Selection import StockPicker
 from _classes.TickerLists import TickerLists
 from _classes.Utility import *
 
-def RunBuyHold(ticker: str, startDate:str, durationInYears:int, reEvaluationInterval:int=20, portfolioSize:int=100000, trancheSize:int=8181, verbose:bool=False):
+def RunBuyHold(ticker: str, startDate:str, durationInYears:int, reEvaluationInterval:int=20, portfolioSize:int=100000, verbose:bool=False):
 	#Baseline model to compare against.  Buy on day one, hold for the duration and then sell
 	startDate = ToDate(startDate)
 	modelName = 'BuyHold_' + (ticker) + '_' + str(startDate)[:10]
 	startDate = ToDate(startDate)
 	endDate =  AddDays(startDate, 365 * durationInYears)
-	tm = TradingModel(modelName=modelName, startingTicker=ticker, startDate=startDate, durationInYears=durationInYears, totalFunds=portfolioSize, trancheSize=trancheSize, verbose=verbose)
+	tm = TradingModel(modelName=modelName, startingTicker=ticker, startDate=startDate, durationInYears=durationInYears, totalFunds=portfolioSize, verbose=verbose)
 	if not tm.modelReady:
 		print(' RunBuyHold: Unable to initialize price history for model BuyHold date ' + str(startDate))
 		return 0
@@ -21,14 +21,16 @@ def RunBuyHold(ticker: str, startDate:str, durationInYears:int, reEvaluationInte
 		dayCounter =0
 		while not tm.ModelCompleted():
 			if dayCounter ==0:
-				i=0
-				while tm.TranchesAvailable() and i < 100: 
-					tm.PlaceBuy(ticker=ticker, price=1, marketOrder=True, expireAfterDays=10, verbose=verbose)
-					i +=1
+				cash = tm.GetAvailableCash()
+				price = tm.GetPrice(ticker)
+				if price:
+					units = int(cash/price)
+					if units > 0:
+						tm.PlaceBuy(ticker=ticker, units=units, price=price, marketOrder=True, expireAfterDays=5, verbose=verbose)
 			dayCounter+=1
 			if dayCounter >= reEvaluationInterval: dayCounter=0
 			tm.ProcessDay()
-		cash, asset = tm.Value()
+		cash, asset = tm.GetValue()
 		if verbose: print(' RunBuyHold: Ending Value: ', cash + asset, '(Cash', cash, ', Asset', asset, ')')
 		return tm.CloseModel()	
 
@@ -41,7 +43,7 @@ def RunPriceMomentum(tickerList:list, startDate:str='1/1/1982', durationInYears:
 	picker = StockPicker(startDate, endDate) 
 	picker.AlignToList(tickerList)
 	modelName = f"PriceMomentumShort_longHistory_{longHistory}_shortHistory_{shortHistory}_reeval_{reEvaluationInterval}_stockcount_{stockCount}_filter{filterOption}_{minPercentGain}"
-	tm = TradingModel(modelName=modelName, startingTicker='.INX', startDate=startDate, durationInYears=durationInYears, totalFunds=portfolioSize, trancheSize=portfolioSize/stockCount, verbose=verbose)
+	tm = TradingModel(modelName=modelName, startingTicker='.INX', startDate=startDate, durationInYears=durationInYears, totalFunds=portfolioSize, verbose=verbose)
 	dayCounter = 0
 	currentYear = 0
 	if not tm.modelReady:
@@ -51,7 +53,7 @@ def RunPriceMomentum(tickerList:list, startDate:str='1/1/1982', durationInYears:
 		while not tm.ModelCompleted():
 			currentDate =  tm.currentDate
 			if dayCounter ==0:
-				c, a = tm.Value()
+				c, a = tm.GetValue()
 				candidates = picker.GetHighestPriceMomentum(currentDate, stocksToReturn=stockCount, filterOption=filterOption, minPercentGain=minPercentGain)
 				candidates = candidates.groupby(level=0)[['Point_Value']].sum().rename(columns={'Point_Value': 'TargetHoldings'})
 				tm.AlignPositions(targetPositions=candidates)
@@ -125,7 +127,7 @@ if __name__ == '__main__':
 	else:
 		tickers = TickerLists.SPTop70()
 		print('Running default option on ' + str(len(tickers)) + ' stocks.')
-		RunBuyHold('.INX', startDate='1/1/2000', durationInYears=10, reEvaluationInterval=5, portfolioSize=30000, verbose=False)	#Baseline
+		#RunBuyHold('.INX', startDate='1/1/2000', durationInYears=10, reEvaluationInterval=5, portfolioSize=30000, verbose=False)	#Baseline
 		RunPriceMomentum(tickerList = tickers, startDate='1/1/2000', durationInYears=10, stockCount=5, reEvaluationInterval=20, filterOption=4, longHistory=365, shortHistory=90) #Shows how the strategy works over a long time period
 		ComparePMToBH(startYear=2000,endYear=2018, durationInYears=1, reEvaluationInterval=20, stockCount=5, filterOption=1, longHistory=365, shortHistory=60) #Runs the model in one year intervals, comparing each to BuyHold
 		#ComparePMToBH(startYear=1982,endYear=2018, durationInYears=1, reEvaluationInterval=20, stockCount=5, filterOption=2, longHistory=365, shortHistory=60) #Runs the model in one year intervals, comparing each to BuyHold

@@ -1,3 +1,5 @@
+from datetime import datetime
+from dateutil.relativedelta import relativedelta
 from _classes.Graphing import PlotHelper
 from _classes.Prices import PricingData, PriceSnapshot
 from _classes.Selection import StockPicker
@@ -33,8 +35,28 @@ def DownloadAndSaveStocksWithStats(tickerList:list, startDate:str = None, endDat
 def GraphTimePeriod(ticker:str, endDate:str, days:int):
 	prices = PricingData(ticker)
 	if prices.LoadHistory():
-		prices.GraphData(endDate=endDate, daysToGraph=days, graphTitle=None, includePredictions=False, saveToFile=True, fileNameSuffix=None, verbose=True)
+		prices.GraphData(endDate=endDate, daysToGraph=days, graphTitle=None, includePredictions=False, saveToFile=True, fileNameSuffix=None, verbose=False)
 	
+def GraphHistoricalDrops():
+	ticker = '.INX'
+	crash_milestones = [
+		(datetime(1987, 8, 25), datetime(1987, 12, 4)),   # Black Monday
+		(datetime(2000, 3, 24), datetime(2002, 10, 9)),   # Dot-Com Bust
+		(datetime(2007, 10, 9), datetime(2009, 3, 9)),    # Financial Crisis
+		(datetime(2020, 2, 19), datetime(2020, 3, 23))    # COVID-19
+	]
+	crash_troughs = [m[1] for m in crash_milestones]
+	print(f"Trough Dates (The bottom): {crash_troughs}")
+	prices = PricingData(ticker)
+	if prices.LoadHistory():
+		for d in crash_troughs:
+			endDate = d
+			for duration in [60, 120, 365]:
+				prices.GraphData(endDate=endDate, daysToGraph=duration, graphTitle=None, includePredictions=False, saveToFile=True, fileNameSuffix=None, verbose=False)
+			endDate += relativedelta(months=6)
+			for duration in [60, 120, 365]:
+				prices.GraphData(endDate=endDate, daysToGraph=duration, graphTitle=None, includePredictions=False, saveToFile=True, fileNameSuffix=None, verbose=False)
+
 def PriceCheck(startDate: str, Ticker:str):
 	startDate = ToDate(startDate)
 	endDate = AddDays(startDate, 30)
@@ -63,12 +85,13 @@ def ShowPicks(tickerList: list):
 	print(picks)
 		
 if __name__ == '__main__': 
-	tickerList = TickerLists.StarterList()
-	print(f"Loading {len(tickerList)} stocks..")
-	DownloadAndSaveStocks(tickerList)
-	print(f"Saving stats to _dataFolderhistoricalPrices")
-	DownloadAndSaveStocksWithStats(tickerList)
-	for year in range(1980,2020,2): GraphTimePeriod(ticker = '.INX', endDate = '1/3/' + str(year), days=120)
-	PlotAnnualPerformance('TSLA')
-	PlotAnnualPerformance('VIGRX')
-	ShowPicks(tickerList)
+	# tickerList = TickerLists.StarterList()
+	# print(f"Loading {len(tickerList)} stocks..")
+	# DownloadAndSaveStocks(tickerList)
+	# print(f"Saving stats to _dataFolderhistoricalPrices")
+	# DownloadAndSaveStocksWithStats(tickerList)
+	# for year in range(1980,2020,2): GraphTimePeriod(ticker = '.INX', endDate = '1/3/' + str(year), days=120)
+	# PlotAnnualPerformance('TSLA')
+	# PlotAnnualPerformance('VIGRX')
+	# ShowPicks(tickerList)
+	GraphHistoricalDrops()

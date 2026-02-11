@@ -2,426 +2,440 @@
 #Then give it a date range, some money, and a stock, it will execute a strategy and return the results
 #WARNING: "Far more money has been lost by investors preparing for corrections or trying to anticipate corrections than has been lost in corrections themselves." - Peter Lynch.
 import pandas as pd
-import _classes.Constants as CONSTANTS
 from _classes.Graphing import PlotHelper
-from _classes.Prices import PricingData, PriceSnapshot
-from _classes.Trading import TradingModel, TradeModelParams, Position
-from _classes.Selection import StockPicker
-from _classes.TickerLists import TickerLists
+from _classes.PriceTradeAnalyzer import TradingModel, PriceSnapshot, Position
 from _classes.Utility import *
 
 #------------------------------------------- Global model functions  ----------------------------------------------		
-def RunModel(ticker:str, modelFunction, params: TradeModelParams):
+def RecordPerformance(ModelName, StartDate, EndDate, StartValue, EndValue, TradeCount, Ticker):
+	#Record trade performance to output file, each model run will append to the same files so you can easily compare the results
+	filename = 'data/trademodel/PerfomanceComparisons.csv'
+	try:
+		if FileExists(filename):
+			f = open(filename,"a")
+		else:
+			f = open(filename,"w+")
+			f.write('ModelName, StartDate, EndDate, StartValue, EndValue, TotalPercentageGain, TradeCount, Ticker, TimeStamp\n')
+		TotalPercentageGain = (EndValue/StartValue)-1
+		f.write(ModelName + ',' + str(StartDate) + ',' + str(EndDate) + ',' + str(StartValue) + ',' + str(EndValue) + ',' + str(TotalPercentageGain) + ',' + str(TradeCount) + ',' + Ticker + ',' + str(GetLatestBDay()) + '\n')
+		f.close() 
+	except:
+		print('Unable to write performance report to ' + filename)
+
+def RunModel(modelName:str, modelFunction, ticker:str, startDate:str, durationInYears:int, portfolioSize:int, saveHistoryToFile:bool=True, returndailyValues:bool=False, verbose:bool=False):	
 	#Performs the logic of the given model over a period of time to evaluate the performance
-	modelName = params.modelName + '_' + ticker
+	modelName = modelName + '_' + ticker
 	print('Running model ' + modelName)
-	tm = TradingModel(modelName=modelName, startingTicker=ticker, startDate = params.startDate, durationInYears = params.durationInYears, totalFunds = params.portfolioSize, trancheSize=params.trancheSize, verbose=params.verbose)
+	tm = TradingModel(modelName=modelName, startingTicker=ticker, startDate=startDate, durationInYears=durationInYears, totalFunds=portfolioSize, verbose=verbose)
+	startDate = tm.modelStartDate
+	endDate = tm.modelEndDate
 	if not tm.modelReady:
-		print('Unable to initialize price history for model for ' + str(params.startDate))
-		return params.portfolioSize
+		print('Unable to initialize price history for model for ' + str(startDate))
+		if returndailyValues: return pd.DataFrame()
+		else:return portfolioSize
 	else:
 		while not tm.ModelCompleted():
 			modelFunction(tm, ticker)
 			tm.ProcessDay()
-			if tm.AccountingError(): 
-				print('Accounting error.  Negative cash balance.  Terminating model run.', tm.currentDate)
-				tm.PositionSummary()
-				#tm.PrintPositions()
-				break
-		return tm.CloseModel(params)	#return simple closing value to view net effect, detail gets saved with saveHistoryToFile
+		cash, asset = tm.GetValue()
+		tradeCount = len(tm.tradeHistory)
+		ticker = tm.priceHistory[0].ticker
+		RecordPerformance(ModelName=modelName, StartDate=startDate, EndDate=tm.currentDate, StartValue=portfolioSize, EndValue=(cash + asset), TradeCount=tradeCount, Ticker=ticker)
+		closing_value = tm.CloseModel()
+		if returndailyValues:
+			return tm.GetDailyValue()   							#return daily value for model comparisons
+		else:
+			return closing_value
 
-def ExtendedDurationTest(ticker:str, modelFunction, params: TradeModelParams):
+def ExtendedDurationTest(modelName:str, modelFunction, ticker:str, portfolioSize:int=30000):
 	#test the model over an extended range of periods and years, output result to .csv file
 	TestResults = pd.DataFrame([['1/1/1982','1/1/1982',0,0]], columns=list(['StartDate','EndDate','Duration','EndingValue']))
 	TestResults.set_index(['StartDate'], inplace=True)		
-	params.verbose = False
 	for duration in range(1,10,2):
 		for year in range(1982,2017):
 			for month in range(1,12,3):
 				startDate = str(month) + '/1/' + str(year)
 				endDate = str(month) + '/1/' + str(year + duration)
-				params.startDate = startDate
-				params.durationInYears = duration
-				endValue = RunModel(ticker, modelFunction, params)
+				endValue = RunModel(modelName, modelFunction, ticker, startDate, duration, portfolioSize, saveHistoryToFile=False, returndailyValues=False, verbose=False)
 				y = pd.DataFrame([[startDate,endDate,duration,endValue]], columns=list(['StartDate','EndDate','Duration','EndingValue']))
 				TestResults = TestResults.append(y, ignore_index=True)
 	TestResults.to_csv('data/trademodel/' + modelName + '_' + ticker +'_extendedTest.csv')
 	print(TestResults)
 
-def CompareModels(modelOneName:str, modelOneFunction, modelTwoName:str, modelTwoFunction, ticker:str, params: TradeModelParams):
+def PlotModeldailyValue(modelName:str, modelFunction, ticker:str, startDate:str, durationInYears:int, portfolioSize:int=30000):
+	#Plot daily returns of the given model
+	m1 = RunModel(modelName, modelFunction, ticker, startDate, durationInYears, portfolioSize, saveHistoryToFile=True, returndailyValues=True, verbose=False)
+	if m1.shape[0] > 0:
+		print(m1)
+		plot = PlotHelper()
+		plot.PlotDataFrame(m1, modelName + ' Daily Value (' + ticker + ')', 'Date', 'Value') 
+
+def CompareModels(modelOneName:str, modelOneFunction, modelTwoName:str, modelTwoFunction, ticker:str, startDate:str, durationInYears:int, portfolioSize:int=30000):
 	#Compare two models to measure the difference in returns
-	params.modelName = modelOneName
-	m1 = RunModel(ticker, modelOneFunction, params)
-	params.modelName = modelTwoName
-	m2 = RunModel(ticker, modelTwoFunction, params)
-	print(f"{modelOneName}:{m1} {modelTwoName}:{m2}")
+	m1 = RunModel(modelOneName, modelOneFunction, ticker, startDate, durationInYears, portfolioSize, saveHistoryToFile=False, returndailyValues=True, verbose=False)
+	m2 = RunModel(modelTwoName, modelTwoFunction, ticker, startDate, durationInYears, portfolioSize, saveHistoryToFile=False, returndailyValues=True, verbose=False)
+	if m1.shape[0] > 0 and m2.shape[0] > 0:
+		m1 = m1.join(m2, lsuffix='_' + modelOneName, rsuffix='_' + modelTwoName)
+		plot = PlotHelper()
+		plot.PlotDataFrame(m1, ticker + ' Model Comparison', 'Date', 'Value') 
 
 #------------------------------------------- Your models go here ----------------------------------------------		
 #Each trading function should define what actions should be taken in the given day from the TradingModel, Buy/Sell/Hold, given the current and recent price information
 
-def ModelSP500(startDate: str = '1/1/2000', durationInYears:int = 10):
-	#Baseline model to compare against.  Buy on day one, hold for the duration and then sell
-	ticker = '.INX'
-	modelName = 'ModelSP500_' + str(startDate)[:10]
-	params = TradeModelParams()
-	params.startDate = startDate
-	params.durationInYears = durationInYears
-	params.saveResults = True
-	tm = TradingModel(modelName=modelName, startingTicker=ticker, startDate=params.startDate, durationInYears=params.durationInYears, totalFunds=params.portfolioSize, trancheSize=params.trancheSize, verbose=False)
-	if not tm.modelReady:
-		print(' ModelSP500: Unable to initialize price history for date ' + str(startDate))
-		return 0
-	else:
-		dayCounter =0
-		while not tm.ModelCompleted():
-			if dayCounter ==0:
-				i=0
-				while tm.TranchesAvailable() and i < 100: 
-					tm.PlaceBuy(ticker=ticker, price=1, marketOrder=True, expireAfterDays=5, verbose=params.verbose)
-					i +=1
-			dayCounter+=1
-			if dayCounter >= params.reEvaluationInterval: dayCounter=0
-			tm.ProcessDay()
-		cash, asset = tm.Value()
-		if params.verbose: print(' ModelSP500: Ending Value: ', cash + asset, '(Cash', cash, ', Asset', asset, ')')
-		params = TradeModelParams()
-		return tm.CloseModel(params)		
-
 def RunTradingModelBuyHold(tm: TradingModel, ticker:str):
 #Baseline model, buy and hold
-	sn = tm.GetPriceSnapshot()
-	if tm.verbose: print(sn.Date, sn.Target)
-	if not sn == None:
-		for i in range(tm._trancheCount):
-			available, buyPending, sellPending, longPositions = tm.PositionSummary()				
-			if tm.TranchesAvailable() > 0 and tm.FundsAvailable() > sn.High: tm.PlaceBuy(ticker=ticker, price=sn.Low, marketOrder=True)
-			if available ==0: break
+	cash = tm.GetAvailableCash()
+	price = tm.GetPrice(ticker)
+	if price:
+		units = int(cash/price)
+		if units > 0:
+			tm.PlaceBuy(ticker=ticker, units=units, price=price, marketOrder=True, expireAfterDays=5, verbose=False)
 
 def RunTradingModelSeasonal(tm: TradingModel, ticker:str):
-	#Buy in November, sell in May
-	#BuyMonth = 11
-	#SellMonth = 5
+	#Buy in March, sell in September
+	buy_date  = ToDateTime('03/15/' + str(tm.currentDate.year))
+	sell_date = ToDateTime('9/10/' + str(tm.currentDate.year))
+	#available_cash, buy_pending_count, sell_pending_count, long_position_count  = tm.GetPositionSummary()
+	if (tm.currentDate >= sell_date) or (tm.currentDate <= buy_date):
+		tm.SellAllPositions()
+	else:
+		cash = tm.GetAvailableCash()
+		price = tm.GetPrice(ticker)			
+		if price:
+			units = int(cash/price)
+			if units > 0:
+				tm.PlaceBuy(ticker=ticker, units=units, price=price, marketOrder=True, expireAfterDays=3, verbose=False)
 
-	#Buy in May, sell in November
-	BuyMonth = 5
-	SellMonth = 11
-
-	#Buy in March, sell in February, does really poorly
-	#BuyMonth = 3
-	#SellMonth = 2
-
-	sn = tm.GetPriceSnapshot()
-	if not sn == None:
-		low = sn.Low
-		high = sn.High
-		m = tm.currentDate.month
-		for i in range(tm._trancheCount):
-			available, buyPending, sellPending, longPositions = tm.PositionSummary()				
-			if m >= SellMonth and m < BuyMonth:
-				if longPositions > 0: 
-					tm.PlaceSell(ticker=ticker, price=high, marketOrder=True)
-				else:
-					break
-			else:
-				if available > 0 and tm.FundsAvailable() > high: 
-					tm.PlaceBuy(ticker=ticker, price=low, marketOrder=True)
-				else:
-					break
-
-def RunTradingModelFirstHalfOfMonth(tm: TradingModel, ticker:str):
-#From Robert Ariel's observations, most gains are in the first half of the month
-	BuyDay = 25	 #Buy at the end of the month, after the 25th
-	SellDay = 15 #Sell mid month, after the 15th	
-	sn = tm.GetPriceSnapshot()
-	if not sn == None:
-		low = sn.Low
-		high = sn.High
-		d = tm.currentDate.day
-		for i in range(tm._trancheCount):
-			available, buyPending, sellPending, longPositions = tm.PositionSummary()				
-			if d >= BuyDay or d < 3:
-				if available > 0 and tm.FundsAvailable() > high: 
-					tm.PlaceBuy(ticker=ticker, price=low, marketOrder=True)
-				else:
-					break
-			elif d >= SellDay:
-				if longPositions > 0:
-					tm.PlaceSell(ticker=ticker, price=high, marketOrder=True)
-				else:
-					break
-			else:
-				break
+def RunTradingModelFirstHalfOfMonth(tm: TradingModel, ticker: str):
+	# From Robert Ariel's observations, most gains are in the first half of the month
+	buy_day = 25   # Buy at the end of the month, after the 25th
+	sell_day = 15  # Sell mid month, after the 15th
+	sn = tm.GetPriceSnapshot(ticker)
+	if sn is None:
+		return
+	d = tm.currentDate.day
+	if d >= buy_day or d < 3:
+		cash = tm.GetAvailableCash()
+		price = sn.High
+		if price and price > 0:
+			units = int(cash / price)
+			if units > 0:
+				tm.PlaceBuy(ticker=ticker, units=units, price=price, marketOrder=True, expireAfterDays=3, verbose=False)
+	elif d >= sell_day:
+		tm.SellAllPositions(ticker=ticker)
 				
-def RunTradingTestTrading(tm: TradingModel, ticker:str):
-#Test effect of just trading back and forth on profit
-	sn = tm.GetPriceSnapshot()
-	if not sn == None:
-		low = sn.Low
-		high = sn.High
-		d = tm.currentDate.day
-		for i in range(tm._trancheCount):
-			available, buyPending, sellPending, longPositions = tm.PositionSummary()				
-			if (d % 5) == 0:
-				if available > 0 and tm.FundsAvailable() > high: 
-					tm.PlaceBuy(ticker=ticker, price=low, marketOrder=True)
-				else:
-					break
-			else:
-				if longPositions > 0:
-					tm.PlaceSell(ticker=ticker, price=high, marketOrder=True)
-				else:
-					break
+def RunTradingTestTrading(tm: TradingModel, ticker: str):
+	# Test effect of just trading back and forth on profit
+	sn = tm.GetPriceSnapshot(ticker)
+	if sn is None:
+		return
+	low = sn.Low
+	high = sn.High
+	d = tm.currentDate.day
+	available_cash, buy_pending_count, sell_pending_count, long_position_count = tm.GetPositionSummary()
+	# Buy every 5th day
+	if (d % 5) == 0:
+		if buy_pending_count == 0 and tm.GetAvailableCash() > high:
+			cash = tm.GetAvailableCash()
+			price = high
+			units = int(cash / price)
+			if units > 0:
+				tm.PlaceBuy(ticker=ticker, price=price, units=units, marketOrder=True, expireAfterDays=3)
+	# Sell all other days
+	else:
+		if long_position_count > 0 and sell_pending_count == 0:
+			total_units = sum(p.units for p in tm._positions if p.ticker == ticker and p.dateSellOrderPlaced is None)
+			if total_units > 0:
+				tm.PlaceSell(ticker=ticker, units=total_units, price=high, marketOrder=True, expireAfterDays=3)
 
-def RunTradingModelTrending(tm: TradingModel, ticker:str):
-	#This compares the slope of short term (6 day) and long term (18 day) exponential moving averages to determine buying opportunities.  Positive, negative, or flat slopes
-	#trend states: ++,--,+-,-+,Flat
-	#Buy on positive trends, sell on negative
-	minActionableSlope = 0.002	#Less than this is considered flat
+def RunTradingModelTrending(tm: TradingModel, ticker: str):
+	# Buy on positive trends, sell on negative trends
+	minActionableSlope = 0.002
 	prevTrendState, trendDuration = tm.GetCustomValues()
-	if prevTrendState == None: prevTrendState = ''
-	if trendDuration == None: trendDuration = 0
-	p = tm.GetPriceSnapshot()
-	if not p == None:
-		available, buyPending, sellPending, longPositions = tm.PositionSummary()
-		maxPositions = available + buyPending + sellPending + longPositions
-		targetBuy = p.Target * (1 + p.Deviation_5Day/2)
-		targetSell = p.Target * (1 - p.Deviation_5Day/2)
-		for i in range(tm._trancheCount):
-			if p.EMA_LongSlope >= minActionableSlope and p.EMA_ShortSlope >= minActionableSlope:	 
-				trendState='++' #++	Positive trend, 100% long
-				if available > 0 :tm.PlaceBuy(ticker=ticker, price=targetBuy, marketOrder=True)	
-			elif p.EMA_LongSlope >= minActionableSlope and p.EMA_ShortSlope < minActionableSlope:  
-				trendState='+-' #+- Correction or early downturn, recent price drop
-				if p.Low > p.Channel_High:   #Over Bought
-					pass
-				elif p.Low < p.Channel_Low and p.High > p. Channel_Low: #Deep correction
-					pass
-				else:
-					pass
-			elif p.EMA_LongSlope < -minActionableSlope and p.EMA_ShortSlope < -minActionableSlope: 
-				trendState='--' #-- Negative trend, get out
-				if p.High < p.Channel_Low: #Over sold
-					pass
-				elif p.Low < p.Channel_Low and p.High > p.Channel_Low: #Low below channel, possible early up or continuation of trend
-					pass
-				tm.PlaceSell(ticker=ticker, price=targetSell, marketOrder=True)
-			elif p.EMA_LongSlope < (-1 * minActionableSlope) and p.EMA_ShortSlope < (-1 * minActionableSlope): #-+ Bounce or early recovery
-				trendState='-+' #Short term positive, long term not yet
-				if p.High < p.Channel_Low: #Over sold
-					pass
-				elif p.Low < p.Channel_Low and p.High > p.Channel_Low: #Straddle Low
-					pass
-				else:
-					pass
-				if available > 0 :tm.PlaceBuy(ticker=ticker, price=targetBuy, marketOrder=True)	
-			else:																	    			 
-				trendState='Flat' #flat, target buy and sell to pass the time
-				if p.Low > p.Channel_High:   #Over Bought, targeted sell
-					if longPositions > 0 and sellPending < 2 :tm.PlaceSell(ticker=ticker, price=targetSell, marketOrder=False)	
-				elif p.High < p.Channel_Low: #Over sold, targeted buy
-					if available > 0 and buyPending < 2 :tm.PlaceBuy(ticker=ticker, price=targetBuy, marketOrder=False)	
-				else:
-					pass
-		tm.SetCustomValues(trendState, trendDuration)
-		if trendState == prevTrendState: 
-			trendDuration = trendDuration + 1
-		else:
-			trendDuration=0
-		tm.SetCustomValues(prevTrendState, trendDuration)
+	if prevTrendState is None: prevTrendState = ''
+	if trendDuration is None: trendDuration = 0
+	p = tm.GetPriceSnapshot(ticker)
+	if p is None:
+		return
+	available_cash, buy_pending_count, sell_pending_count, long_position_count = tm.GetPositionSummary()
+	targetBuy = p.Target * (1 + p.Deviation_5Day / 2)
+	targetSell = p.Target * (1 - p.Deviation_5Day / 2)
+	trendState = prevTrendState
+
+	# ---- Determine trend state ----
+	if p.EMA_LongSlope >= minActionableSlope and p.EMA_ShortSlope >= minActionableSlope:
+		trendState = '++'
+	elif p.EMA_LongSlope >= minActionableSlope and p.EMA_ShortSlope < minActionableSlope:
+		trendState = '+-'
+	elif p.EMA_LongSlope < -minActionableSlope and p.EMA_ShortSlope < -minActionableSlope:
+		trendState = '--'
+	elif p.EMA_LongSlope < (-1 * minActionableSlope) and p.EMA_ShortSlope < (-1 * minActionableSlope):
+		trendState = '-+'
+	else:
+		trendState = 'Flat'
+
+	# ---- Execute trading action ----
+	if trendState == '++':
+		# go long aggressively
+		if buy_pending_count == 0 and available_cash > p.High:
+			units = int(available_cash / p.High)
+			if units > 0:
+				tm.PlaceBuy(ticker=ticker, price=targetBuy, units=units, marketOrder=True, expireAfterDays=3)
+	elif trendState == '--':
+		# liquidate
+		if long_position_count > 0 and sell_pending_count == 0:
+			total_units = sum(pos.units for pos in tm._positions if pos.ticker == ticker and pos.dateSellOrderPlaced is None)
+			if total_units > 0:
+				tm.PlaceSell(ticker=ticker, units=total_units, price=targetSell, marketOrder=True, expireAfterDays=3)
+	elif trendState == '-+':
+		# early recovery: buy if not already fully invested
+		if buy_pending_count == 0 and available_cash > p.High:
+			units = int(available_cash / p.High)
+			if units > 0:
+				tm.PlaceBuy(ticker=ticker, price=targetBuy, units=units, marketOrder=True, expireAfterDays=3)
+	elif trendState == 'Flat':
+		# mild swing trading behavior
+		if p.Low > p.Channel_High:
+			# overbought -> sell
+			if long_position_count > 0 and sell_pending_count < 2:
+				total_units = sum(pos.units for pos in tm._positions if pos.ticker == ticker and pos.dateSellOrderPlaced is None)
+				if total_units > 0:
+					tm.PlaceSell(ticker=ticker, units=total_units, price=targetSell, marketOrder=False, expireAfterDays=5)
+		elif p.High < p.Channel_Low:
+			# oversold -> buy
+			if available_cash > p.High and buy_pending_count < 2:
+				units = int((available_cash * 0.50) / p.High)
+				if units > 0:
+					tm.PlaceBuy(ticker=ticker, price=targetBuy, units=units, marketOrder=False, expireAfterDays=5)
+
+	# ---- Store trend state duration ----
+	if trendState == prevTrendState:
+		trendDuration += 1
+	else:
+		trendDuration = 0
+	tm.SetCustomValues(trendState, trendDuration)
 					
-def RunTradingModelSwingTrend(tm: TradingModel, ticker:str):
-	#Combines Trending with Swing Trade in an attempt to increase profits during flat period in particular
-	#70% long, 30% play money
-	#trend states: ++,--,+-,-+,Flat
+def RunTradingModelSwingTrend(tm: TradingModel, ticker: str):
+	# Combines Trending with Swing Trade in an attempt to increase profits during flat period in particular
+	# 70% long, 30% play money
+	minActionableSlope = 0.002
+
+	prevTrendState, trendDuration = tm.GetCustomValues()
+	if prevTrendState is None: prevTrendState = ''
+	if trendDuration is None: trendDuration = 0
+
+	p = tm.GetPriceSnapshot(ticker)
+	if p is None:
+		return
+
+	available_cash, buy_pending_count, sell_pending_count, long_position_count = tm.GetPositionSummary()
+
+	targetBuy = p.Target * (1 + p.Deviation_5Day / 2)
+	targetSell = p.Target * (1 - p.Deviation_5Day / 2)
+
+	trendState = prevTrendState
+
+	def BuyPctCash(pct: float, price: float, market: bool, expire: int):
+		cash = tm.GetAvailableCash()
+		budget = cash * pct
+		if price <= 0 or budget <= 0:
+			return
+		units = int(budget / p.High)
+		if units > 0:
+			tm.PlaceBuy(ticker=ticker, price=price, units=units, marketOrder=market, expireAfterDays=expire)
+
+	def SellPctHoldings(pct: float, price: float, market: bool, expire: int):
+		open_units = sum(pos.units for pos in tm._positions if pos.ticker == ticker and pos.dateSellOrderPlaced is None)
+		if open_units <= 0:
+			return
+		units = int(open_units * pct)
+		units = max(units, 1)
+		units = min(units, open_units)
+		tm.PlaceSell(ticker=ticker, units=units, price=price, marketOrder=market, expireAfterDays=expire)
+
+	# ---------------- TREND LOGIC ----------------
+	if p.EMA_LongSlope >= minActionableSlope and p.EMA_ShortSlope >= minActionableSlope:
+		# ++ Positive trend, stay long
+		trendState = '++'
+		if buy_pending_count < 2 and tm.GetAvailableCash() > p.High:
+			BuyPctCash(pct=0.35, price=targetBuy, market=True, expire=3)
+
+	elif p.EMA_LongSlope >= minActionableSlope and p.EMA_ShortSlope < minActionableSlope:
+		# +- Correction / early downturn, trim highs
+		trendState = '+-'
+		if p.Low > p.Channel_High:
+			if sell_pending_count < 3 and long_position_count > 0:
+				SellPctHoldings(pct=0.20, price=targetSell * 0.98, market=False, expire=3)
+
+		elif p.Low < p.Channel_Low and p.High > p.Channel_Low:
+			if sell_pending_count < 3 and long_position_count > 0:
+				SellPctHoldings(pct=0.20, price=targetSell * 0.98, market=False, expire=3)
+
+	elif p.EMA_LongSlope < -minActionableSlope and p.EMA_ShortSlope < -minActionableSlope:
+		# -- Negative trend, get out
+		trendState = '--'
+
+		if p.High < p.Channel_Low:
+			# oversold: maybe nibble
+			if buy_pending_count < 2 and long_position_count < 3:
+				BuyPctCash(pct=0.15, price=targetBuy * 0.95, market=False, expire=2)
+
+		elif p.Low < p.Channel_Low and p.High > p.Channel_Low:
+			# straddle low: do nothing
+			pass
+
+		else:
+			# exit aggressively
+			if sell_pending_count < 5 and long_position_count > 0:
+				SellPctHoldings(pct=0.50, price=targetSell, market=True, expire=3)
+
+			if trendDuration > 2 and sell_pending_count < 5 and long_position_count > 0:
+				SellPctHoldings(pct=0.50, price=targetSell, market=True, expire=3)
+
+	elif p.EMA_LongSlope < (-1 * minActionableSlope) and p.EMA_ShortSlope < (-1 * minActionableSlope):
+		# -+ Bounce or early recovery
+		trendState = '-+'
+
+		if p.High < p.Channel_Low:
+			if buy_pending_count < 2 and long_position_count < 4:
+				BuyPctCash(pct=0.20, price=targetBuy * 0.95, market=False, expire=2)
+
+		elif p.Low < p.Channel_Low and p.High > p.Channel_Low:
+			if buy_pending_count < 2 and long_position_count < 4:
+				BuyPctCash(pct=0.20, price=targetBuy * 0.95, market=False, expire=2)
+
+	else:
+		# Flat, aim for 70% long with swing buys
+		trendState = 'Flat'
+
+		if p.High < p.Channel_Low:
+			if buy_pending_count < 4 and tm.GetAvailableCash() > p.High:
+				BuyPctCash(pct=0.15, price=targetBuy, market=False, expire=5)
+
+		# always try to maintain some long exposure
+		if buy_pending_count < 3 and tm.GetAvailableCash() > p.High:
+			BuyPctCash(pct=0.10, price=targetBuy, market=False, expire=5)
+
+	# ---------------- STORE TREND DURATION ----------------
+	if trendState == prevTrendState:
+		trendDuration += 1
+	else:
+		trendDuration = 0
+	tm.SetCustomValues(trendState, trendDuration)
+
+
+def RunTradingModelSwingTrade(tm: TradingModel, ticker: str):
+	# Breaks funds into four sets and attempts to make money trading the spread
+	# Takes current trend into consideration
 	minActionableSlope = 0.002
 	prevTrendState, trendDuration = tm.GetCustomValues()
-	if prevTrendState == None: prevTrendState = ''
-	if trendDuration == None: trendDuration = 0
-	p = tm.GetPriceSnapshot()
-	if not p == None:
-		available, buyPending, sellPending, longPositions = tm.PositionSummary()
-		maxPositions = available + buyPending + sellPending + longPositions
-		targetBuy = p.Target * (1 + p.Deviation_5Day/2)
-		targetSell = p.Target * (1 - p.Deviation_5Day/2)
-		for i in range(tm._trancheCount):
-			if p.EMA_LongSlope >= minActionableSlope and p.EMA_ShortSlope >= minActionableSlope:	 
-				trendState='++' #++	Positive trend, 100% long
-				if p.Low > p.Channel_High:   #Over Bought
-					tm.PlaceBuy(ticker=ticker, price=targetBuy, marketOrder=True)	
-				elif p.Low < p.Channel_Low:	#Still early
-					tm.PlaceBuy(ticker=ticker, price=targetBuy, marketOrder=True)	
-				else:
-					tm.PlaceBuy(ticker=ticker, price=targetBuy, marketOrder=True)	
-			elif p.EMA_LongSlope >= minActionableSlope and p.EMA_ShortSlope < minActionableSlope:  
-				trendState='+-' #+- Correction or early downturn, recent price drop
-				if p.Low > p.Channel_High:   #Over Bought, sell profit
-					if sellPending < 3 and longPositions > 7: tm.PlaceSell(ticker=ticker, price=targetSell * .98, marketOrder=False, expireAfterDays=3)
-				elif p.Low < p.Channel_Low and p.High > p. Channel_Low: #Deep correction
-					if sellPending < 3 and longPositions > 7: tm.PlaceSell(ticker=ticker, price=targetSell * .98, marketOrder=False, expireAfterDays=3)
-				else:
-					pass
-			elif p.EMA_LongSlope < -minActionableSlope and p.EMA_ShortSlope < -minActionableSlope: #-- Negative trend, get out
-				trendState='--'
-				if p.High < p.Channel_Low: #Over sold
-					if buyPending < 3 and longPositions < 6: tm.PlaceBuy(ticker, targetBuy * .95, False, 2)
-				elif p.Low < p.Channel_Low and p.High > p.Channel_Low: #Straddle Low, possible early up
-					pass
-				else:
-					tm.PlaceSell(ticker=ticker, price=targetSell, marketOrder=True)
-					if trendDuration > 2: 
-						if sellPending < 5 and longPositions > 5: tm.PlaceSell(ticker=ticker, price=targetSell, marketOrder=True)
-						if sellPending < 5 and longPositions > 0: tm.PlaceSell(ticker=ticker, price=targetSell, marketOrder=True)
-				if sellPending < 5 and longPositions > 3:
-					tm.PlaceSell(ticker=ticker, price=targetSell, marketOrder=True)
-					tm.PlaceSell(ticker=ticker, price=targetSell, marketOrder=True)
-			elif p.EMA_LongSlope < (-1 * minActionableSlope) and p.EMA_ShortSlope < (-1 * minActionableSlope): #-+ Bounce or early recovery
-				trendState='-+' #Short term positive, long term not yet
-				if p.High < p.Channel_Low: #Over sold
-					if buyPending < 3 and longPositions < 6: tm.PlaceBuy(ticker, targetBuy * .95, False, 2)
-				elif p.Low < p.Channel_Low and p.High > p.Channel_Low: #Straddle Low
-					if buyPending < 3 and longPositions < 6: tm.PlaceBuy(ticker, targetBuy * .95, False, 2)
-				else:
-					pass
-			else:																	    			 #flat, aim for 70% long
-				trendState='Flat'
-				if p.Low > p.Channel_High:   #Over Bought
-					pass
-				elif p.High < p.Channel_Low: #Over sold
-					if buyPending < 3 and longPositions < 8: tm.PlaceBuy(ticker=ticker, price=targetBuy, marketOrder=False, expireAfterDays=5)
-					if buyPending < 4: tm.PlaceBuy(ticker=ticker, price=targetBuy, marketOrder=False, expireAfterDays=5)
-				else:
-					pass
-				if buyPending < 3 and longPositions < maxPositions: tm.PlaceBuy(ticker=ticker, price=targetBuy, marketOrder=False, expireAfterDays=5)
-		tm.SetCustomValues(trendState, trendDuration)
-		if trendState == prevTrendState: 
-			trendDuration = trendDuration + 1
-		else:
-			trendDuration=0
-		tm.SetCustomValues(prevTrendState, trendDuration)
+	if prevTrendState is None: prevTrendState = ''
+	if trendDuration is None: trendDuration = 0
+	p = tm.GetPriceSnapshot(ticker)
+	if p is None:
+		return
+	available_cash, buy_pending_count, sell_pending_count, long_position_count = tm.GetPositionSummary()
+	targetBuy = p.Target * (1 + p.Deviation_5Day / 2)
+	targetSell = p.Target * (1 - p.Deviation_5Day / 2)
+	trendState = prevTrendState
+	marketBuy = False
+	marketSell = False
 
-def RunTradingModelSwingTrade(tm: TradingModel, ticker:str):
-	#Breaks funds into four sets and attempts to make money trading the spread
-	#Takes current trend into consideration
-	#trend states: ++,--,+-,-+,Flat (normal, negative, correction, resumption, flat)
-	
-	#ActionableSpread = 3%
-	#BigMovement = 2.5 x 5dev
-	#trend states: 
-	#Normal Trending, generally stick with it, trim highs
-	#Flat, Consolidating
-	#Correction, Initial shock, Bounce, New Low, Resuming: Track recent high/lows, approach of those values
-		
-	minActionableSlope = 0.002
-	prevTrendState, trendDuration = tm.GetCustomValues()
-	if prevTrendState == None: prevTrendState = ''
-	if trendDuration == None: trendDuration = 0
-	p = tm.GetPriceSnapshot()
-	if not p == None:
-		available, buyPending, sellPending, longPositions = tm.PositionSummary()
-		maxPositions = available + buyPending + sellPending + longPositions
-		targetBuy = p.Target * (1 + p.Deviation_5Day/2)
-		targetSell = p.Target * (1 - p.Deviation_5Day/2)
-		MarketBuy = False
-		MarketSell = False
-		for i in range(tm._trancheCount):
-			if p.EMA_LongSlope >= minActionableSlope and p.EMA_ShortSlope >= minActionableSlope:	 
-				#++	Positive trend
-				#Actions: stick with it, sell 1/4 if it gets too high, repurchase at 3% discount
-				trendState='++' 
-				MarketBuy = (longPositions < maxPositions * .7) 
-				if p.Low > p.Channel_High:   #Over Bought
-					pass
-				elif p.Low < p.Channel_Low:	#Very early in trend, possibly not possible
-					MarketBuy = True
-				else:
-					pass
-			elif p.EMA_LongSlope >= minActionableSlope and p.EMA_ShortSlope < minActionableSlope:  
-				#+- Correction or early downturn, recent price drop
-				#Actions: wait for bounce, sell and repurchase near recent low, need to consider state of chunks
-				trendState='+-' 
-				if p.Low > p.Channel_High:   #Over Bought, sell profit
-					pass
-				elif p.Low < p.Channel_Low and p.High > p. Channel_Low: #Deep correction
-					MarketBuy = True
-				else:
-					pass
-			elif p.EMA_LongSlope < -minActionableSlope and p.EMA_ShortSlope < -minActionableSlope: 
-				#-- Negative trend
-				#Actions: wait for bounce, sell and repurchase near recent low, need to consider state of chunks
-				trendState='--' 
-				MarketSell = True
-				if p.High < p.Channel_Low: #Over sold
-					pass
-				elif p.Low < p.Channel_Low and p.High > p.Channel_Low: #Straddle Low, possible early up
-					pass
-				else:
-					pass
-			elif p.EMA_LongSlope < (-1 * minActionableSlope) and p.EMA_ShortSlope < (-1 * minActionableSlope): #-+ Bounce or early recovery
-				#Short term positive, long term not yet, early return to trend, expect large upward movement to resume trend
-				trendState='-+' 
-				if p.High < p.Channel_Low: #Over sold
-					pass
-				elif p.Low < p.Channel_Low and p.High > p.Channel_Low: #Straddle Low
-					pass
-				else:
-					pass
-			else:
-				#Flat
-				#Action: plot high/low and swing trade them
-				trendState='Flat'
-				if p.Low > p.Channel_High:   #Over Bought
-					pass
-				elif p.High < p.Channel_Low: #Over sold
-					pass
-				else:
-					pass
-			if buyPending <= (maxPositions/3): tm.PlaceBuy(ticker=ticker, price=targetBuy, marketOrder=MarketBuy, expireAfterDays=3)	
-			if sellPending <= (maxPositions/3): tm.PlaceSell(ticker=ticker, price=targetSell, marketOrder=MarketSell, expireAfterDays=3)	
-		tm.SetCustomValues(trendState, trendDuration)
-		if trendState == prevTrendState: 
-			trendDuration = trendDuration + 1
-		else:
-			trendDuration=0
-		tm.SetCustomValues(prevTrendState, trendDuration)	
+	def BuyChunk(pctCash: float, price: float, market: bool, expire: int):
+		cash = tm.GetAvailableCash()
+		if cash <= 0 or price <= 0:
+			return
+		budget = cash * pctCash
+		units = int(budget / p.High)
+		if units > 0:
+			tm.PlaceBuy(ticker=ticker, units=units, price=price, marketOrder=market, expireAfterDays=expire)
 
-def TestAllModels(tickerList:list, params: TradeModelParams):
+	def SellChunk(pctUnits: float, price: float, market: bool, expire: int):
+		open_units = sum(pos.units for pos in tm._positions if pos.ticker == ticker and pos.dateSellOrderPlaced is None)
+		if open_units <= 0:
+			return
+		units = int(open_units * pctUnits)
+		units = max(units, 1)
+		units = min(units, open_units)
+		tm.PlaceSell(ticker=ticker, units=units, price=price, marketOrder=market, expireAfterDays=expire)
+
+	# ---------------- DETERMINE TREND STATE ----------------
+	if p.EMA_LongSlope >= minActionableSlope and p.EMA_ShortSlope >= minActionableSlope:
+		# ++ Positive trend
+		trendState = '++'
+		marketBuy = True
+		marketSell = False
+		if p.Low > p.Channel_High:
+			# overbought: allow selling chunks instead of buying
+			marketBuy = False
+		elif p.Low < p.Channel_Low:
+			# very early in trend, buy aggressively
+			marketBuy = True
+	elif p.EMA_LongSlope >= minActionableSlope and p.EMA_ShortSlope < minActionableSlope:
+		# +- Correction / downturn
+		trendState = '+-'
+		marketBuy = False
+		marketSell = False
+		if p.Low < p.Channel_Low and p.High > p.Channel_Low:
+			# deep correction: buy
+			marketBuy = True
+	elif p.EMA_LongSlope < -minActionableSlope and p.EMA_ShortSlope < -minActionableSlope:
+		# -- Negative trend
+		trendState = '--'
+		marketSell = True
+		marketBuy = False
+	elif p.EMA_LongSlope < (-1 * minActionableSlope) and p.EMA_ShortSlope < (-1 * minActionableSlope):
+		# -+ Bounce / early recovery
+		trendState = '-+'
+		marketBuy = False
+		marketSell = False
+	else:
+		# Flat
+		trendState = 'Flat'
+		marketBuy = False
+		marketSell = False
+
+	# ---------------- EXECUTE SWING ACTIONS ----------------
+	# Target behavior: try to maintain ~4 chunks and trade around the target
+
+	# Buy logic: allow up to 3 pending buys
+	if buy_pending_count < 3 and tm.GetAvailableCash() > p.High:
+		BuyChunk(pctCash=0.25, price=targetBuy, market=marketBuy, expire=3)
+	# Sell logic: allow up to 3 pending sells
+	if sell_pending_count < 3 and long_position_count > 0:
+		SellChunk(pctUnits=0.25, price=targetSell, market=marketSell, expire=3)
+	# ---------------- STORE TREND DURATION ----------------
+	if trendState == prevTrendState:
+		trendDuration += 1
+	else:
+		trendDuration = 0
+	tm.SetCustomValues(trendState, trendDuration)
+
+def TestAllModels(ticker:str, startDate:str, duration:int, portfolioSize:int=30000):
+	RunModel('BuyAndHold', RunTradingModelBuyHold, ticker, startDate, duration, portfolioSize, verbose=False)
+	RunModel('Seasonal', RunTradingModelSeasonal, ticker, startDate, duration, portfolioSize, verbose=False)
+	RunModel('FirstHalfOfMonth', RunTradingModelFirstHalfOfMonth, ticker, startDate, duration, portfolioSize, verbose=False)
+	RunModel('RunTradingTestTrading', RunTradingTestTrading, ticker, startDate, duration, portfolioSize, verbose=False)
+	RunModel('Trending', RunTradingModelTrending, ticker, startDate, duration, portfolioSize, verbose=False)
+	RunModel('SwingTrend', RunTradingModelSwingTrend, ticker, startDate, duration, portfolioSize, verbose=False)
+	RunModel('SwingTrade', RunTradingModelSwingTrade, ticker, startDate, duration, portfolioSize, verbose=False)
+
+def TestAllTickers(tickerList:list, startDate:str, duration:int, portfolioSize:int=30000):
 	for ticker in tickerList:
-		params.modelName = 'BuyAndHold'
-		RunModel(ticker, RunTradingModelBuyHold, params)
-		params.modelName = 'Seasonal'
-		RunModel(ticker, RunTradingModelSeasonal, params)
-		params.modelName = 'FirstHalfOfMonth'
-		RunModel(ticker, RunTradingModelFirstHalfOfMonth, params)
-		params.modelName = 'RunTradingTestTrading'
-		RunModel(ticker, RunTradingTestTrading, params)
-		params.modelName = 'Trending'
-		RunModel(ticker, RunTradingModelTrending, params)
-		params.modelName = 'SwingTrend'
-		RunModel(ticker, RunTradingModelSwingTrend, params)
-		params.modelName = 'SwingTrade'
-		RunModel(ticker, RunTradingModelSwingTrade, params)
+		RunModel('Trending', RunTradingModelTrending, ticker, startDate, duration, portfolioSize, verbose=False)
+		RunModel('Swing', RunTradingModelSwingTrade, ticker, startDate, duration, portfolioSize, verbose=False)
 
-def TestAllTickers(tickerList:list, params: TradeModelParams):
-	for ticker in tickerList:
-		params.modelName = 'Swing'
-		RunModel(ticker, RunTradingModelSwingTrade, params)
-	
 if __name__ == '__main__':
-	params = TradeModelParams()
-	params.startDate = '1/1/1999'
-	params.durationInYears = 20
-	params.reEvaluationInterval = 20
-	params.stockCount = 10
-	params.saveResults = True
-	params.verbose = False
-
-	ModelSP500(params.startDate, params.durationInYears)
-	params.modelName = 'BuyAndHold'
-	RunModel('XOM', RunTradingModelBuyHold, params=params)
+	startDate = '1/1/1999'
+	duration = 10
 	tickerList=['BAC','XOM','JNJ','GOOGL','F','MSFT'] 
-	TestAllModels(tickerList, params=params)
-	TestAllTickers(tickerList, params=params)
-	CompareModels('BuyHold',RunTradingModelBuyHold,'Trending', RunTradingModelTrending, '.INX', params=params)
+	TestAllModels('BAC', startDate, duration)
+	TestAllTickers(tickerList, startDate, duration)
+	CompareModels('BuyHold',RunTradingModelBuyHold,'Trending', RunTradingModelTrending, '.INX','1/1/1987',20)
+	RunModel('Seasonal', RunTradingModelSeasonal, ticker, startDate, duration, portfolioSize, verbose=False)
+	PlotModeldailyValue('Trending',RunTradingModelTrending, 'GOOGL','1/1/2005',15)
+	RunModel('BuyAndHold', RunTradingModelBuyHold, '.INX', '1/1/2020', 1, 100000, verbose=False)
+	CompareModels('BuyHold',RunTradingModelBuyHold,'Seasonal', RunTradingModelSeasonal, '.INX','1/1/1990',30)
 
 
 
