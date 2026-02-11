@@ -428,13 +428,14 @@ def TestAllTickers(tickerList:list, startDate:str, duration:int, portfolioSize:i
 if __name__ == '__main__':
 	startDate = '1/1/1999'
 	duration = 10
+	ticker = 'BAC'
 	tickerList=['BAC','XOM','JNJ','GOOGL','F','MSFT'] 
-	TestAllModels('BAC', startDate, duration)
+	RunModel('Seasonal', RunTradingModelSeasonal, ticker, startDate, duration, portfolioSize, verbose=False)
+	PlotModeldailyValue('Trending',RunTradingModelTrending, ticker,'1/1/2005',15)
+	RunModel('BuyAndHold', RunTradingModelBuyHold, '.INX', '1/1/2020', 1, 100000, verbose=False)
+	TestAllModels(ticker, startDate, duration)
 	TestAllTickers(tickerList, startDate, duration)
 	CompareModels('BuyHold',RunTradingModelBuyHold,'Trending', RunTradingModelTrending, '.INX','1/1/1987',20)
-	RunModel('Seasonal', RunTradingModelSeasonal, ticker, startDate, duration, portfolioSize, verbose=False)
-	PlotModeldailyValue('Trending',RunTradingModelTrending, 'GOOGL','1/1/2005',15)
-	RunModel('BuyAndHold', RunTradingModelBuyHold, '.INX', '1/1/2020', 1, 100000, verbose=False)
 	CompareModels('BuyHold',RunTradingModelBuyHold,'Seasonal', RunTradingModelSeasonal, '.INX','1/1/1990',30)
 
 
