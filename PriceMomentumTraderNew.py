@@ -54,6 +54,7 @@ def RunPriceMomentum(params: TradeModelParams):
 	dayCounter = 0
 	currentYear = 0
 	picker = StockPicker(params.startDate, params.endDate) 
+	tickerList = TickerLists.SP500_2026()
 	if not tm.modelReady:
 		print(f" RunPriceMomentum: Unable to initialize price history for PriceMomentum date {startDate}")
 	else:
@@ -61,7 +62,7 @@ def RunPriceMomentum(params: TradeModelParams):
 			currentDate = tm.currentDate 
 			if currentYear != currentDate.year:
 				currentYear = currentDate.year
-				tickerList = TickerLists.GetTickerListSQL(currentYear, SP500Only=params.SP500Only, filterByFundamentals=params.filterByFundamentals,  marketCapMax=params.marketCapMax, marketCapMin=params.marketCapMin)
+				if use_sql: tickerList = TickerLists.GetTickerListSQL(currentYear, SP500Only=params.SP500Only, filterByFundamentals=params.filterByFundamentals,  marketCapMax=params.marketCapMax, marketCapMin=params.marketCapMin)
 				picker.AlignToList(tickerList)
 			if dayCounter ==0: 				
 				candidates = picker.GetHighestPriceMomentum(currentDate, stocksToReturn=params.stockCount, filterOption=params.filterOption, minPercentGain=params.minPercentGain, allocateByTargetHoldings=(not params.allocateByPointValue), allocateByPointValue=params.allocateByPointValue)
@@ -84,11 +85,12 @@ def RunPriceMomentumAdaptiveConvex(params: TradeModelParams, convex_filter:int =
 	dayCounter = 0
 	currentYear = 0
 	picker = StockPicker(params.startDate, params.endDate) 
+	tickerList = TickerLists.SP500_2026()
 	while not tm.ModelCompleted():
 		currentDate = tm.currentDate
 		if currentYear != currentDate.year:
 			currentYear = currentDate.year
-			tickerList = TickerLists.GetTickerListSQL(currentYear, SP500Only=params.SP500Only, filterByFundamentals=params.filterByFundamentals,  marketCapMax=params.marketCapMax, marketCapMin=params.marketCapMin)
+			if use_sql: tickerList = TickerLists.GetTickerListSQL(currentYear, SP500Only=params.SP500Only, filterByFundamentals=params.filterByFundamentals,  marketCapMax=params.marketCapMax, marketCapMin=params.marketCapMin)
 			picker.AlignToList(tickerList)
 		if dayCounter == 0:
 			candidates = picker.GetAdaptiveConvexPicks(currentDate, convex_filter, linear_filter, defense_filter)
@@ -119,6 +121,7 @@ def RunPriceMomentumBlended(params: TradeModelParams, filter1:int = 3, filter2: 
 	tm = TradingModel(modelName=params.modelName , startingTicker=CONSTANTS.CASH_TICKER, startDate=params.startDate, durationInYears=params.durationInYears, totalFunds=params.portfolioSize, verbose=params.verbose)
 	dayCounter = 0
 	currentYear = 0
+	tickerList = TickerLists.SP500_2026()
 	if not tm.modelReady:
 		print('Unable to initialize price history for PriceMomentum date ' + str(startDate))
 	else:
@@ -126,11 +129,9 @@ def RunPriceMomentumBlended(params: TradeModelParams, filter1:int = 3, filter2: 
 			currentDate =  tm.currentDate #These are calendar days but trades are only processed on weekdays
 			if currentYear != currentDate.year and not params.use_sql:
 				currentYear = currentDate.year
-				tickerList = TickerLists.GetTickerListSQL(currentYear, SP500Only=params.SP500Only, filterByFundamentals=params.filterByFundamentals, marketCapMin=params.marketCapMin, marketCapMax=params.marketCapMax)
+				if use_sql: tickerList = TickerLists.GetTickerListSQL(currentYear, SP500Only=params.SP500Only, filterByFundamentals=params.filterByFundamentals, marketCapMin=params.marketCapMin, marketCapMax=params.marketCapMax)
 				picker.AlignToList(tickerList)
 			if dayCounter == 0: #New picks on reevaluation interval
-				available, buyPending, sellPending, longPostitions = tm.PositionSummary()
-				percentAvailable = (available + buyPending)/(available + buyPending + sellPending + longPostitions)
 				if params.use_sql:
 					candidates = picker.GetPicksBlendedSQL(currentDate=currentDate, sqlHistory=sqlHistory)
 				else:

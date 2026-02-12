@@ -10,16 +10,14 @@ from _classes.Utility import *
 def ModelSP500(startDate: str = '1/1/2000', durationInYears:int = 10):
 	#Baseline model to compare against.  Buy on day one, hold for the duration and then sell
 	ticker = '.INX'
-	modelName = 'ModelSP500_' + str(startDate)[:10]
+	modelName = 'ModelSP500_' + FormatDate(startDate)
 	params = TradeModelParams()
 	params.startDate = startDate
 	params.durationInYears = durationInYears
-	params.saveResults = True
+	params.saveResults = False
 	tm = TradingModel(modelName=modelName, startingTicker=ticker, startDate=params.startDate, durationInYears=params.durationInYears, totalFunds=params.portfolioSize, verbose=False)
 	if not tm.modelReady:
 		print(' ModelSP500: Unable to initialize price history for date ' + str(startDate))
-		return 0
-	else:
 		dayCounter = 0
 		while not tm.ModelCompleted():
 			if dayCounter == 0:
@@ -32,10 +30,9 @@ def ModelSP500(startDate: str = '1/1/2000', durationInYears:int = 10):
 			dayCounter+=1
 			if dayCounter >= params.reEvaluationInterval: dayCounter=0
 			tm.ProcessDay()
-		params = TradeModelParams()
-		return tm.CloseModel(params)		
+		return tm.CloseModel()		
 
-def RunPriceMomentum(tickerList:list, startDate:str='1/1/1982', durationInYears:int=36, stockCount:int=9, reEvaluationInterval:int=20, filterOption:int=3, longHistory:int=365, shortHistory:int=90, minPercentGain=0.05, portfolioSize:int=30000, returndailyValues:bool=False, verbose:bool=False):
+def RunPriceMomentum(tickerList:list, startDate:str='1/1/1982', durationInYears:int=36, stockCount:int=9, reEvaluationInterval:int=20, filterOption:int=3, longHistory:int=365, shortHistory:int=90, minPercentGain=0.05, portfolioSize:int=30000, verbose:bool=False):
 	#Choose stockCount stocks with the greatest long term (longHistory days) price appreciation, using different filter options defined in the StockPicker class
 	#shortHistory is a shorter time frame (like 90 days) used differently by different filters
 	#reEvaluationInterval is how often to re-evaluate our choices, ideally this should be very short and not matter, otherwise the date selection is biased.
@@ -62,10 +59,7 @@ def RunPriceMomentum(tickerList:list, startDate:str='1/1/1982', durationInYears:
 			dayCounter+=1
 			if dayCounter >= reEvaluationInterval: dayCounter=0
 		cv1 = tm.CloseModel()
-		if returndailyValues:
-			return tm.GetDailyValue()
-		else:
-			return cv1
+		return cv1
 			
 def ComparePMToBH(startYear:int=1982, endYear:int=2018, durationInYears:int=1, stockCount:int=9, reEvaluationInterval:int=20, filterOption:int=3, longHistory:int=365, shortHistory:int=90):
 	#Compares the PriceMomentum strategy to BuyHold in one year intervals, outputs the returns to .csv file
@@ -78,7 +72,7 @@ def ComparePMToBH(startYear:int=1982, endYear:int=2018, durationInYears:int=1, s
 	for i in range(trials):
 		startDate = '1/2/' + str(startYear + i * durationInYears)
 		m1ev = ModelSP500(startDate=startDate, durationInYears=durationInYears)
-		m2ev = RunPriceMomentum(tickerList = TickerLists.SPTop70(), startDate=startDate, durationInYears=durationInYears, stockCount=stockCount, reEvaluationInterval=reEvaluationInterval, filterOption=filterOption,  longHistory=longHistory, shortHistory=shortHistory, portfolioSize=portfolioSize, returndailyValues=False, verbose=False)
+		m2ev = RunPriceMomentum(tickerList = TickerLists.SPTop70(), startDate=startDate, durationInYears=durationInYears, stockCount=stockCount, reEvaluationInterval=reEvaluationInterval, filterOption=filterOption,  longHistory=longHistory, shortHistory=shortHistory, portfolioSize=portfolioSize, verbose=False)
 		m1pg = (m1ev/portfolioSize) - 1 
 		m2pg = (m2ev/portfolioSize) - 1
 		TestResults.loc[startDate] = [durationInYears, m1ev, m2ev, m1pg, m2pg, m2pg-m1pg]
