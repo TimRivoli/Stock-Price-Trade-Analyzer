@@ -17,6 +17,9 @@ def ModelSP500(startDate: str = '1/1/2000', durationInYears:int = 10):
 	params.saveResults = False
 	tm = TradingModel(modelName=modelName, startingTicker=ticker, startDate=params.startDate, durationInYears=params.durationInYears, totalFunds=params.portfolioSize, verbose=False)
 	if not tm.modelReady:
+		print('Unable to initialize price history for ModelSP500 date ' + str(startDate))
+		return 0
+	else:
 		print(' ModelSP500: Unable to initialize price history for date ' + str(startDate))
 		dayCounter = 0
 		while not tm.ModelCompleted():
