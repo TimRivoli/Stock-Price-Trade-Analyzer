@@ -2,7 +2,8 @@ import time, random, os, logging
 import numpy as np, pandas as pd
 import _classes.Constants as CONSTANTS
 from datetime import datetime, timedelta
-from pandas.tseries.offsets import BDay
+from pandas.tseries.offsets import BDay, CustomBusinessDay
+from pandas.tseries.holiday import USFederalHolidayCalendar
 from _classes.DataIO import DataDownload, PTADatabase
 from _classes.Graphing import PlotHelper
 from _classes.Utility import *
@@ -774,9 +775,13 @@ class PricingData:
 
 	def _generate_cash_history(self, start_date: pd.Timestamp | None, end_date: pd.Timestamp | None) -> pd.DataFrame:
 		"""Generates a synthetic DataFrame for the CASH ticker."""
+		#Not ideal as it will include some dates the market is closed
 		if start_date is None: start_date = pd.Timestamp('1980-01-01') + pd.offsets.BusinessDay(1)
 		if end_date is None: end_date = pd.Timestamp.now().normalize() - pd.offsets.BusinessDay(1)
 		date_range = pd.bdate_range(start=start_date, end=end_date)	
+		cal = USFederalHolidayCalendar()		
+		bday = CustomBusinessDay(calendar=cal)
+		date_range = pd.date_range(start=start_date, end=end_date, freq=bday)
 		df = pd.DataFrame({'Open': 1.0, 'High': 1.0, 'Low': 1.0, 'Close': 1.0, 'Volume': 1.0 }, index=date_range)
 		return df
 	#-------------------------------------------- IO Funcitons -----------------------------------------------
@@ -800,7 +805,7 @@ class PricingData:
 			if verbose: print(f" LoadHistory: invalid date range start date {FormatDate(requestedStartDate)} > end date {FormatDate(requestedEndDate)}")
 			return False
 		if self.ticker == CONSTANTS.CASH_TICKER:
-			df = self._generate_cash_history(requestedStartDate,	requestedEndDate)
+			df = self._generate_cash_history(requestedStartDate, requestedEndDate)
 		elif self.useDatabase:
 			loadStartDate = None 
 			loadEndDate = requestedEndDate

@@ -515,7 +515,7 @@ class StockPicker():
 		else:
 			dt_days = Business_Days_Since(self._adaptive_last_date, currentDate)
 		self._adaptive_last_date = currentDate
-		filters = {0:250, convex_filter:3, linear_filter:5, linear_fast_filter:5, defense_filter:3}
+		filters = {0:250, convex_filter:4, linear_filter:5, linear_fast_filter:4, defense_filter:6}
 		multiverse_candidates = self.GetHighestPriceMomentumMulti(currentDate=currentDate, filterOptions=filters)
 		df = multiverse_candidates[0]
 		if df is None or df.empty:
@@ -536,7 +536,6 @@ class StockPicker():
 				self.convex_duration += 1
 			else:
 				self.convex_duration = 0
-
 			frames = []
 			if weights.get("convex", 0) > 0 and convex_filter in multiverse_candidates:
 				add_block(multiverse_candidates[convex_filter], weights["convex"])
