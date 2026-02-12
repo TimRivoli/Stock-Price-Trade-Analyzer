@@ -3,6 +3,12 @@ from _classes.PriceTradeAnalyzer import TradingModel, PlotHelper, PriceSnapshot
 from _classes.Utility import *
 
 #------------------------------------------- Global model functions  ----------------------------------------------		
+import pandas as pd
+from _classes.Graphing import PlotHelper
+from _classes.PriceTradeAnalyzer import TradingModel, PriceSnapshot, Position
+from _classes.Utility import *
+
+#------------------------------------------- Global model functions  ----------------------------------------------		
 def RecordPerformance(ModelName, StartDate, EndDate, StartValue, EndValue, TradeCount, Ticker):
 	#Record trade performance to output file, each model run will append to the same files so you can easily compare the results
 	filename = 'data/trademodel/PerfomanceComparisons.csv'
@@ -22,11 +28,9 @@ def RunModel(modelName:str, modelFunction, ticker:str, startDate:str, durationIn
 	#Performs the logic of the given model over a period of time to evaluate the performance
 	modelName = modelName + '_' + ticker
 	print('Running model ' + modelName)
-	tm = TradingModel(modelName=modelName, startingTicker=ticker, startDate=startDate, durationInYears=durationInYears, totalFunds=portfolioSize, trancheSize=round(portfolioSize/10), verbose=verbose)
+	tm = TradingModel(modelName=modelName, startingTicker=ticker, startDate=startDate, durationInYears=durationInYears, totalFunds=portfolioSize, verbose=verbose)
 	startDate = tm.modelStartDate
 	endDate = tm.modelEndDate
-	dayCounter = 0
-	currentYear = 0
 	if not tm.modelReady:
 		print('Unable to initialize price history for model for ' + str(startDate))
 		if returndailyValues: return pd.DataFrame()
@@ -35,20 +39,30 @@ def RunModel(modelName:str, modelFunction, ticker:str, startDate:str, durationIn
 		while not tm.ModelCompleted():
 			modelFunction(tm, ticker)
 			tm.ProcessDay()
-			if tm.AccountingError(): 
-				print('Accounting error.  Negative cash balance.  Terminating model run.', tm.currentDate)
-				tm.PositionSummary()
-				#tm.PrintPositions()
-				break
-		cash, asset = tm.Value()
-		#print('Ending Value: ', cash + asset, '(Cash', cash, ', Asset', asset, ')')
+		cash, asset = tm.GetValue()
 		tradeCount = len(tm.tradeHistory)
 		ticker = tm.priceHistory[0].ticker
 		RecordPerformance(ModelName=modelName, StartDate=startDate, EndDate=tm.currentDate, StartValue=portfolioSize, EndValue=(cash + asset), TradeCount=tradeCount, Ticker=ticker)
+		closing_value = tm.CloseModel()
 		if returndailyValues:
-			return tm.GetDailyValue()
+			return tm.GetDailyValue()   							#return daily value for model comparisons
 		else:
-			return cv1
+			return closing_value
+
+def ExtendedDurationTest(modelName:str, modelFunction, ticker:str, portfolioSize:int=30000):
+	#test the model over an extended range of periods and years, output result to .csv file
+	TestResults = pd.DataFrame([['1/1/1982','1/1/1982',0,0]], columns=list(['StartDate','EndDate','Duration','EndingValue']))
+	TestResults.set_index(['StartDate'], inplace=True)		
+	for duration in range(1,10,2):
+		for year in range(1982,2017):
+			for month in range(1,12,3):
+				startDate = str(month) + '/1/' + str(year)
+				endDate = str(month) + '/1/' + str(year + duration)
+				endValue = RunModel(modelName, modelFunction, ticker, startDate, duration, portfolioSize, saveHistoryToFile=False, returndailyValues=False, verbose=False)
+				y = pd.DataFrame([[startDate,endDate,duration,endValue]], columns=list(['StartDate','EndDate','Duration','EndingValue']))
+				TestResults = TestResults.append(y, ignore_index=True)
+	TestResults.to_csv('data/trademodel/' + modelName + '_' + ticker +'_extendedTest.csv')
+	print(TestResults)
 
 def PlotModeldailyValue(modelName:str, modelFunction, ticker:str, startDate:str, durationInYears:int, portfolioSize:int=30000):
 	#Plot daily returns of the given model
@@ -58,35 +72,6 @@ def PlotModeldailyValue(modelName:str, modelFunction, ticker:str, startDate:str,
 		plot = PlotHelper()
 		plot.PlotDataFrame(m1, modelName + ' Daily Value (' + ticker + ')', 'Date', 'Value') 
 
-def RunTradingModelBuyHold(tm: TradingModel, ticker:str):
-#Baseline model, buy and hold
-	sn = tm.GetPriceSnapshot()
-	if tm.verbose: print(sn.Date, sn.Target)
-	if not sn == None:
-		for i in range(tm._trancheCount):
-			available, buyPending, sellPending, longPositions = tm.PositionSummary()				
-			if tm.TranchesAvailable() > 0 and tm.FundsAvailable() > sn.High: tm.PlaceBuy(ticker=ticker, price=sn.Low, marketOrder=True)
-			if available ==0: break
-
-def RunTradingModelSeasonal(tm: TradingModel, ticker:str):
-	#Buy in March, sell in September
-	sn = tm.GetPriceSnapshot()
-	if not sn == None:
-		BuyDate  = ToDateTime('03/01/' + str(tm.currentDate.year))
-		SellDate = ToDateTime('10/01/' + str(tm.currentDate.year))
-		for i in range(tm._trancheCount):
-			available, buyPending, sellPending, longPositions = tm.PositionSummary()				
-			if not((tm.currentDate >= SellDate) or (tm.currentDate <= BuyDate)):
-				if longPositions > 0: 
-					tm.PlaceSell(ticker=ticker, price=sn.High, marketOrder=True)
-				else:
-					break
-			else:
-				if available > 0 and tm.FundsAvailable() > sn.High: 
-					tm.PlaceBuy(ticker=ticker, price=sn.Low, marketOrder=True)
-				else:
-					break
-
 def CompareModels(modelOneName:str, modelOneFunction, modelTwoName:str, modelTwoFunction, ticker:str, startDate:str, durationInYears:int, portfolioSize:int=30000):
 	#Compare two models to measure the difference in returns
 	m1 = RunModel(modelOneName, modelOneFunction, ticker, startDate, durationInYears, portfolioSize, saveHistoryToFile=False, returndailyValues=True, verbose=False)
@@ -95,6 +80,32 @@ def CompareModels(modelOneName:str, modelOneFunction, modelTwoName:str, modelTwo
 		m1 = m1.join(m2, lsuffix='_' + modelOneName, rsuffix='_' + modelTwoName)
 		plot = PlotHelper()
 		plot.PlotDataFrame(m1, ticker + ' Model Comparison', 'Date', 'Value') 
+		
+	
+
+def RunTradingModelBuyHold(tm: TradingModel, ticker:str):
+#Baseline model, buy and hold
+	cash = tm.GetAvailableCash()
+	price = tm.GetPrice(ticker)
+	if price:
+		units = int(cash/price)
+		if units > 0:
+			tm.PlaceBuy(ticker=ticker, units=units, price=price, marketOrder=True, expireAfterDays=5, verbose=False)
+
+def RunTradingModelSeasonal(tm: TradingModel, ticker:str):
+	#Buy in March, sell in September
+	buy_date  = ToDateTime('03/15/' + str(tm.currentDate.year))
+	sell_date = ToDateTime('9/10/' + str(tm.currentDate.year))
+	#available_cash, buy_pending_count, sell_pending_count, long_position_count  = tm.GetPositionSummary()
+	if (tm.currentDate >= sell_date) or (tm.currentDate <= buy_date):
+		tm.SellAllPositions()
+	else:
+		cash = tm.GetAvailableCash()
+		price = tm.GetPrice(ticker)			
+		if price:
+			units = int(cash/price)
+			if units > 0:
+				tm.PlaceBuy(ticker=ticker, units=units, price=price, marketOrder=True, expireAfterDays=3, verbose=False)
 
 if __name__ == '__main__':
 	CompareModels('BuyHold',RunTradingModelBuyHold,'Seasonal', RunTradingModelSeasonal, '.INX','1/1/1990',30)
