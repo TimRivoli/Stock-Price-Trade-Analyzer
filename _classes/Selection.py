@@ -18,26 +18,28 @@ ADAPTIVE_WARMUP_DAYS = 60 		# small, deterministic warmup for the convex engine
 class AdaptiveConvexMarketState:
 	# Identity
 	as_of_date: pd.Timestamp
-	convex_duration : int
 	reevaluation_interval: int
+	convex_duration : int = 0
 	
 	# Regime inputs
-	dispersion: float
-	momentum_autocorr: float
-	downside_volatility: float
-	stress_index: float
+	dispersion: float = 0.0
+	momentum_autocorr: float = 0.0
+	downside_volatility: float = 0.0
+	stress_index: float = 0.0
+	corr_6m_1m: float = 0.0
+	corr_1y_1m: float = 0.0
 
 	# Allocation weights (must sum to 1.0)
-	convex_weight: float
-	linear_weight: float
-	defensive_weight: float
-	cash_weight: float
+	convex_weight: float = 0.0
+	linear_weight: float = 0.0
+	defensive_weight: float = 0.0
+	cash_weight: float = 1.0
 	
 	# Optional diagnostics / state
-	version: Optional[float] = 1
+	version: Optional[float] = 3.2
 	is_warmup: Optional[bool] = False
-	regime_label: Optional[str] = None
-	hysteresis_label: Optional[str] = None
+	regime_label: Optional[str] = 'NO_DATA'
+	hysteresis_label: Optional[str] = 'NO_DATA'
 
 	def Validate(self, tol: float = 1e-6):
 		total = (self.convex_weight + self.linear_weight + self.defensive_weight + self.cash_weight)
@@ -57,6 +59,8 @@ class AdaptiveConvexMarketState:
 				"downside_volatility": float(self.downside_volatility),
 				"convex_duration": int(self.convex_duration),
 				"stress_index": float(self.stress_index),
+				"corr_6m_1m": float(self.corr_6m_1m),
+				"corr_1y_1m": float(self.corr_1y_1m),
 				"convex_weight": float(self.convex_weight),
 				"linear_weight": float(self.linear_weight),
 				"defensive_weight": float(self.defensive_weight),
@@ -145,12 +149,12 @@ class StockPicker():
 			
 #-------------------------------------------- Selection routine -----------------------------------------------
 	
-	def GetHighestPriceMomentumMulti(self, currentDate: datetime, stocksToReturn: int = 5, minPercentGain: float = 0.05, filterOptions=(0, 1, 2, 3, 4, 5, 6, 7, 8, 9)):
+	def GetHighestPriceMomentumMulti(self, currentDate: datetime, filterOptions: dict, minPercentGain: float = 0.05):
+		if not isinstance(filterOptions, dict):
+			raise ValueError("filterOptions must be a dict like {filter_id: stock_count}")
 		EMPTY_RESULT = pd.DataFrame(columns=['TargetHoldings', 'Point_Value'])
 		EMPTY_RESULT.index.name = 'Ticker'
-
 		candidates = {}
-		stocksToReturn = int(stocksToReturn)
 		currentDate = ToTimestamp(currentDate)
 		max_allowed_date = (pd.Timestamp.now().normalize() - pd.offsets.BusinessDay(1)).to_pydatetime()
 		if currentDate > max_allowed_date:
@@ -163,12 +167,11 @@ class StockPicker():
 				self.PrintWrapper(f" GetHighestPriceMomentumMulti: {ticker} missing {currentDate}")
 				continue
 			row = df.loc[currentDate]
-
 			if min( row['HP_2Yr'], row['HP_1Yr'], row['HP_6Mo'], row['HP_2Mo'], row['HP_1Mo'], row['Average_5Day'] ) <= 0:
 				continue
 			rows.append({'Ticker': ticker,'hp2Year': row['HP_2Yr'],'hp1Year': row['HP_1Yr'],'hp6mo': row['HP_6Mo'],'hp3mo': row['HP_3Mo'],'hp2mo': row['HP_2Mo'],'hp1mo': row['HP_1Mo'],'Average_5Day': row['Average_5Day'],'Average_2Day': row['Average_2Day'],'Average': row['Average'],'Channel_High': row['Channel_High'],'Channel_Low': row['Channel_Low'],'PC_2Year': row['PC_2Year'],'PC_1Year': row['PC_1Year'],'PC_6Month': row['PC_6Month'],'PC_3Month': row['PC_3Month'],'PC_2Month': row['PC_2Month'],'PC_1Month': row['PC_1Month'],'PC_3Day': row['PC_3Day'],'PC_1Day': row['PC_1Day'],'PC_1Month3WeekEMA': row['PC_1Month3WeekEMA'],'Deviation_15Day': row['Deviation_15Day'],'Deviation_10Day': row['Deviation_10Day'],'Deviation_5Day': row['Deviation_5Day'],'Deviation_1Day': row['Deviation_1Day'],'Gain_Monthly': row['Gain_Monthly'],'LossStd_1Year': row['LossStd_1Year'],'Point_Value': row['Point_Value'],'Comments': row.get('Comments', ''),'HasFullLookback': row.get('HasFullLookback', True),'latestEntry': pd_obj.historyEndDate})
 		if not rows: 
-			for opt in filterOptions: candidates[opt] = EMPTY_RESULT.copy()
+			for filter_option in filterOptions.keys(): candidates[filter_option] = EMPTY_RESULT.copy()
 			return candidates
 		base = pd.DataFrame(rows).set_index('Ticker')
 		base.index.name = 'Ticker'
@@ -192,21 +195,22 @@ class StockPicker():
 		}
 		#former 1, was a dud. dict(sort='PC_1Year', mask=lambda df: ((df['PC_1Year'] > minPercentGain) & (df['PC_1Month3WeekEMA'] > 0) & ( df['PC_1Year'] / CONSTANTS.TRADING_YEAR > df['PC_1Month3WeekEMA'] / CONSTANTS.TRADING_MONTH ) ) ),
 		
-		for opt in filterOptions:
-			spec = filter_map.get(opt)
+		for filter_option, stocks_to_return in filterOptions.items():
+			spec = filter_map.get(filter_option)
 			if spec is None: continue
 			df_work = base
 			if 'prep' in spec and callable(spec['prep']): df_work = spec['prep'](df_work)
 			df = df_work.loc[spec['mask'](df_work)]
 			if df.empty:
-				candidates[opt] = EMPTY_RESULT.copy()
+				candidates[filter_option] = EMPTY_RESULT.copy()
 				continue
 			df = df.sort_values(spec['sort'], ascending=False)
-			candidates[opt] = df.head(stocksToReturn)
+			candidates[filter_option] = df.head(int(stocks_to_return))
 		return candidates
 
 	def GetHighestPriceMomentum(self, currentDate:datetime, stocksToReturn:int = 5, filterOption:int = 3, minPercentGain:float = 0.05, allocateByTargetHoldings:bool = False, allocateByPointValue=False):
-		result = self.GetHighestPriceMomentumMulti(currentDate=currentDate, stocksToReturn=stocksToReturn, minPercentGain=minPercentGain, filterOptions=(filterOption,))
+		filter_options = {filterOption:stocksToReturn}
+		result = self.GetHighestPriceMomentumMulti(currentDate=currentDate, filterOptions=filter_options, minPercentGain=minPercentGain)
 		result = result.get(filterOption, pd.DataFrame())
 		if allocateByTargetHoldings:
 			result = result.groupby(level=0)[['Point_Value']].sum().rename(columns={'Point_Value': 'TargetHoldings'})
@@ -214,12 +218,14 @@ class StockPicker():
 			result = result.groupby(level=0).size().to_frame(name='TargetHoldings')
 		return result
 
-	def GetPicksBlended(self, currentDate:date, filter1:int = 3, filter2: int = 3, filter3: int = 1, filter4: int = 5):
+	def GetPicksBlended(self, currentDate:date, filter1:int = 3, filter2: int = 3, filter3: int = 1, filter4: int = 5, minPercentGain:float = 0.05):
 		#generates list of tickers with TargetHoldings which indicate proportion of holdings	
-		list1 = self.GetHighestPriceMomentum(currentDate=currentDate, stocksToReturn=3, filterOption=filter1)
-		list2 = self.GetHighestPriceMomentum(currentDate=currentDate, stocksToReturn=3, filterOption=filter2)
-		list3 = self.GetHighestPriceMomentum(currentDate=currentDate, stocksToReturn=3, filterOption=filter3)
-		list4 = self.GetHighestPriceMomentum(currentDate=currentDate, stocksToReturn=4, filterOption=filter4)
+		filter_options = {filter1:3, filter2:3, filter3:3, filter4:4}
+		multiverse_candidates = self.GetHighestPriceMomentumMulti(currentDate=currentDate, filterOptions=filter_options, minPercentGain=minPercentGain)
+		list1 = multiverse_candidates[filter1]
+		list2 = multiverse_candidates[filter2]
+		list3 = multiverse_candidates[filter3]
+		list4 = multiverse_candidates[filter4]
 		all_inputs = [list1, list2, list3, list4]
 		valid_inputs = [i for i in all_inputs if i is not None and len(i) > 0]
 		if not valid_inputs:
@@ -242,67 +248,48 @@ class StockPicker():
 			
 #-------------------------------------------- AdaptiveConvex Selection Engine  -----------------------------------------------
 
-	def compute_cross_sectional_dispersion(self, currentDate, min_valid=20):
-		"""
-		Cross-sectional standard deviation of 1Y momentum (PC_1Year).
-		Measures opportunity dispersion for convex strategies.
-		"""
-		values = []
-		for pdata in self.priceData:
-			if not pdata.statsLoaded:
-				continue
-			df = pdata.historicalPrices
-			if currentDate not in df.index:
-				continue
-			pc1y = df.loc[currentDate, 'PC_1Year']
-			if pd.notna(pc1y):
-				values.append(pc1y)
-		if len(values) < min_valid:
-			return 0.0
-		return float(np.std(values, ddof=1))
+	def compute_cross_sectional_dispersion(self, base, min_valid=20):
+		series = base["PC_1Year"].dropna()
+		if len(series) < min_valid: return 0.0
+		return float(series.std(ddof=1))
 
-	def compute_momentum_autocorr(self,	currentDate, lookback_months=6, min_valid=20):
-		"""
-		Average autocorrelation of 1M momentum across universe.
-		Positive = momentum persistence.
-		Negative = mean reversion.
-		"""
-		autocorrs = []
-		for pdata in self.priceData:
-			if not pdata.statsLoaded:
-				continue
-			df = pdata.historicalPrices
-			if currentDate not in df.index:
-				continue
-			series = df.loc[:currentDate, 'PC_1Month'].dropna()
-			if len(series) < lookback_months + 1:
-				continue
-			s1 = series[-lookback_months:]
-			s2 = series.shift(1)[-lookback_months:]
-			if s1.std() == 0 or s2.std() == 0:
-				continue
-			corr = s1.corr(s2)
-			if pd.notna(corr):
-				autocorrs.append(corr)
-		if len(autocorrs) < min_valid:
-			return 0.0
-		return float(np.mean(autocorrs))
+	def compute_downside_volatility(self, base, min_valid=20):
+		series = base["LossStd_1Year"].dropna()
+		if len(series) < min_valid: return 0.0
+		return float(series.median())
 
-	def compute_downside_volatility(self, currentDate, min_valid=20):
+	def compute_momentum_autocorr(self, base, min_valid=20):
+		req = ["PC_1Month", "PC_3Month"]
+		sub = base[req].dropna()
+		if len(sub) < min_valid: return 0.0
+		return float(sub["PC_1Month"].corr(sub["PC_3Month"], method="spearman"))
+
+	def compute_leadership_tilt(self, df, min_valid=30):
 		"""
-		Median downside volatility (LossStd_1Year) across universe.
-		Confirms whether volatility is being rewarded.
+		Returns:
+			tilt (float)         : [0,1]  (1 = favor 6M, 0 = favor 12M)
+			corr_6m_1m (float)   : Spearman corr(rank(PC_6Month), rank(PC_1Month3WeekEMA))
+			corr_1y_1m (float)   : Spearman corr(rank(PC_1Year), rank(PC_1Month3WeekEMA))
 		"""
-		losses = []
-		for pdata in self.priceData:
-			if not pdata.statsLoaded: continue
-			df = pdata.historicalPrices
-			if currentDate not in df.index: continue
-			loss_std = df.loc[currentDate, 'LossStd_1Year']
-			if pd.notna(loss_std): losses.append(loss_std)
-		if len(losses) < min_valid: return 0.0
-		return float(np.median(losses))
-		
+		required = ["PC_1Year", "PC_6Month", "PC_1Month3WeekEMA"]
+		for c in required:
+			if c not in df.columns:
+				return 0.5, 0.0, 0.0
+		sub = df[required].dropna()
+		if len(sub) < min_valid:
+			return 0.5, 0.0, 0.0
+		r1y = sub["PC_1Year"].rank(pct=True)
+		r6m = sub["PC_6Month"].rank(pct=True)
+		r1m = sub["PC_1Month3WeekEMA"].rank(pct=True)
+		corr_6m_1m = float(r6m.corr(r1m, method="spearman"))
+		corr_1y_1m = float(r1y.corr(r1m, method="spearman"))
+		if np.isnan(corr_6m_1m): corr_6m_1m = 0.0
+		if np.isnan(corr_1y_1m): corr_1y_1m = 0.0
+		tilt_raw = corr_6m_1m - corr_1y_1m
+		scale = 0.15
+		tilt = 1.0 / (1.0 + np.exp(-tilt_raw / scale))
+		return float(np.clip(tilt, 0.0, 1.0)), corr_6m_1m, corr_1y_1m
+
 	def compute_stress_index(self, dispersion, autocorr, downside_vol):
 		hist = getattr(self, "_adaptive_history_df", None)
 		if not (hist is not None and not hist.empty and len(hist) >= 60):
@@ -480,7 +467,7 @@ class StockPicker():
 		self._prev_weights = new_weights
 		return new_weights
 
-	def _AppendAdaptiveState(self, params: AdaptiveConvexMarketState):
+	def _append_adaptive_state(self, params: AdaptiveConvexMarketState):
 		row = {"as_of_date": params.as_of_date,"convex_duration": params.convex_duration,"dispersion": params.dispersion,"momentum_autocorr": params.momentum_autocorr,"downside_volatility": params.downside_volatility,"stress_index": params.stress_index,"convex_weight": params.convex_weight,"linear_weight": params.linear_weight,"defensive_weight": params.defensive_weight,"cash_weight": params.cash_weight,"regime_label": params.regime_label,"hysteresis_label": params.hysteresis_label}
 
 		df_new = pd.DataFrame([row])
@@ -504,7 +491,7 @@ class StockPicker():
 		cutoff = pd.to_datetime(params.as_of_date) - pd.Timedelta(days=365)
 		self._adaptive_history_df = self._adaptive_history_df[self._adaptive_history_df.index >= cutoff]
 
-	def _AdaptiveConvex_warmup(self, currentDate):
+	def _adaptive_convex_warmup(self, currentDate):
 		if self._adaptive_is_warming or not self._startDate: return
 		bdays = pd.bdate_range(self._startDate, currentDate)
 		if len(bdays) <= 1: return
@@ -514,57 +501,64 @@ class StockPicker():
 			self.GetAdaptiveConvexPicks(currentDate=d)
 		self._adaptive_is_warming = False
 
-	def GetAdaptiveConvexPicks(self, currentDate, convex_filter:int = 6, linear_filter:int = 2, defense_filter:int = 1):		
-		version = 1
+	def GetAdaptiveConvexPicks(self, currentDate, convex_filter:int = 6, linear_filter:int = 2, linear_fast_filter:int = 6, defense_filter:int = 1):		
 		def add_block(df, block_weight):
 			if df is None or df.empty or block_weight <= 0:
 				return
 			out = pd.DataFrame(index=df.index)
 			out["TargetHoldings"] = block_weight / len(df)
 			frames.append(out)
+
 		if self._adaptive_last_date is None:
-			self._AdaptiveConvex_warmup(currentDate)
+			self._adaptive_convex_warmup(currentDate)
 			dt_days = 1
 		else:
 			dt_days = Business_Days_Since(self._adaptive_last_date, currentDate)
-		AdaptiveConvexMarketState
 		self._adaptive_last_date = currentDate
-		dispersion = self.compute_cross_sectional_dispersion(currentDate)
-		autocorr = self.compute_momentum_autocorr(currentDate)
-		downside_volatility = self.compute_downside_volatility(currentDate)
-		stress = self.compute_stress_index(dispersion, autocorr, downside_volatility)   
-		#stress_tamper = 1.0 - stress**2   # stress acting as a tampter instead of a break
-		stress_tamper = 1.0 - 0.5 * stress
-		weights = self.adaptive_engine_weights(dispersion, autocorr, stress_tamper, dt_days=dt_days)
-		regime_label = Regime_Label_From_Weights(weights)
-
-		filters = {}
-		if weights.get("convex", 0) > 0:
-			filters[convex_filter] = 3  
-			self.convex_duration += 1
+		filters = {0:250, convex_filter:3, linear_filter:5, linear_fast_filter:5, defense_filter:3}
+		multiverse_candidates = self.GetHighestPriceMomentumMulti(currentDate=currentDate, filterOptions=filters)
+		df = multiverse_candidates[0]
+		if df is None or df.empty:
+			state = AdaptiveConvexMarketState(as_of_date = currentDate, reevaluation_interval=int(dt_days))
+			final = pd.DataFrame({"TargetHoldings":[1.0]}, index=[CONSTANTS.CASH_TICKER])
+			final.loc[CONSTANTS.CASH_TICKER] = {'TargetHoldings': 1.0, 'Point_Value': 100}
+			final = df
 		else:
-			self.convex_duration = 0
-		if weights.get("linear", 0) > 0:
-			filters[linear_filter] = 3   
-		if weights.get("defensive", 0) > 0:
-			filters[defense_filter] = 2   
-		candidates = self.GetHighestPriceMomentumMulti(currentDate=currentDate, stocksToReturn=5, filterOptions=tuple(filters))
-		frames = []
-		if weights.get("convex", 0) > 0 and convex_filter in candidates:
-			add_block(candidates[convex_filter], weights["convex"])
-		if weights.get("linear", 0) > 0 and linear_filter in candidates:
-			add_block(candidates[linear_filter], weights["linear"])
-		if weights.get("defensive", 0) > 0 and defense_filter in candidates:
-			add_block(candidates[defense_filter], weights["defensive"])
-		if weights.get("cash", 0) > 0:
-			cash_df = pd.DataFrame({"TargetHoldings": [weights["cash"]]}, index=[CONSTANTS.CASH_TICKER])
-			frames.append(cash_df)
-		if not frames: return pd.DataFrame(columns=["TargetHoldings"]).rename_axis("Ticker")
-		final = (pd.concat(frames).groupby(level=0)["TargetHoldings"].sum().to_frame())
-		final["TargetHoldings"] /= final["TargetHoldings"].sum()
-		state = AdaptiveConvexMarketState(as_of_date = currentDate, reevaluation_interval=int(dt_days), convex_duration  = self.convex_duration, dispersion = dispersion, momentum_autocorr = autocorr, downside_volatility = downside_volatility,  stress_index = stress, convex_weight = weights["convex"], linear_weight = weights["linear"], defensive_weight = weights["defensive"], cash_weight = weights["cash"], regime_label = regime_label, hysteresis_label = self.hysteresis_label, version=version, is_warmup=self._adaptive_is_warming)
+			dispersion = self.compute_cross_sectional_dispersion(df)
+			autocorr = self.compute_momentum_autocorr(df)
+			downside_volatility = self.compute_downside_volatility(df)
+			stress = self.compute_stress_index(dispersion, autocorr, downside_volatility) 
+			tilt, corr_6m_1m, corr_1y_1m = self.compute_leadership_tilt(df)
+			stress_tamper = 1.0 - 0.5 * stress
+			weights = self.adaptive_engine_weights(dispersion, autocorr, stress_tamper, dt_days=dt_days)
+			regime_label = Regime_Label_From_Weights(weights)
+			if weights.get("convex", 0) > 0:
+				self.convex_duration += 1
+			else:
+				self.convex_duration = 0
+
+			frames = []
+			if weights.get("convex", 0) > 0 and convex_filter in multiverse_candidates:
+				add_block(multiverse_candidates[convex_filter], weights["convex"])
+			if weights.get("linear", 0) > 0 and linear_filter in multiverse_candidates:
+				linear_total = weights.get("linear", 0.0)
+				linear_fast_w = linear_total * tilt
+				linear_slow_w = linear_total * (1.0 - tilt)
+				if linear_fast_w > 0 and linear_fast_filter in multiverse_candidates:
+					add_block(multiverse_candidates[linear_fast_filter], linear_fast_w)
+				if linear_slow_w > 0 and linear_filter in multiverse_candidates:
+					add_block(multiverse_candidates[linear_filter], linear_slow_w)
+			if weights.get("defensive", 0) > 0 and defense_filter in multiverse_candidates:
+				add_block(multiverse_candidates[defense_filter], weights["defensive"])
+			if weights.get("cash", 0) > 0:
+				cash_df = pd.DataFrame({"TargetHoldings": [weights["cash"]]}, index=[CONSTANTS.CASH_TICKER])
+				frames.append(cash_df)
+			if not frames: return pd.DataFrame(columns=["TargetHoldings"]).rename_axis("Ticker")
+			final = (pd.concat(frames).groupby(level=0)["TargetHoldings"].sum().to_frame())
+			final["TargetHoldings"] /= final["TargetHoldings"].sum()
+			state = AdaptiveConvexMarketState(as_of_date = currentDate, reevaluation_interval=int(dt_days), convex_duration  = self.convex_duration, dispersion = dispersion, momentum_autocorr = autocorr, downside_volatility = downside_volatility,  stress_index = stress, corr_6m_1m=corr_6m_1m, corr_1y_1m=corr_1y_1m, convex_weight = weights["convex"], linear_weight = weights["linear"], defensive_weight = weights["defensive"], cash_weight = weights["cash"], regime_label = regime_label, hysteresis_label = self.hysteresis_label, is_warmup=self._adaptive_is_warming)
 		state.Validate()
-		self._AppendAdaptiveState(state)
+		self._append_adaptive_state(state)
 		state.SaveToSQL()
 		return final
 		

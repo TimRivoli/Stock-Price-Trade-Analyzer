@@ -157,7 +157,7 @@ def load_convex_weight_series(db, reEvaluationInterval: int) -> Optional[pd.Seri
 	if df is None or df.empty:
 		return None
 	df.index = pd.to_datetime(df.index)
-	print(f" load_convex_weight_series for batch {modelName} records {len(df)}")
+	print(f" load_convex_weight_series for reEvaluationInterval {reEvaluationInterval} records {len(df)}")
 	return df["convex_weight"].astype(float)
 
 def analyze_portfolio_performance(df: pd.DataFrame, risk_free_rate: float = 0.0, convex_weight_series: Optional[pd.Series] = None) -> TradeModelPerformanceMetrics:
@@ -304,7 +304,7 @@ def analyze_portfolio_performance(df: pd.DataFrame, risk_free_rate: float = 0.0,
 		pct_time_convex_dominant = pct_time_convex_dominant
 	)
 
-def UpdateTradeModelComparisonsFromDailyValue(batchName: str, metrics: TradeModelPerformanceMetrics=None):
+def UpdateTradeModelComparisonsFromDailyValue(batchName: str, reEvaluationInterval:int, metrics: TradeModelPerformanceMetrics=None):
 	db = PTADatabase()
 	if not db.Open():
 		return
@@ -317,16 +317,14 @@ def UpdateTradeModelComparisonsFromDailyValue(batchName: str, metrics: TradeMode
 		db.ExecSQL(sql_update, params=update_params)
 		return
 	sql_models = "SELECT DISTINCT TradeModel FROM TradeModel_DailyValue WHERE BatchName = :batchName"
-	#print(batchName, sql_models)
 	model_names = db.ScalarListFromSQL(sql_models, params={"batchName": batchName}, column="TradeModel")
 	for model_name in model_names:
 		sql_dv = "SELECT Date, TotalValue FROM TradeModel_DailyValue WHERE BatchName = :batchName ORDER BY Date"
-		#print(model_name, batchName, sql_models)
 		df = db.DataFrameFromSQL(sql_dv, params={"batchName": batchName}, indexName="Date")        
 		if df is None or df.empty or len(df) < 2:
 			continue           
 		df.index = pd.to_datetime(df.index)
-		convex_weight_series = load_convex_weight_series(db, model_name)
+		convex_weight_series = load_convex_weight_series(db, reEvaluationInterval)
 		metrics = analyze_portfolio_performance(df=df, convex_weight_series=convex_weight_series)        
 		metrics.modelName = model_name
 		metrics.batchName = batchName       
@@ -450,6 +448,11 @@ class Portfolio:
 			assetValue += (pos.units * pos.latestPrice)
 		self._asset_value = assetValue
 
+	def _cancel_order(self, order: BuyOrder):
+		self._print(f" Buy order for {order.ticker} from {order.datePlaced} has been canceled.")
+		self._cash_committed_to_orders -= order.reserved_cash
+		self._pendingBuys.remove(order)
+	
 	def _check_orders(self, ticker: str, price: float, dateChecked: datetime):
 		price = round(price, 4)
 		if price <= 0: 	return
@@ -461,8 +464,7 @@ class Portfolio:
 			committed_this_order = order.reserved_cash
 			if order.is_expired(dateChecked):
 				self._print(f" Buy order from {order.datePlaced} has expired on {dateChecked}. ticker: {order.ticker}")
-				self._cash_committed_to_orders -= committed_this_order
-				self._pendingBuys.remove(order)
+				self._cancel_order(order)
 				continue
 			if not order.is_executable(price):
 				continue
@@ -833,7 +835,7 @@ class TradingModel(Portfolio):
 		perf.modelName = self.modelName
 		if self.useDatabase:
 			self._recordTradeModelComparisonToSQL(params)
-			UpdateTradeModelComparisonsFromDailyValue(perf.batchName, perf)
+			UpdateTradeModelComparisonsFromDailyValue(perf.batchName, params.reEvaluationInterval, perf)
 		else:
 			self._recordTradeModelComparisonToCSV(params, perf)	
 
@@ -936,12 +938,18 @@ class TradingModel(Portfolio):
 		if totalValue <= 0:
 			print(f" Accounting error assertion: total value cannot be negative ${totalValue}")
 			assert(False)
+		targetPositions = targetPositions.copy()
+		for position in self._positions: #add existing positions
+			if position.ticker not in targetPositions.index:
+				targetPositions.loc[position.ticker, "TargetHoldings"] = 0.0
+		for order in list(self._pendingBuys):
+			if order.ticker not in targetPositions.index:
+				self._cancel_order(order)
 		TotalTargets = targetPositions['TargetHoldings'].sum()
 		if TotalTargets <= 0:
 			self._print(" AlignPositions: total target positions is 0. Selling all positions.")
 			self.SellAllPositions()
 			return
-		targetPositions = targetPositions.copy()
 		targetPositions['Weight'] = targetPositions['TargetHoldings'] / TotalTargets
 		targetPositions['TargetValue'] = targetPositions['Weight'] * totalValue
 
