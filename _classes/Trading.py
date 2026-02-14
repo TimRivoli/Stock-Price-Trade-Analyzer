@@ -52,13 +52,13 @@ class TradeModelParams(SQLFriendlyMixin):
 	marketCapMax: int = 0
 	
 	# System & Execution
-	shopBuyPercent: int = 0
-	shopSellPercent: int = 0
-	trimProfitsPercent: int = 0
+	shopBuyPercent: float = 0.0
+	shopSellPercent: float = 0.0
+	trimProfitsPercent: float = 0.0
 	allocateByPointValue: bool = True
 	rateLimitTransactions: bool = False
 	saveTradeHistory: bool = True
-	use_sql: bool = True
+	useSQL: bool = True
 	saveResults: bool = False
 	verbose: bool = False
 	
@@ -66,7 +66,7 @@ class TradeModelParams(SQLFriendlyMixin):
 	processing_minutes: int = 0	
 	export_fields = [
 		'modelName', 'startDate', 'endDate', 'durationInYears', 'stockCount', 'reEvaluationInterval', 'SP500Only', 	'longHistory', 'shortHistory', 'minPercentGain', 'startValue', 'endValue',
-		'shopBuyPercent', 'shopSellPercent', 'trimProfitsPercent', 'allocateByPointValue', 'filterOption', 'filterByFundamentals', 'rateLimitTransactions','marketCapMin', 'marketCapMax', 'processing_minutes', 'batchName'
+		'shopBuyPercent', 'shopSellPercent', 'trimProfitsPercent', 'allocateByPointValue', 'filterOption', 'useSQL','filterByFundamentals', 'rateLimitTransactions','marketCapMin', 'marketCapMax', 'processing_minutes', 'batchName'
 	]		
 	def __post_init__(self):		
 		self.startDate = self.init_startDate # Trigger the setters to convert types immediately on startup
@@ -84,7 +84,7 @@ class TradeModelParams(SQLFriendlyMixin):
 		if mn == '':
 			if self.filterOption == 99:
 				mn = f"PM_Blended"
-				if self.use_sql: mn += "_SQL" 
+				if self.useSQL: mn += "_SQL" 
 			elif self.filterOption == 98:
 				mn = f"AdaptiveConvex"
 			else: 
@@ -930,29 +930,34 @@ class TradingModel(Portfolio):
 			if ticker == '' or position.ticker == ticker:
 				super(TradingModel, self).SellPosition(position=position, price=position.latestPrice, datePlaced=self.currentDate, marketOrder=True)
 
-	def AlignPositions(self, targetPositions: pd.DataFrame, rateLimitTransactions: bool = False, shopBuyPercent: int = 0, shopSellPercent: int = 0):
+	def AlignPositions(self, targetPositions: pd.DataFrame, rateLimitTransactions:bool = False, shopBuyPercent:float = 0.0, shopSellPercent:float = 0.0):
+		assert isinstance(shopBuyPercent, float), f"Expected float, got {type(shopBuyPercent).__name__}"
+		assert isinstance(shopSellPercent, float), f"Expected float, got {type(shopSellPercent).__name__}"
 		expireAfterDays = 3
-		tradeAtMarket = (shopBuyPercent == 0) and (shopSellPercent == 0)
+		tradeAtMarket = (shopBuyPercent == 0.0) and (shopSellPercent == 0.0)
 		assetValue = sum(p.units * p.latestPrice for p in self._positions)
 		totalValue = self._total_cash + assetValue
 		if totalValue <= 0:
 			print(f" Accounting error assertion: total value cannot be negative ${totalValue}")
 			assert(False)
-		targetPositions = targetPositions.copy()
-		for position in self._positions: #add existing positions
+		if targetPositions is None or targetPositions.empty:
+			targetPositions = pd.DataFrame({"TargetHoldings":[1.0]}, index=[CONSTANTS.CASH_TICKER])
+		else: 
+			targetPositions = targetPositions.copy()
+		for position in self._positions: #add existing positions, if they were not in target then they need to be sold
 			if position.ticker not in targetPositions.index:
 				targetPositions.loc[position.ticker, "TargetHoldings"] = 0.0
 		for order in list(self._pendingBuys):
 			if order.ticker not in targetPositions.index:
 				self._cancel_order(order)
+		
 		TotalTargets = targetPositions['TargetHoldings'].sum()
-		if TotalTargets <= 0:
-			self._print(" AlignPositions: total target positions is 0. Selling all positions.")
-			self.SellAllPositions()
-			return
-		targetPositions['Weight'] = targetPositions['TargetHoldings'] / TotalTargets
-		targetPositions['TargetValue'] = targetPositions['Weight'] * totalValue
-
+		if TotalTargets > 0: 
+			targetPositions['Weight'] = targetPositions['TargetHoldings'] / TotalTargets
+			targetPositions['TargetValue'] = targetPositions['Weight'] * totalValue
+		else:
+			targetPositions['TargetValue'] = targetPositions['TargetHoldings'] 
+			
 		current_value_map = {}
 		for p in self._positions:
 			current_value_map[p.ticker] = current_value_map.get(p.ticker, 0) + (p.units * p.latestPrice)
@@ -1001,7 +1006,7 @@ class TradingModel(Portfolio):
 			if sn is None or sn.Average <= 0:
 				self._print(f" AlignPositions: Unable to get sell price for {ticker} on {self.currentDate}")
 				continue
-			target_sell = round(max(sn.Average, sn.Target) * (1 + shopSellPercent / 100), 4)
+			target_sell = round(max(sn.Average, sn.Target) * (1 + shopSellPercent), 4)
 			price = target_sell if not tradeAtMarket else sn.Average
 			deltaValue = float(row['DeltaValue'])
 			unitsToSell = int(abs(deltaValue) / price)
@@ -1018,7 +1023,7 @@ class TradingModel(Portfolio):
 			if sn is None or sn.Average <= 0:
 				self._print(f" AlignPositions: Unable to get buy price for {ticker} on {self.currentDate}")
 				continue
-			target_buy = round(min(sn.Average, sn.Target) * (1 - shopBuyPercent / 100), 4)
+			target_buy = round(min(sn.Average, sn.Target) * shopBuyPercent, 4)
 			price = target_buy if not tradeAtMarket else sn.Average
 			deltaValue = float(row['DeltaValue'])
 			availableFunds = self._total_cash - self._cash_committed_to_orders
@@ -1029,7 +1034,10 @@ class TradingModel(Portfolio):
 				self._print(f" AlignPositions: Buy {ticker} units={unitsToBuy} @ ${price} (Mkt: {tradeAtMarket})")
 				self.PlaceBuy(ticker=ticker, price=price, units=unitsToBuy, marketOrder=tradeAtMarket, expireAfterDays=expireAfterDays)
 
-	def TrimProfits(self, trimProfitsPercent: int = 0, maxTrimPctPortfolio: float = 0.10, expireAfterDays: int = 3, verbose: bool = False):
+	def TrimProfits(self, trimProfitsPercent: float = 0.03, maxTrimPctPortfolio: float = 0.10, expireAfterDays: int = 3, verbose: bool = False):
+		#If we gained trimProfitsPercent then sell up to maxTrimPctPortfolio
+		assert isinstance(trimProfitsPercent, float), f"Expected float, got {type(trimProfitsPercent).__name__}"
+		assert isinstance(maxTrimPctPortfolio, float), f"Expected float, got {type(maxTrimPctPortfolio).__name__}"
 		if trimProfitsPercent <= 0: return
 		assetValue = sum(p.units * p.latestPrice for p in self._positions)
 		totalValue = self._total_cash + assetValue
@@ -1297,15 +1305,12 @@ class ExtensiveTesting:
 		self.db.ExecSQL(sql, {"params": self._serialize(params)})
 		if self._verbose: print(f"ExtensiveTesting: Enqueued {params.modelName}")
 
-	def claim_from_queue(self) -> tuple[int, TradeModelParams] | None:
-		select_sql = f"SELECT TOP (1) QueueID, ParamsJson FROM {self.QUEUE_TABLE} WITH (UPDLOCK, ROWLOCK, READPAST) WHERE Processing = 0 ORDER BY QueueID"   
-		df = self.db.DataFrameFromSQL(select_sql)   
-		if df.empty: return None	
-		queue_id = int(df.iloc[0]["QueueID"])
-		params_json = df.iloc[0]["ParamsJson"]
-		update_sql = f"UPDATE {self.QUEUE_TABLE} SET Processing = 1, WorkerName = :worker WHERE QueueID = :id"
-		self.db.ExecSQL(update_sql, {"worker": self.worker_name, "id": queue_id})
-		if self._verbose: print(f"Worker {self.worker_name}: Successfully claimed job {queue_id}")		
+	def claim_from_queue(self) -> tuple[int, TradeModelParams | None]:
+		claim_sql = f"WITH NextJob AS (SELECT TOP (1) Processing, WorkerName, QueueID, ParamsJson FROM {self.QUEUE_TABLE} WITH (UPDLOCK, ROWLOCK, READPAST) WHERE Processing = 0 ORDER BY QueueID ASC) UPDATE NextJob SET Processing = 1, WorkerName = :worker OUTPUT INSERTED.QueueID, INSERTED.ParamsJson; "	
+		rows = self.db.ExecSQL(claim_sql, {"worker": self.worker_name})	
+		if not rows: return 0, None
+		queue_id, params_json = rows[0][0], rows[0][1]
+		if self._verbose: print(f"Worker {self.worker_name}: Successfully claimed job {queue_id}")			
 		return queue_id, self._deserialize(params_json)
 
 	def complete_job(self, queue_id: int):
