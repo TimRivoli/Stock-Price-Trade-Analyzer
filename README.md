@@ -13,9 +13,15 @@ Classes Portfolio and TradingModel are used to test emulations of trading strate
 Class ForcastModel has been added to forecast the effect of a series of potential actions on a TradingModel.  I'm using this to create a "best actions" sequence for supervised machine learning in another project.  Given a market state and a sequence of actions (or every possible action) which one produces the best result after X days.  This can then be used to train a robotic trainer with supervised learning.
 
 Module: SeriesPrediction
-Class StockPredictionNN uses LSTM (Long Short Term Memory) and CNN (Convolutional Neural Network) learning functions to predict future prices.  These use Google TensorFlow (tested 1.5.0-2.1.0). The LSTM and CNN models have been updated to use Keras which greatly simplifies the code.  I've also added models for BilateralLSTM, GRU, Flat Dense, and combination CNN/LSTM.  These models don't learn very well; the results mimic what I've seen done elsewhere which is that they simply push the predicted output to the right with a minimal variance, giving good accuracy but not a very useful tool.  A simple SMA extension is more accurate.  I was hoping I could get some deep learning going.  Sadly not so much.
+StateSurprisePredictionNN is a machine-learning model designed to predict surprise deviations from trend rather than predicting raw price. It works by first generating a baseline forecast using a simple trend continuation model (typically a linear extrapolation of recent price slope over a chosen horizon). 
+The model then computes the residual: Residual = FuturePrice − BaselineForecast
+This residual represents the unexpected component of price movement — effectively the “surprise” change from what the trend would predict. The network is trained on a set of engineered state features (momentum, volatility, deviation from mean/trend, compression, etc.) and learns a nonlinear mapping from the current market state to the expected residual outcome. 
+The output is split into:
+	Direction likelihood (probability of positive vs negative surprise)
+	Magnitude estimate (expected size of the surprise move)
+This allows the model to identify when price is likely to break from its expected trend path and estimate how large that divergence may be.
 
-TrainPrices.py shows samples of using the StockPredictionNN class to train and test PricingData using LSTM and CNN machine learning techniques.  
+TrainPrices.py shows samples of using the StateSurprisePredictionNN class to train and test PricingData using machine learning techniques.  Results are then statistically analyzed for significance.
 
 PredictionExperiment.py tests three methods of predicting future stock prices.  Linear (future price in x days with be a straight line from the previous x days), CNN Learning, and LSTM learning.  This tests three questions:  1) Linear - How often can future prices be directly determined by plotting a straight line from past prices? 2) CNN - to what extent does the visual shape of past prices determine future prices 3) LSTM - are there patterns in the series of prices which can be used to predict future prices?  The answers certainly surpised me.  Feel free to run your own tests.  The results in "Prediction Accuracy Tests.ods" are from the models used in the March version of the code which has since been reworked. I haven't re-run all the same tests.  The tests were for 750 epochs using the SP500 index data from 1950 to the present with prices normalized.  I stopped at 750 epochs because I didn't find the accuracy improving much with futher interations.  I was surprised that normalization improved the accuracy, while converting the numbers to percentage change from the previous day greatly reduced the accuracy, as did introducing additional features to the input.  If you would like to do your own tests I recommend using TestPredictionModels from TrainPrices.py as it will do all the work of conversions and plotting for you with just a few parameter values.  
 
@@ -30,8 +36,9 @@ And of course, special thanks to ChatGPT and Gemini for helping my modernize my 
 
 I've tested this on both Windows Python 3.10-3.13, TensorFlow 2.20.0, Keras 3.11.3.
 Requirements: happily all native Python and no C++ compilers
+
 Windows PIP install requirements with:
-pip install tqdm, pandas numpy matplotlib requests pyodbc yfinance sqlalchemy curl_cffi
+pip install tqdm, pandas numpy matplotlib scipy requests pyodbc yfinance sqlalchemy curl_cffi
 pip install tensorflow keras
 
 Have fun and keep programming!
