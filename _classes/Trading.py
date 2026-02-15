@@ -52,13 +52,14 @@ class TradeModelParams(SQLFriendlyMixin):
 	marketCapMax: int = 0
 	
 	# System & Execution
+	pickHistoryWindow: int = 44 #Two trading months
 	shopBuyPercent: float = 0.0
 	shopSellPercent: float = 0.0
 	trimProfitsPercent: float = 0.0
 	allocateByPointValue: bool = True
 	rateLimitTransactions: bool = False
 	saveTradeHistory: bool = True
-	useSQL: bool = True
+	useDatabase: bool = True
 	saveResults: bool = False
 	verbose: bool = False
 	
@@ -66,7 +67,7 @@ class TradeModelParams(SQLFriendlyMixin):
 	processing_minutes: int = 0	
 	export_fields = [
 		'modelName', 'startDate', 'endDate', 'durationInYears', 'stockCount', 'reEvaluationInterval', 'SP500Only', 	'longHistory', 'shortHistory', 'minPercentGain', 'startValue', 'endValue',
-		'shopBuyPercent', 'shopSellPercent', 'trimProfitsPercent', 'allocateByPointValue', 'filterOption', 'useSQL','filterByFundamentals', 'rateLimitTransactions','marketCapMin', 'marketCapMax', 'processing_minutes', 'batchName'
+		'pickHistoryWindow', 'shopBuyPercent', 'shopSellPercent', 'trimProfitsPercent', 'allocateByPointValue', 'filterOption', 'useDatabase','filterByFundamentals', 'rateLimitTransactions','marketCapMin', 'marketCapMax', 'processing_minutes', 'batchName'
 	]		
 	def __post_init__(self):		
 		self.startDate = self.init_startDate # Trigger the setters to convert types immediately on startup
@@ -84,15 +85,18 @@ class TradeModelParams(SQLFriendlyMixin):
 		if mn == '':
 			if self.filterOption == 99:
 				mn = f"PM_Blended"
-				if self.useSQL: mn += "_SQL" 
+				if self.useDatabase: mn += "_DB" 
 			elif self.filterOption == 98:
 				mn = f"AdaptiveConvex"
 			else: 
 				mn = f"PM_filter{self.filterOption}"
 		if self.filterByFundamentals and not "_FF" in mn: mn += "_FF"
 		if self.SP500Only and not "_SP500" in mn: mn += "_SP500"
-		if self.allocateByPointValue and not "_PVAlloc" in mn: mn += "_PVAlloc"
-		if self.rateLimitTransactions and not "_RateLimit" in mn:  mn += "_RateLimit"
+		if self.allocateByPointValue and not "_PVA" in mn: mn += "_PVA"
+		if self.pickHistoryWindow > 0 and not "_HW" in mn:  mn += f"_HW{self.pickHistoryWindow}"
+		if self.rateLimitTransactions and not "_RL" in mn:  mn += "_RL"
+		if self.shopBuyPercent > 0 and not "_SB" in mn:  mn += f"_SB{self.shopBuyPercent}"
+		if self.shopSellPercent > 0 and not "_SS" in mn:  mn += f"_SS{self.shopSellPercent}"
 		self.modelName = mn
 
 @dataclass
@@ -1023,7 +1027,7 @@ class TradingModel(Portfolio):
 			if sn is None or sn.Average <= 0:
 				self._print(f" AlignPositions: Unable to get buy price for {ticker} on {self.currentDate}")
 				continue
-			target_buy = round(min(sn.Average, sn.Target) * shopBuyPercent, 4)
+			target_buy = round(min(sn.Average, sn.Target) * (1-shopBuyPercent), 4)
 			price = target_buy if not tradeAtMarket else sn.Average
 			deltaValue = float(row['DeltaValue'])
 			availableFunds = self._total_cash - self._cash_committed_to_orders
@@ -1034,7 +1038,7 @@ class TradingModel(Portfolio):
 				self._print(f" AlignPositions: Buy {ticker} units={unitsToBuy} @ ${price} (Mkt: {tradeAtMarket})")
 				self.PlaceBuy(ticker=ticker, price=price, units=unitsToBuy, marketOrder=tradeAtMarket, expireAfterDays=expireAfterDays)
 
-	def TrimProfits(self, trimProfitsPercent: float = 0.03, maxTrimPctPortfolio: float = 0.10, expireAfterDays: int = 3, verbose: bool = False):
+	def TrimProfits(self, trimProfitsPercent: float = 0.06, maxTrimPctPortfolio: float = 0.10, expireAfterDays: int = 3, verbose: bool = False):
 		#If we gained trimProfitsPercent then sell up to maxTrimPctPortfolio
 		assert isinstance(trimProfitsPercent, float), f"Expected float, got {type(trimProfitsPercent).__name__}"
 		assert isinstance(maxTrimPctPortfolio, float), f"Expected float, got {type(maxTrimPctPortfolio).__name__}"

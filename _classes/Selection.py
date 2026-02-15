@@ -10,9 +10,10 @@ from _classes.Prices import PriceSnapshot, PricingData
 from _classes.DataIO import PTADatabase
 from _classes.TickerLists import TickerLists
 
-BASE_RAMP_UP_PER_DAY = 0.06     # convex ramps fast
-BASE_RAMP_DOWN_PER_DAY = 0.03   # convex decays slower (asymmetry)
 ADAPTIVE_WARMUP_DAYS = 60 		# small, deterministic warmup for the convex engine
+EMPTY_RESULT = pd.DataFrame(columns=['TargetHoldings', 'Point_Value'])
+EMPTY_RESULT.loc[CONSTANTS.CASH_TICKER] = {'TargetHoldings': 1.0, 'Point_Value': 10}
+EMPTY_RESULT.index.name = 'Ticker'
 
 @dataclass
 class AdaptiveConvexMarketState:
@@ -36,7 +37,7 @@ class AdaptiveConvexMarketState:
 	cash_weight: float = 1.0
 	
 	# Optional diagnostics / state
-	version: Optional[float] = 3.2
+	version: Optional[float] = 3.3
 	is_warmup: Optional[bool] = False
 	regime_label: Optional[str] = 'NO_DATA'
 	hysteresis_label: Optional[str] = 'NO_DATA'
@@ -74,7 +75,7 @@ class AdaptiveConvexMarketState:
 			db.Close()
 			
 class StockPicker():
-	def __init__(self, startDate:datetime=None, endDate:datetime=None, verbose:bool = False): 
+	def __init__(self, startDate:datetime=None, endDate:datetime=None, pickHistoryWindow=60, verbose:bool = False): 
 		self.pbar = None
 		self.verbose = verbose
 		self.priceData = []
@@ -89,7 +90,52 @@ class StockPicker():
 		self.convex_duration = 0
 		self.lockout_days_remaining = 0
 		self.hysteresis_label = "NEUTRAL"
-		self._adaptive_history_df = pd.DataFrame()
+		self._adaptive_history_df = None
+		self._pick_history = None
+		self.pickHistoryWindowSize = pickHistoryWindow
+
+	# ---------------- Rolling SQLHist-style aggregation (Adaptive version) ----------------	
+	# def _rolling_history_append(self, currentDate, todays_picks, max_picks: int = 15):
+		# if not hasattr(self, "_pick_history") or self._pick_history is None:
+			# self._pick_history = pd.DataFrame(columns=["as_of_date", "TargetHoldings", "Point_Value"])
+		# todays_picks = todays_picks[["TargetHoldings", "Point_Value"]].copy()
+		# todays_picks["as_of_date"] = pd.to_datetime(currentDate)
+		# self._pick_history = pd.concat([self._pick_history, todays_picks])
+		# cutoff = pd.to_datetime(currentDate) - pd.offsets.BDay(self.pickHistoryWindowSize)
+		# self._pick_history = self._pick_history[self._pick_history["as_of_date"] >= cutoff].sort_values("as_of_date")
+		# hist = self._pick_history.copy()
+		# hist["PV_EMA"] = hist.groupby(level=0)["Point_Value"].transform( lambda x: x.ewm(span=self.pickHistoryWindowSize, adjust=False).mean())
+		# agg = hist.groupby(hist.index).agg(
+			# TargetHoldings=("TargetHoldings", "sum"),
+			# Point_Value=("PV_EMA", "last"),
+			# DateCount=("as_of_date", "nunique"),
+			# FirstDate=("as_of_date", "min"),
+			# LastDate=("as_of_date", "max")
+		# )
+		# agg = agg.sort_values("TargetHoldings", ascending=False).head(max_picks)
+		# agg["TargetHoldings"] /= agg["TargetHoldings"].sum()
+		# return agg[["TargetHoldings", "Point_Value"]].copy()
+
+	def _rolling_history_append(self, currentDate, todays_picks, max_picks: int = 15):
+		if not hasattr(self, "_pick_history") or self._pick_history is None:
+			self._pick_history = pd.DataFrame(columns=["as_of_date", "TargetHoldings", "Point_Value"])
+		todays_picks = todays_picks[["TargetHoldings", "Point_Value"]].copy()
+		todays_picks["as_of_date"] = pd.to_datetime(currentDate)
+		self._pick_history = pd.concat([self._pick_history, todays_picks])
+		cutoff = pd.to_datetime(currentDate) - pd.offsets.BDay(self.pickHistoryWindowSize)
+		self._pick_history = self._pick_history[self._pick_history["as_of_date"] >= cutoff].sort_values("as_of_date")
+		hist = self._pick_history.copy()
+		hist["PV_EMA"] = hist.groupby(level=0)["Point_Value"].transform(lambda x: x.ewm(span=self.pickHistoryWindowSize, adjust=False).mean())
+		agg = hist.groupby(hist.index).agg(
+			TargetHoldings=("TargetHoldings", "sum"), 
+			DateCount=("as_of_date", "nunique"),
+			FirstDate=("as_of_date", "min"),
+			LastDate=("as_of_date", "max"),
+			Point_Value=("PV_EMA", "last")
+		)
+		agg = agg.sort_values("TargetHoldings", ascending=False).head(max_picks)
+		agg["TargetHoldings"] /= agg["TargetHoldings"].sum()
+		return agg[["TargetHoldings", "DateCount", "FirstDate", "LastDate", "Point_Value"]].copy()
 
 #-------------------------------------------- Housekeeping Load/Unload Tickers -----------------------------------------------
 	def PrintWrapper(self, value:str):
@@ -152,8 +198,7 @@ class StockPicker():
 	def GetHighestPriceMomentumMulti(self, currentDate: datetime, filterOptions: dict, minPercentGain: float = 0.05):
 		if not isinstance(filterOptions, dict):
 			raise ValueError("filterOptions must be a dict like {filter_id: stock_count}")
-		EMPTY_RESULT = pd.DataFrame(columns=['TargetHoldings', 'Point_Value'])
-		EMPTY_RESULT.index.name = 'Ticker'
+
 		candidates = {}
 		currentDate = ToTimestamp(currentDate)
 		max_allowed_date = (pd.Timestamp.now().normalize() - pd.offsets.BusinessDay(1)).to_pydatetime()
@@ -208,34 +253,45 @@ class StockPicker():
 			candidates[filter_option] = df.head(int(stocks_to_return))
 		return candidates
 
-	def GetHighestPriceMomentum(self, currentDate:datetime, stocksToReturn:int = 5, filterOption:int = 3, minPercentGain:float = 0.05, allocateByTargetHoldings:bool = False, allocateByPointValue=False):
-		filter_options = {filterOption:stocksToReturn}
-		result = self.GetHighestPriceMomentumMulti(currentDate=currentDate, filterOptions=filter_options, minPercentGain=minPercentGain)
-		result = result.get(filterOption, pd.DataFrame())
+	def GetHighestPriceMomentum(self, currentDate:datetime, stocksToReturn:int = 10, filterOption:int = 5, minPercentGain:float = 0.05, allocateByTargetHoldings:bool = False, allocateByPointValue=False, useRollingWindow=True):
+		filter_options = {filterOption: stocksToReturn}
+		multiverse_candidates = self.GetHighestPriceMomentumMulti(currentDate=currentDate, filterOptions=filter_options, minPercentGain=minPercentGain)
+		todays_picks = multiverse_candidates.get(filterOption, pd.DataFrame())
+		if todays_picks is None or todays_picks.empty:
+			return pd.DataFrame(columns=["TargetHoldings", "Point_Value"]).rename_axis("Ticker")
 		if allocateByTargetHoldings:
-			result = result.groupby(level=0)[['Point_Value']].sum().rename(columns={'Point_Value': 'TargetHoldings'})
+			todays_picks = todays_picks.groupby(level=0).agg(
+				TargetHoldings=("Point_Value", "size"),
+				Point_Value=("Point_Value", "mean")
+			)
+			if useRollingWindow:
+				todays_picks = self._rolling_history_append(currentDate=currentDate, todays_picks=todays_picks, max_picks=stocksToReturn)
 		elif allocateByPointValue:
-			result = result.groupby(level=0).size().to_frame(name='TargetHoldings')
-		return result
+			todays_picks = todays_picks.groupby(level=0).agg(
+				TargetHoldings=("Point_Value", "sum"),
+				Point_Value=("Point_Value", "mean")
+			)
+			if useRollingWindow:
+				todays_picks = self._rolling_history_append(currentDate=currentDate, todays_picks=todays_picks, max_picks=stocksToReturn)
+			todays_picks["TargetHoldings"] = todays_picks["Point_Value"]
+			todays_picks["TargetHoldings"] /= todays_picks["TargetHoldings"].sum()
+		return todays_picks
 
-	def GetPicksBlended(self, currentDate:date, filter1:int = 3, filter2: int = 3, filter3: int = 1, filter4: int = 5, minPercentGain:float = 0.05):
+	def GetPicksBlended(self, currentDate:date, filter1:int = 3, filter2: int = 3, filter3: int = 1, filter4: int = 5, minPercentGain:float = 0.05, useRollingWindow:bool = True):
 		#generates list of tickers with TargetHoldings which indicate proportion of holdings	
 		filter_options = {filter1:3, filter2:3, filter3:3, filter4:4}
 		multiverse_candidates = self.GetHighestPriceMomentumMulti(currentDate=currentDate, filterOptions=filter_options, minPercentGain=minPercentGain)
-		list1 = multiverse_candidates[filter1]
-		list2 = multiverse_candidates[filter2]
-		list3 = multiverse_candidates[filter3]
-		list4 = multiverse_candidates[filter4]
-		all_inputs = [list1, list2, list3, list4]
-		valid_inputs = [i for i in all_inputs if i is not None and len(i) > 0]
-		if not valid_inputs:
-			return pd.DataFrame(columns=['TargetHoldings']).rename_axis('Ticker')
-		result = pd.concat([list1, list2, list3, list4], sort=True) #append lists together
-		result = pd.DataFrame(result.groupby(level=0).size()) #Group by ticker with new colum for TargetHoldings, .size=count; .sum=sum, keeps only the index and the count
-		result.index.name='Ticker'
-		result.rename(columns={0:'TargetHoldings'}, inplace=True)
-		result.sort_values('TargetHoldings', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last') 
-		return result
+		df1 = multiverse_candidates.get(filter1, pd.DataFrame())
+		df2 = multiverse_candidates.get(filter2, pd.DataFrame())
+		df3 = multiverse_candidates.get(filter3, pd.DataFrame())
+		df4 = multiverse_candidates.get(filter4, pd.DataFrame())
+		todays_picks = pd.concat([df1, df2, df3, df4], sort=True)
+		todays_picks = todays_picks.groupby(level=0).agg(TargetHoldings=('Point_Value', 'size'), Point_Value=('Point_Value', 'last'))
+		#todays_picks["TargetHoldings"] /= todays_picks["TargetHoldings"].sum()
+		todays_picks.sort_values('TargetHoldings', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last')
+		todays_picks.index.name='Ticker'
+		if useRollingWindow: todays_picks = self._rolling_history_append(currentDate=currentDate, todays_picks=todays_picks, max_picks=15)
+		return todays_picks
 
 	def GetPicksBlendedSQL(self, currentDate:date, sqlHistory:int=90):
 		result = None
@@ -393,7 +449,7 @@ class StockPicker():
 		if autocorr < auto_exit or stress_tamper < 0.30:
 			self.convex_state = False
 			self.hysteresis_label = "LOCKED_OUT"
-			self.lockout_days_remaining = int(5 + 20 * (1.0 - stress_tamper))
+			self.lockout_days_remaining = int(2 + 5 * (1.0 - stress_tamper))
 			return False
 		# Soft exit (normal fade)
 		self.convex_state = False
@@ -404,9 +460,10 @@ class StockPicker():
 		# --- 1. Hysteresis gate (discrete, intentional) ---
 		self.convex_state = self.update_convex_state_with_hysteresis(dispersion, autocorr, stress_tamper, dt_days=dt_days)
 		if not self.convex_state:
-			def_w = 0.10 * stress_tamper
-			cash_w = 1.0 - def_w
-			target = {"convex": 0.0, "linear": 0.0, "defensive": def_w, "cash": cash_w}
+			defensive_w    = 0.10 + 0.10 * (1.0 - stress_tamper)
+			linear_w = 0.75 * stress_tamper
+			cash_w   = 1.0 - linear_w - defensive_w
+			target = {"convex": 0.0, "linear": linear_w, "defensive": defensive_w, "cash": cash_w}
 		else:
 			# --- 2. Smooth convex intensity from dispersion (sigmoid) ---
 			disp_center = 0.25
@@ -421,21 +478,19 @@ class StockPicker():
 			momentum_factor = float(np.clip(momentum_factor, 0.0, 1.0))
 
 			# --- 4. Raw convex weight ---
-			convex_w = float(np.clip(disp_intensity * momentum_factor, 0.0, 0.85))
+			convex_w = float(np.clip(disp_intensity * momentum_factor, 0.0, 0.95))
 			if stress_tamper < 0.75: convex_w *= stress_tamper
-			#convex_w = float(np.clip(convex_raw, 0.0, 0.85))
-			#convex_w *= stress_tamper
 
 			# --- 5. Smooth cash response ---
-			#min_cash = 0.05 + 0.40 * (1.0 - stress_tamper)
-			min_cash = 0.05 + 0.25 * (1.0 - stress_tamper)
-			max_cash = 0.90
-			cash_power = 1.5
+			min_cash = 0.0 + 0.25 * (1.0 - stress_tamper)
+			max_cash = 0.15
+			cash_power = 0.5
 			cash_w = min_cash + (1.0 - convex_w) ** cash_power * (max_cash - min_cash)
 			cash_w = float(np.clip(cash_w, min_cash, max_cash))
 
 			# --- 6. Linear absorbs remainder ---
-			linear_w = max(0.0, 1.0 - convex_w - cash_w)
+			defensive_w = 0.05 + 0.15 * (1.0 - stress_tamper)
+			linear_w = max(0.0, 1.0 - convex_w - cash_w - defensive_w)
 
 			# --- 7. Normalize ---
 			total = convex_w + linear_w + cash_w
@@ -447,8 +502,8 @@ class StockPicker():
 
 		# --- 8. Time-scaled ramp smoothing (dt aware) ---
 		prev = getattr(self, "_prev_weights", {"convex": 0.0, "linear": 0.10, "defensive": 0.0, "cash": 0.90})
-		base_up = 0.10   # per-day speed when convex increases
-		base_dn = 0.20 * (1.0 + 1.2 * (1.0 - stress_tamper))
+		base_up = 0.25
+		base_dn = 0.08
 
 		prev_convex = prev.get("convex", 0.0)
 		target_convex = target.get("convex", 0.0)
@@ -469,24 +524,19 @@ class StockPicker():
 
 	def _append_adaptive_state(self, params: AdaptiveConvexMarketState):
 		row = {"as_of_date": params.as_of_date,"convex_duration": params.convex_duration,"dispersion": params.dispersion,"momentum_autocorr": params.momentum_autocorr,"downside_volatility": params.downside_volatility,"stress_index": params.stress_index,"convex_weight": params.convex_weight,"linear_weight": params.linear_weight,"defensive_weight": params.defensive_weight,"cash_weight": params.cash_weight,"regime_label": params.regime_label,"hysteresis_label": params.hysteresis_label}
-
 		df_new = pd.DataFrame([row])
 		df_new["as_of_date"] = pd.to_datetime(df_new["as_of_date"])
 		df_new = df_new.set_index("as_of_date")
-
 		if self._adaptive_history_df is None or self._adaptive_history_df.empty:
 			self._adaptive_history_df = df_new
 		else:
 			# 2. Ensure the existing DF is also datetime-indexed before concat
 			if not pd.api.types.is_datetime64_any_dtype(self._adaptive_history_df.index):
-				self._adaptive_history_df.index = pd.to_datetime(self._adaptive_history_df.index)
-			
+				self._adaptive_history_df.index = pd.to_datetime(self._adaptive_history_df.index)		
 			self._adaptive_history_df = pd.concat([self._adaptive_history_df, df_new])
-
 		# 3. Clean up duplicates and sort
 		self._adaptive_history_df = self._adaptive_history_df[~self._adaptive_history_df.index.duplicated(keep="last")]
 		self._adaptive_history_df = self._adaptive_history_df.sort_index()
-
 		# 4. Use a Pandas-native Timestamp for the cutoff comparison
 		cutoff = pd.to_datetime(params.as_of_date) - pd.Timedelta(days=365)
 		self._adaptive_history_df = self._adaptive_history_df[self._adaptive_history_df.index >= cutoff]
@@ -507,6 +557,7 @@ class StockPicker():
 				return
 			out = pd.DataFrame(index=df.index)
 			out["TargetHoldings"] = block_weight / len(df)
+			out["Point_Value"] = df["Point_Value"]
 			frames.append(out)
 
 		if self._adaptive_last_date is None:
@@ -518,25 +569,38 @@ class StockPicker():
 		filters = {0:250, convex_filter:4, linear_filter:5, linear_fast_filter:4, defense_filter:6}
 		multiverse_candidates = self.GetHighestPriceMomentumMulti(currentDate=currentDate, filterOptions=filters)
 		df = multiverse_candidates[0]
-		if df is None or df.empty:
+		if (df.index == CONSTANTS.CASH_TICKER).all() or not 'PC_1Year' in df.columns:
+			todays_picks = EMPTY_RESULT.copy()
 			state = AdaptiveConvexMarketState(as_of_date = currentDate, reevaluation_interval=int(dt_days))
-			final = pd.DataFrame({"TargetHoldings":[1.0]}, index=[CONSTANTS.CASH_TICKER])
-			final.loc[CONSTANTS.CASH_TICKER] = {'TargetHoldings': 1.0, 'Point_Value': 100}
-			final = df
 		else:
 			dispersion = self.compute_cross_sectional_dispersion(df)
 			autocorr = self.compute_momentum_autocorr(df)
 			downside_volatility = self.compute_downside_volatility(df)
 			stress = self.compute_stress_index(dispersion, autocorr, downside_volatility) 
+			if stress > 0.7:
+				self.pickHistoryWindowSize = 20
+			elif stress > 0.4:
+				self.pickHistoryWindowSize = 40
+			else:
+				self.pickHistoryWindowSize = 60
 			tilt, corr_6m_1m, corr_1y_1m = self.compute_leadership_tilt(df)
-			stress_tamper = 1.0 - 0.5 * stress
+			stress_tamper = 1.0 - 0.25 * stress
 			weights = self.adaptive_engine_weights(dispersion, autocorr, stress_tamper, dt_days=dt_days)
 			regime_label = Regime_Label_From_Weights(weights)
 			if weights.get("convex", 0) > 0:
 				self.convex_duration += 1
 			else:
 				self.convex_duration = 0
-			frames = []
+
+			# --- enforce min equity ---
+			min_equity = 0.70 - 0.30 * stress_tamper   # ranges 0.40 to 0.70
+			equity_w = weights["convex"] + weights["linear"] + weights["defensive"]
+			if equity_w < min_equity:
+				add = min_equity - equity_w
+				weights["linear"] += add
+				weights["cash"] -= add			
+			
+			frames = []			
 			if weights.get("convex", 0) > 0 and convex_filter in multiverse_candidates:
 				add_block(multiverse_candidates[convex_filter], weights["convex"])
 			if weights.get("linear", 0) > 0 and linear_filter in multiverse_candidates:
@@ -550,16 +614,17 @@ class StockPicker():
 			if weights.get("defensive", 0) > 0 and defense_filter in multiverse_candidates:
 				add_block(multiverse_candidates[defense_filter], weights["defensive"])
 			if weights.get("cash", 0) > 0:
-				cash_df = pd.DataFrame({"TargetHoldings": [weights["cash"]]}, index=[CONSTANTS.CASH_TICKER])
+				cash_df = EMPTY_RESULT.copy()
 				frames.append(cash_df)
-			if not frames: return pd.DataFrame(columns=["TargetHoldings"]).rename_axis("Ticker")
-			final = (pd.concat(frames).groupby(level=0)["TargetHoldings"].sum().to_frame())
-			final["TargetHoldings"] /= final["TargetHoldings"].sum()
+			if not frames: return pd.DataFrame(columns=["TargetHoldings", "Point_Value"]).rename_axis("Ticker")
+			todays_picks = pd.concat(frames).groupby(level=0).agg(TargetHoldings=("TargetHoldings", "sum"), Point_Value=("Point_Value", "first"))
+			todays_picks["TargetHoldings"] /= todays_picks["TargetHoldings"].sum()
 			state = AdaptiveConvexMarketState(as_of_date = currentDate, reevaluation_interval=int(dt_days), convex_duration  = self.convex_duration, dispersion = dispersion, momentum_autocorr = autocorr, downside_volatility = downside_volatility,  stress_index = stress, corr_6m_1m=corr_6m_1m, corr_1y_1m=corr_1y_1m, convex_weight = weights["convex"], linear_weight = weights["linear"], defensive_weight = weights["defensive"], cash_weight = weights["cash"], regime_label = regime_label, hysteresis_label = self.hysteresis_label, is_warmup=self._adaptive_is_warming)
 		state.Validate()
 		self._append_adaptive_state(state)
 		state.SaveToSQL()
-		return final
+		todays_picks = self._rolling_history_append(currentDate=currentDate, todays_picks=todays_picks)
+		return todays_picks
 		
 def Regime_Label_From_Weights(weights):
 	if weights["convex"] < 0.05 and weights["cash"] > 0.7:
@@ -578,55 +643,57 @@ def Business_Days_Since(prev_date, current_date):
 def Generate_PicksBlendedSQL_DateRange(startYear:int=None, years: int=0, replaceExisting:bool=False, verbose:bool=False):
 	db = PTADatabase()
 	if db.Open():
-		today = GetLatestBDay()
+		today = ToTimestamp(GetLatestBDay())
 		if startYear== None:
 			startYear = today.year
 			endDate = (today - pd.offsets.BDay(1)).date() 
 		else:
-			endDate = ToDate('12/31/' + str(startYear))	
-		startDate = ToDate('1/1/' + str(startYear-years))
-		current_date = endDate
+			endDate = ToTimestamp('12/31/' + str(startYear+years))	
+		startDate = ToTimestamp('1/1/' + str(startYear))		
+		if endDate > today: endDate = today
+		if startDate > today: startDate = today
+		current_date = startDate
+		p = PricingData(CONSTANTS.CASH_TICKER)
+		p.LoadHistory(requestedStartDate=startDate, requestedEndDate=endDate)
+		date_index = p.historicalPrices.index
 		picker = StockPicker(startDate=startDate, endDate=endDate)
-		dates = db.ScalarListFromSQL("SELECT Date FROM rpt_PicksBlendedDaily_MissingDates WHERE year>=:StartYear AND year<=:EndYear ORDER BY Date",	{"StartYear": startDate.year, "EndYear": endDate.year},	column="Date")
-		missing_dates = [d.date() if isinstance(d, datetime) else datetime.strptime(d, '%Y-%m-%d %H:%M:%S').date() for d in dates]
-		#print(current_date)
-		#print(missing_dates)
-		#missing_dates = [datetime.strptime(row[0], '%Y-%m-%d').date() for row in results]
+		existing_dates = db.ScalarListFromSQL("SELECT Date FROM PicksBlendedDaily WHERE [Date]>=:startDate AND [Date]<=:endDate ORDER BY Date",	{"startDate": startDate, "endDate": endDate},	column="Date")
+		print(f" Generate_PicksBlended_DateRange from {startDate} to {endDate}")				
 		prev_month = -1
-		while current_date >= startDate:
-			if current_date.weekday() < 5: #Python Monday=0, skip weekends
-				ExistingDataCount = 0
-				if not replaceExisting:					
-					if not current_date in missing_dates: ExistingDataCount = 1
-				if replaceExisting or ExistingDataCount == 0:
-					if current_date.month != prev_month:
-						if verbose: print(" Generate_PicksBlended_DateRange: Getting tickers for year " + str(current_date.year))				
-						tickers = TickerLists.GetTickerListSQL(year=current_date.year, month=current_date.month, SP500Only=False, filterByFundamentals=False, marketCapMin=100) 
-						TotalStocks=len(tickers)
-						if verbose: print(" Generate_PicksBlended_DateRange: Total stocks: " + str(TotalStocks))
-						picker.AlignToList(tickers)			
-						TotalValidCandidates = len(picker._tickerList) 
-						if verbose: print(' Generate_PicksBlended_DateRange: Running PicksBlended generation on ' + str(TotalValidCandidates) + ' of ' + str(TotalStocks) + ' stocks from ' + str(startDate) + ' to ' + str(endDate))		
-						if TotalValidCandidates==0: assert(False)
-						prev_month = current_date.month
-					if verbose: print(' Generate_PicksBlended_DateRange: Blended 3.3.1.PV Picks - ' + str(current_date))
-					result = picker.GetPicksBlended(currentDate=current_date)
-					if verbose: print(result)
-					if len(result) == 0:
-						if verbose: print(" Generate_PicksBlended_DateRange: No data found.")
-					else:
-						result['Date'] = current_date 
-						result['TotalStocks'] = TotalStocks
-						result['TotalValidCandidates'] = TotalValidCandidates
-						print(result)
-						db.ExecSQL("DELETE FROM PicksBlendedDaily WHERE Date='" + str(current_date) + "'")
-						db.DataFrameToSQL(result, tableName='PicksBlendedDaily', indexAsColumn=True, clearExistingData=False)
-					result=None
-			current_date -= timedelta(days=1) 
+		tickers = []
+		for current_date in date_index:
+			print(current_date, endDate)
+			exists = current_date in existing_dates
+			if replaceExisting or not exists:
+				if current_date.month != prev_month:
+					if verbose: print(" Generate_PicksBlended_DateRange: Getting tickers for year " + str(current_date.year))				
+					new_tickers = TickerLists.GetTickerListSQL(year=current_date.year, month=current_date.month, SP500Only=False, filterByFundamentals=False) 
+					if len(new_tickers) > 0:
+						if verbose: print(f" Generate_PicksBlended_DateRange: Re-query tickers found {len(new_tickers)} instead of previous {len(tickers)}")
+						tickers = new_tickers
+					stock_count=len(tickers)
+					picker.AlignToList(tickers)			
+					TotalValidCandidates = len(picker._tickerList) 
+					if verbose: print(' Generate_PicksBlended_DateRange: Running PicksBlended generation on ' + str(TotalValidCandidates) + ' of ' + str(stock_count) + ' stocks from ' + str(startDate) + ' to ' + str(endDate))		
+					if TotalValidCandidates==0: assert(False)
+					prev_month = current_date.month
+				if verbose: print(f" Generate_PicksBlended_DateRange: Blended using default filters for date {current_date}")
+				result = picker.GetPicksBlended(currentDate=current_date)
+				if verbose: print(result)
+				if len(result) == 0:
+					if verbose: print(" Generate_PicksBlended_DateRange: No data found.")
+				else:
+					result['Date'] = current_date 
+					result['TotalStocks'] = stock_count
+					result['TotalValidCandidates'] = TotalValidCandidates
+					print(result)
+					db.ExecSQL("DELETE FROM PicksBlendedDaily WHERE Date='" + str(current_date) + "'")
+					db.DataFrameToSQL(result, tableName='PicksBlendedDaily', indexAsColumn=True, clearExistingData=False)
+				result=None
 	db.ExecSQL("sp_UpdateBlendedPicks")
 	db.Close()
 		
 def Update_PicksBlendedSQL(replaceExisting:bool=False):
 	#If replaceExisting then it will do the current YTD, else just what is missing
 	print('Updating PicksBlended')
-	Generate_PicksBlended_DateRange(replaceExisting=replaceExisting)	
+	Generate_PicksBlended_DateRange(replaceExisting=replaceExisting, verbose=True)	
