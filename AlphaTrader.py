@@ -49,6 +49,7 @@ def RunPriceMomentum(params: TradeModelParams):
 	params.modelName = ''
 	params.AddModelNameModifiers()
 	tm = TradingModel(modelName=params.modelName, startingTicker=CONSTANTS.CASH_TICKER, startDate=params.startDate, durationInYears=params.durationInYears, totalFunds=params.portfolioSize, verbose=params.verbose)
+	tickerList = TickerLists.SP500_2026()
 	dayCounter = 0
 	currentYear = 0
 	picker = StockPicker(startDate=params.startDate, endDate=params.endDate, pickHistoryWindow=params.pickHistoryWindow) 
@@ -115,7 +116,6 @@ def RunPriceMomentumBlended(params: TradeModelParams, filter1:int = 3, filter2: 
 	picker = StockPicker(startDate=params.startDate, endDate=params.endDate, pickHistoryWindow=params.pickHistoryWindow) 
 	tm = TradingModel(modelName=params.modelName , startingTicker=CONSTANTS.CASH_TICKER, startDate=params.startDate, durationInYears=params.durationInYears, totalFunds=params.portfolioSize, verbose=params.verbose)
 	tickerList = TickerLists.SP500_2026()
-
 	dayCounter = 0
 	currentYear = 0
 	if not tm.modelReady:
