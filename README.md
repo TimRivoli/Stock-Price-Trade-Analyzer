@@ -1,6 +1,6 @@
 
 
-This is a Python 3 project for analyzing stock prices and methods of stock trading. It uses native Python tools and Google TensorFlow machine learning. It has two main class modules PriceTradeAnalyzer and SeriesPrediction described below.
+This is a Python 3 project for analyzing stock prices and methods of stock trading. It uses native Python tools and Google TensorFlow machine learning.
 
 Module: PriceTradeAnalyzer
 Class PricingData
@@ -12,7 +12,6 @@ Classes Portfolio and TradingModel are used to test emulations of trading strate
 
 Class ForcastModel has been added to forecast the effect of a series of potential actions on a TradingModel.  I'm using this to create a "best actions" sequence for supervised machine learning in another project.  Given a market state and a sequence of actions (or every possible action) which one produces the best result after X days.  This can then be used to train a robotic trainer with supervised learning.
 
-Module: SeriesPrediction
 StateSurprisePredictionNN is a machine-learning model designed to predict surprise deviations from trend rather than predicting raw price. It works by first generating a baseline forecast using a simple trend continuation model (typically a linear extrapolation of recent price slope over a chosen horizon). 
 The model then computes the residual: Residual = FuturePrice − BaselineForecast
 This residual represents the unexpected component of price movement — effectively the “surprise” change from what the trend would predict. The network is trained on a set of engineered state features (momentum, volatility, deviation from mean/trend, compression, etc.) and learns a nonlinear mapping from the current market state to the expected residual outcome. 
