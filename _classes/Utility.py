@@ -182,10 +182,6 @@ def GetDateTimeStamp():
 	return d.strftime('%Y%m%d%H%M')
 
 def GetLatestBDay():
-	d = datetime.now()
-	return d.date()
-
-def GetLatestBDay():
 	d = pd.offsets.BDay().rollback(datetime.now())
 	return d.date()
 	

@@ -75,7 +75,7 @@ class AdaptiveConvexMarketState:
 			db.Close()
 			
 class StockPicker():
-	def __init__(self, startDate:datetime=None, endDate:datetime=None, pickHistoryWindow=60, verbose:bool = False): 
+	def __init__(self, startDate:pd.Timestamp =None, endDate:pd.Timestamp=None, pickHistoryWindow=60, verbose:bool = False): 
 		self.pbar = None
 		self.verbose = verbose
 		self.priceData = []
@@ -83,7 +83,8 @@ class StockPicker():
 		if startDate:
 			startDate = ToTimestamp(startDate) - pd.offsets.BusinessDay(ADAPTIVE_WARMUP_DAYS) #Add days for warmup history
 		self._startDate = startDate
-		self._endDate = endDate
+		if not endDate: endDate = pd.offsets.BDay().rollback(datetime.now())
+		self._endDate = ToTimestamp(endDate)
 		self._adaptive_is_warming = False
 		self._adaptive_last_date = None
 		self.convex_state = False
@@ -95,27 +96,6 @@ class StockPicker():
 		self.pickHistoryWindowSize = pickHistoryWindow
 
 	# ---------------- Rolling SQLHist-style aggregation (Adaptive version) ----------------	
-	# def _rolling_history_append(self, currentDate, todays_picks, max_picks: int = 15):
-		# if not hasattr(self, "_pick_history") or self._pick_history is None:
-			# self._pick_history = pd.DataFrame(columns=["as_of_date", "TargetHoldings", "Point_Value"])
-		# todays_picks = todays_picks[["TargetHoldings", "Point_Value"]].copy()
-		# todays_picks["as_of_date"] = pd.to_datetime(currentDate)
-		# self._pick_history = pd.concat([self._pick_history, todays_picks])
-		# cutoff = pd.to_datetime(currentDate) - pd.offsets.BDay(self.pickHistoryWindowSize)
-		# self._pick_history = self._pick_history[self._pick_history["as_of_date"] >= cutoff].sort_values("as_of_date")
-		# hist = self._pick_history.copy()
-		# hist["PV_EMA"] = hist.groupby(level=0)["Point_Value"].transform( lambda x: x.ewm(span=self.pickHistoryWindowSize, adjust=False).mean())
-		# agg = hist.groupby(hist.index).agg(
-			# TargetHoldings=("TargetHoldings", "sum"),
-			# Point_Value=("PV_EMA", "last"),
-			# DateCount=("as_of_date", "nunique"),
-			# FirstDate=("as_of_date", "min"),
-			# LastDate=("as_of_date", "max")
-		# )
-		# agg = agg.sort_values("TargetHoldings", ascending=False).head(max_picks)
-		# agg["TargetHoldings"] /= agg["TargetHoldings"].sum()
-		# return agg[["TargetHoldings", "Point_Value"]].copy()
-
 	def _rolling_history_append(self, currentDate, todays_picks, max_picks: int = 15):
 		if not hasattr(self, "_pick_history") or self._pick_history is None:
 			self._pick_history = pd.DataFrame(columns=["as_of_date", "TargetHoldings", "Point_Value"])
@@ -253,28 +233,20 @@ class StockPicker():
 			candidates[filter_option] = df.head(int(stocks_to_return))
 		return candidates
 
-	def GetHighestPriceMomentum(self, currentDate:datetime, stocksToReturn:int = 10, filterOption:int = 5, minPercentGain:float = 0.05, allocateByTargetHoldings:bool = False, allocateByPointValue=False, useRollingWindow=True):
+	def GetHighestPriceMomentum(self, currentDate:datetime, stocksToReturn:int = 10, filterOption:int = 5, minPercentGain:float = 0.05, allocateByTargetHoldings:bool = False, allocateByPointValue=False, useRollingWindow=False):
 		filter_options = {filterOption: stocksToReturn}
 		multiverse_candidates = self.GetHighestPriceMomentumMulti(currentDate=currentDate, filterOptions=filter_options, minPercentGain=minPercentGain)
 		todays_picks = multiverse_candidates.get(filterOption, pd.DataFrame())
-		if todays_picks is None or todays_picks.empty:
-			return pd.DataFrame(columns=["TargetHoldings", "Point_Value"]).rename_axis("Ticker")
-		if allocateByTargetHoldings:
-			todays_picks = todays_picks.groupby(level=0).agg(
-				TargetHoldings=("Point_Value", "size"),
-				Point_Value=("Point_Value", "mean")
-			)
+		if allocateByTargetHoldings or allocateByPointValue or useRollingWindow: #These group the results, otherwise you get full columns
+			if todays_picks is None or todays_picks.empty:
+				return pd.DataFrame(columns=["TargetHoldings", "Point_Value"]).rename_axis("Ticker")
+			daily = todays_picks.groupby(level=0).agg(TargetHoldings=("Point_Value", "size"), Point_Value=("Point_Value", "mean"))
 			if useRollingWindow:
-				todays_picks = self._rolling_history_append(currentDate=currentDate, todays_picks=todays_picks, max_picks=stocksToReturn)
-		elif allocateByPointValue:
-			todays_picks = todays_picks.groupby(level=0).agg(
-				TargetHoldings=("Point_Value", "sum"),
-				Point_Value=("Point_Value", "mean")
-			)
-			if useRollingWindow:
-				todays_picks = self._rolling_history_append(currentDate=currentDate, todays_picks=todays_picks, max_picks=stocksToReturn)
-			todays_picks["TargetHoldings"] = todays_picks["Point_Value"]
-			todays_picks["TargetHoldings"] /= todays_picks["TargetHoldings"].sum()
+				daily = self._rolling_history_append(currentDate=currentDate, todays_picks=daily, max_picks=stocksToReturn)
+			if allocateByPointValue:
+				daily["TargetHoldings"] *= daily["Point_Value"]
+				daily["TargetHoldings"] /= daily["TargetHoldings"].sum()
+			todays_picks = daily
 		return todays_picks
 
 	def GetPicksBlended(self, currentDate:date, filter1:int = 3, filter2: int = 3, filter3: int = 1, filter4: int = 5, minPercentGain:float = 0.05, useRollingWindow:bool = True):
@@ -287,7 +259,6 @@ class StockPicker():
 		df4 = multiverse_candidates.get(filter4, pd.DataFrame())
 		todays_picks = pd.concat([df1, df2, df3, df4], sort=True)
 		todays_picks = todays_picks.groupby(level=0).agg(TargetHoldings=('Point_Value', 'size'), Point_Value=('Point_Value', 'last'))
-		#todays_picks["TargetHoldings"] /= todays_picks["TargetHoldings"].sum()
 		todays_picks.sort_values('TargetHoldings', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last')
 		todays_picks.index.name='Ticker'
 		if useRollingWindow: todays_picks = self._rolling_history_append(currentDate=currentDate, todays_picks=todays_picks, max_picks=15)
@@ -302,6 +273,37 @@ class StockPicker():
 		db.Close()
 		return result	
 			
+	def GeneratePicksBlendedSQL(self, startDate: pd.Timestamp = None, endDate: pd.Timestamp = None, replaceExisting:bool=False, verbose:bool=False):
+		db = PTADatabase()
+		if not db.Open(): return False
+		startDate = ToTimestamp(startDate or self._startDate)
+		startDate = max(startDate, self._startDate)
+		endDate = ToTimestamp(endDate or self._endDate)
+		endDate = max(endDate, self._endDate)
+		current_date = startDate
+		existing_dates = db.ScalarListFromSQL("SELECT Date FROM PicksBlendedDaily WHERE [Date]>=:startDate AND [Date]<=:endDate ORDER BY Date",	{"startDate": startDate, "endDate": endDate},	column="Date")
+		prev_month = -1
+		date_index = self.priceData[0].historicalPrices.index
+		print(f" GeneratePicksBlendedSQL from {startDate} to {endDate}")				
+		for current_date in date_index:
+			exists = current_date in existing_dates
+			if replaceExisting or not exists:
+				if verbose: print(f" GeneratePicksBlendedSQL: Blended using default filters for date {current_date}")
+				result = self.GetPicksBlended(currentDate=current_date)
+				if len(result) == 0:
+					if verbose: print(" GeneratePicksBlendedSQL: No data found.")
+				else:
+					result['Date'] = current_date 
+					result['TotalStocks'] = len(self._tickerList) 
+					result = result[['Date', 'TargetHoldings', 'Point_Value', 'TotalStocks']]
+					result.index.name='Ticker'
+					if verbose: print(result)
+					db.ExecSQL("DELETE FROM PicksBlendedDaily WHERE Date='" + str(current_date) + "'")
+					db.DataFrameToSQL(result, tableName='PicksBlendedDaily', indexAsColumn=True, clearExistingData=False)
+				result=None
+		db.ExecSQL("sp_UpdateBlendedPicks")
+		db.Close()
+	
 #-------------------------------------------- AdaptiveConvex Selection Engine  -----------------------------------------------
 
 	def compute_cross_sectional_dispersion(self, base, min_valid=20):
@@ -650,6 +652,7 @@ def Generate_PicksBlendedSQL_DateRange(startYear:int=None, years: int=0, replace
 		else:
 			endDate = ToTimestamp('12/31/' + str(startYear+years))	
 		startDate = ToTimestamp('1/1/' + str(startYear))		
+		endDate = ToTimestamp(endDate)		
 		if endDate > today: endDate = today
 		if startDate > today: startDate = today
 		current_date = startDate
@@ -657,43 +660,22 @@ def Generate_PicksBlendedSQL_DateRange(startYear:int=None, years: int=0, replace
 		p.LoadHistory(requestedStartDate=startDate, requestedEndDate=endDate)
 		date_index = p.historicalPrices.index
 		picker = StockPicker(startDate=startDate, endDate=endDate)
-		existing_dates = db.ScalarListFromSQL("SELECT Date FROM PicksBlendedDaily WHERE [Date]>=:startDate AND [Date]<=:endDate ORDER BY Date",	{"startDate": startDate, "endDate": endDate},	column="Date")
-		print(f" Generate_PicksBlended_DateRange from {startDate} to {endDate}")				
+		print(f" Generate_PicksBlendedSQL_DateRange from {startDate} to {endDate}")				
 		prev_month = -1
 		tickers = []
 		for current_date in date_index:
-			print(current_date, endDate)
-			exists = current_date in existing_dates
-			if replaceExisting or not exists:
-				if current_date.month != prev_month:
-					if verbose: print(" Generate_PicksBlended_DateRange: Getting tickers for year " + str(current_date.year))				
-					new_tickers = TickerLists.GetTickerListSQL(year=current_date.year, month=current_date.month, SP500Only=False, filterByFundamentals=False) 
-					if len(new_tickers) > 0:
-						if verbose: print(f" Generate_PicksBlended_DateRange: Re-query tickers found {len(new_tickers)} instead of previous {len(tickers)}")
-						tickers = new_tickers
-					stock_count=len(tickers)
-					picker.AlignToList(tickers)			
-					TotalValidCandidates = len(picker._tickerList) 
-					if verbose: print(' Generate_PicksBlended_DateRange: Running PicksBlended generation on ' + str(TotalValidCandidates) + ' of ' + str(stock_count) + ' stocks from ' + str(startDate) + ' to ' + str(endDate))		
-					if TotalValidCandidates==0: assert(False)
-					prev_month = current_date.month
-				if verbose: print(f" Generate_PicksBlended_DateRange: Blended using default filters for date {current_date}")
-				result = picker.GetPicksBlended(currentDate=current_date)
-				if verbose: print(result)
-				if len(result) == 0:
-					if verbose: print(" Generate_PicksBlended_DateRange: No data found.")
-				else:
-					result['Date'] = current_date 
-					result['TotalStocks'] = stock_count
-					result['TotalValidCandidates'] = TotalValidCandidates
-					print(result)
-					db.ExecSQL("DELETE FROM PicksBlendedDaily WHERE Date='" + str(current_date) + "'")
-					db.DataFrameToSQL(result, tableName='PicksBlendedDaily', indexAsColumn=True, clearExistingData=False)
-				result=None
-	db.ExecSQL("sp_UpdateBlendedPicks")
+			if current_date.month != prev_month:	#Load new tickers for each month, can change selection
+				if verbose: print(" Generate_PicksBlended_DateRange: Getting tickers for year " + str(current_date.year))				
+				new_tickers = TickerLists.GetTickerListSQL(year=current_date.year, month=current_date.month, SP500Only=False, filterByFundamentals=False) 
+				if len(new_tickers) > 0:
+					if verbose: print(f" Generate_PicksBlendedSQL_DateRange: Re-query tickers found {len(new_tickers)} instead of previous {len(tickers)}")
+					tickers = new_tickers
+				picker.AlignToList(tickers)			
+				TotalValidCandidates = len(picker._tickerList) 
+				if verbose: print(f" Generate_PicksBlendedSQL_DateRange: Running PicksBlended generation on {TotalValidCandidates} stocks from {FormatDate(startDate)} to {FormatDate(endDate)}")		
+				if TotalValidCandidates==0: assert(False)
+				prev_month = current_date.month
+				endDate = (current_date + timedelta(days=30))
+				picker.GeneratePicksBlendedSQL(startDate=current_date, endDate=endDate, replaceExisting=replaceExisting, verbose=verbose)
 	db.Close()
 		
-def Update_PicksBlendedSQL(replaceExisting:bool=False):
-	#If replaceExisting then it will do the current YTD, else just what is missing
-	print('Updating PicksBlended')
-	Generate_PicksBlended_DateRange(replaceExisting=replaceExisting, verbose=True)	
