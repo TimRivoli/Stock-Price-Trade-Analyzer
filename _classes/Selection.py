@@ -1,10 +1,9 @@
-import time, numpy as np, pandas as pd
+import numpy as np, pandas as pd
 import _classes.Constants as CONSTANTS
 from datetime import date, datetime, timedelta
 from dataclasses import dataclass
 from typing import Optional, Dict
 from tqdm import tqdm
-from collections import defaultdict
 from _classes.Utility import *
 from _classes.Prices import PriceSnapshot, PricingData
 from _classes.DataIO import PTADatabase
@@ -15,65 +14,201 @@ EMPTY_RESULT = pd.DataFrame(columns=['TargetHoldings', 'Point_Value'])
 EMPTY_RESULT.loc[CONSTANTS.CASH_TICKER] = {'TargetHoldings': 1.0, 'Point_Value': 10}
 EMPTY_RESULT.index.name = 'Ticker'
 
+MODE_CONVEX_FULL   = "CONVEX_FULL"
+MODE_CONVEX_STABLE = "CONVEX_STABLE"
+MODE_CONVEX_LATE   = "CONVEX_LATE"
+MODE_BLENDED       = "BLENDED"
+MODE_DEFENSIVE     = "DEFENSIVE"
+MODE_TRANSITION = "TRANSITION"
+MARKET_STATE_VERSION = 4.0
+CASH_FILTER = -1
+
 @dataclass
 class AdaptiveConvexMarketState:
-	# Identity
 	as_of_date: pd.Timestamp
-	reevaluation_interval: int
-	convex_duration : int = 0
-	
-	# Regime inputs
+	convex_duration: int = 0
 	dispersion: float = 0.0
 	momentum_autocorr: float = 0.0
 	downside_volatility: float = 0.0
 	stress_index: float = 0.0
 	corr_6m_1m: float = 0.0
 	corr_1y_1m: float = 0.0
+	leadership_tilt: float = 0.0
+	disp_p40: float = 0.0
+	disp_p75: float = 0.0
+	expansion_velocity: float = 0.0
+	expansion_state: Optional[str] = "NO_DATA"    # EXPANDING / STABLE / CONTRACTING
+	state_version: Optional[float] = MARKET_STATE_VERSION
+	state_confidence: float = 0.0
+	universe_size: int = 0
 
-	# Allocation weights (must sum to 1.0)
-	convex_weight: float = 0.0
-	linear_weight: float = 0.0
-	defensive_weight: float = 0.0
-	cash_weight: float = 1.0
+	@property
+	def persistence_break_flag(self) -> bool:
+		return (self.momentum_autocorr < -0.1 and self.dispersion < self.disp_p40)
+
+	@property
+	def geometry_state(self):
+		if self.dispersion >= self.disp_p75:
+			return "CONVEX"
+		elif self.dispersion <= self.disp_p40:
+			return "LINEAR"
+		return "MIXED"
+
+	@property
+	def leadership_state(self):
+		if self.leadership_tilt > 0.6:
+			return "STABLE"
+		elif self.leadership_tilt < 0.4:
+			return "ROTATING"
+		return "TRANSITIONAL"
 	
-	# Optional diagnostics / state
-	version: Optional[float] = 3.3
-	is_warmup: Optional[bool] = False
-	regime_label: Optional[str] = 'NO_DATA'
-	hysteresis_label: Optional[str] = 'NO_DATA'
+	@property
+	def leadership_break_flag(self):
+		return (self.leadership_state == "ROTATING"	and self.momentum_autocorr < 0)
 
-	def Validate(self, tol: float = 1e-6):
-		total = (self.convex_weight + self.linear_weight + self.defensive_weight + self.cash_weight)
-		if abs(total - 1.0) > tol:
-			raise ValueError(f" AdaptiveConvex weights do not sum to 1.0 (got {total})")
+	@property
+	def regime_tension_flag(self):
+		return (self.geometry_state == "CONVEX"	and self.expansion_state == "CONTRACTING")	
+	
+	def set_expansion_state(self, prev_state):
+		self.expansion_state = "STABLE"
+		self.expansion_velocity = 0.0
+		if prev_state is None:
+			return
+		d_autocorr = self.momentum_autocorr - prev_state.momentum_autocorr
+		d_disp = self.dispersion - prev_state.dispersion
+		disp_range = max(self.disp_p75 - self.disp_p40, 1e-6)
+		d_disp_norm = d_disp / disp_range
+		velocity = 0.6 * d_autocorr + 0.4 * d_disp_norm
+		velocity = max(-1.0, min(1.0, velocity))
+		self.expansion_velocity = velocity
+		expanding = (d_autocorr > 0 and d_disp > 0)
+		contracting = (d_autocorr < 0 and d_disp < 0)
+		if expanding:
+			self.expansion_state = "EXPANDING"
+		elif contracting:
+			self.expansion_state = "CONTRACTING"
+	
+	def GetModeLabel(self) -> str:
+		if self.state_confidence < 0.45:
+			return MODE_TRANSITION
+		if self.regime_tension_flag or self.leadership_break_flag:
+			return MODE_TRANSITION
+		g = self.geometry_state
+		e = self.expansion_state
+		l = self.leadership_state
+		if self.persistence_break_flag:
+			return MODE_DEFENSIVE
+		if g == "CONVEX":
+			if e == "EXPANDING" and l == "STABLE": return MODE_CONVEX_FULL		
+			if e == "CONTRACTING": return MODE_CONVEX_LATE			
+			return MODE_CONVEX_STABLE
+		if g == "LINEAR": return MODE_DEFENSIVE
+		return MODE_BLENDED
+
+	def GetRollingWindowSize(self):
+		# leadership_component = (self.leadership_tilt - 0.5) * 2.0
+		# persistence_component = self.momentum_autocorr
+		# velocity_component = self.expansion_velocity
+		# pressure = (
+			# 0.45 * leadership_component +
+			# 0.35 * persistence_component +
+			# 0.20 * velocity_component
+		# )
+		# pressure = max(-1.0, min(1.0, pressure))
+		# base = 15 + pressure * 5
+		# band = 5 * self.state_confidence + 2 # confidence 0 → ±2, confidence 1 → ±7
+		# lower = 15 - band
+		# upper = 15 + band
+		# window = max(lower, min(upper, round(base)))
+		return 30
+	
+	def GetExecutionFilters(self):
+		if (self.persistence_break_flag and self.state_confidence < 0.5 and self.stress_index > 0.7 ): return "CASH"
+		g = self.geometry_state
+		e = self.expansion_state
+		l = self.leadership_state
+		if l == "STABLE":
+			if e == "CONTRACTING":
+				return [3]      # slower confirmation
+			return [4]          # default continuation
+		if l == "TRANSITIONAL":
+			return [4]
+		if l == "ROTATING":
+			if e == "EXPANDING":
+				return [4]
+			return [5]
+		return [4]
+	
+	def GetRegimeSummary(self) -> str: 
+		return (f"{self.geometry_state}_{self.expansion_state}_{self.leadership_state}"	)
 
 	def SaveToSQL(self):
 		db = PTADatabase()
-		if db.Open():
-			sql_delete = f"DELETE FROM {CONSTANTS.ADAPTIVE_CONVEX_STATE_TABLE} WHERE asOfDate = :asOfDate and reevaluation_interval = :reevaluation_interval"
-			params = {"asOfDate": self.as_of_date, "reevaluation_interval": int(self.reevaluation_interval)}
-			db.ExecSQL(sql_delete, params)
-			sql_insert = f"INSERT INTO {CONSTANTS.ADAPTIVE_CONVEX_STATE_TABLE} (asOfDate, reevaluation_interval, convex_duration, dispersion, momentum_autocorr, downside_volatility, stress_index, convex_weight, linear_weight, defensive_weight, cash_weight, regime_label, hysteresis_label, version, is_warmup) VALUES (:asOfDate, :reevaluation_interval, :convex_duration , :dispersion, :momentum_autocorr, :downside_volatility, :stress_index, :convex_weight, :linear_weight, :defensive_weight, :cash_weight, :regime_label, :hysteresis_label, :version, :is_warmup)"
-			params.update({
-				"dispersion": float(self.dispersion),
-				"momentum_autocorr": float(self.momentum_autocorr),
-				"downside_volatility": float(self.downside_volatility),
-				"convex_duration": int(self.convex_duration),
-				"stress_index": float(self.stress_index),
-				"corr_6m_1m": float(self.corr_6m_1m),
-				"corr_1y_1m": float(self.corr_1y_1m),
-				"convex_weight": float(self.convex_weight),
-				"linear_weight": float(self.linear_weight),
-				"defensive_weight": float(self.defensive_weight),
-				"cash_weight": float(self.cash_weight),
-				"regime_label": self.regime_label,
-				"hysteresis_label": self.hysteresis_label, 
-				"version": float(self.version),
-				"is_warmup": bool(self.is_warmup)
-			})
-			db.ExecSQL(sql_insert, params)
+		if not db.Open(): 
+			return		
+		sql_delete = f"DELETE FROM {CONSTANTS.ADAPTIVE_CONVEX_STATE_TABLE} WHERE asOfDate = :as_of_date AND universe_size = :universe_size"
+		delete_params = {"as_of_date": self.as_of_date, "universe_size": int(self.universe_size)}
+		db.ExecSQL(sql_delete, delete_params)
+		sql_insert = f"INSERT INTO {CONSTANTS.ADAPTIVE_CONVEX_STATE_TABLE} (asOfDate, convex_duration, dispersion, momentum_autocorr, downside_volatility, stress_index, corr_6m_1m, corr_1y_1m, leadership_tilt, disp_p40, disp_p75, geometry_state, expansion_state, leadership_state, regime_tension_flag, leadership_break_flag, persistence_break_flag, state_confidence, universe_size, state_version ) VALUES (:as_of_date, :convex_duration, :dispersion, :momentum_autocorr, :downside_volatility, :stress_index, :corr_6m_1m, :corr_1y_1m, :leadership_tilt, :disp_p40, :disp_p75, :geometry_state, :expansion_state, :leadership_state, :regime_tension_flag, :leadership_break_flag, :persistence_break_flag, :state_confidence, :universe_size, :state_version)"
+		insert_params = {
+			"as_of_date": self.as_of_date,
+			"convex_duration": int(self.convex_duration), 
+			"dispersion": float(self.dispersion),
+			"momentum_autocorr": float(self.momentum_autocorr),
+			"downside_volatility": float(self.downside_volatility),
+			"stress_index": float(self.stress_index),
+			"corr_6m_1m": float(self.corr_6m_1m),
+			"corr_1y_1m": float(self.corr_1y_1m),
+			"leadership_tilt": float(self.leadership_tilt),
+			"disp_p40": float(self.disp_p40),
+			"disp_p75": float(self.disp_p75),
+			"geometry_state": self.geometry_state,
+			"expansion_state": self.expansion_state,
+			"leadership_state": self.leadership_state,
+			"regime_tension_flag": int(self.regime_tension_flag),
+			"leadership_break_flag": int(self.leadership_break_flag),
+			"persistence_break_flag": int(self.persistence_break_flag),
+			"state_confidence": float(self.state_confidence),
+			"universe_size": int(self.universe_size),
+			"state_version": float(self.state_version)
+		}
+		try:
+			db.ExecSQL(sql_insert, insert_params)
+		except Exception as e:
+			print(f"Error saving MarketState for {self.as_of_date}: {e}")
+		finally:
 			db.Close()
-			
+		
+	def ToDateFrame(self):
+		row = {
+			"as_of_date": self.as_of_date,
+			"convex_duration": int(self.convex_duration),
+			"dispersion": float(self.dispersion),
+			"momentum_autocorr": float(self.momentum_autocorr),
+			"downside_volatility": float(self.downside_volatility),
+			"stress_index": float(self.stress_index),		
+			"corr_6m_1m": float(self.corr_6m_1m),
+			"corr_1y_1m": float(self.corr_1y_1m),
+			"leadership_tilt": float(self.leadership_tilt),		
+			"disp_p40": float(self.disp_p40),
+			"disp_p75": float(self.disp_p75),		
+			"geometry_state": self.geometry_state,
+			"expansion_state": self.expansion_state,
+			"leadership_state": self.leadership_state,
+			"mode_label": self.GetModeLabel(),		
+			"regime_tension_flag": int(self.regime_tension_flag),
+			"leadership_break_flag": int(self.leadership_break_flag),
+			"persistence_break_flag": int(self.persistence_break_flag),			
+			"state_confidence": float(self.state_confidence),
+			"universe_size": int(self.universe_size),
+			"state_version": float(self.state_version)
+		}
+		df_new = pd.DataFrame([row])
+		df_new["as_of_date"] = pd.to_datetime(df_new["as_of_date"])
+		df_new = df_new.set_index("as_of_date")
+		return df_new
+		
 class StockPicker():
 	def __init__(self, startDate:pd.Timestamp =None, endDate:pd.Timestamp=None, pickHistoryWindow=60, verbose:bool = False): 
 		self.pbar = None
@@ -85,12 +220,7 @@ class StockPicker():
 		self._startDate = startDate
 		if not endDate: endDate = pd.offsets.BDay().rollback(datetime.now())
 		self._endDate = ToTimestamp(endDate)
-		self._adaptive_is_warming = False
-		self._adaptive_last_date = None
-		self.convex_state = False
 		self.convex_duration = 0
-		self.lockout_days_remaining = 0
-		self.hysteresis_label = "NEUTRAL"
 		self._adaptive_history_df = None
 		self._pick_history = None
 		self.pickHistoryWindowSize = pickHistoryWindow
@@ -174,11 +304,25 @@ class StockPicker():
 			self.priceData[i].NormalizePrices()		
 			
 #-------------------------------------------- Selection routine -----------------------------------------------
-	
+	def _blend_from_multiverse(self, multiverse_candidates, filters):
+		dfs = [
+			EMPTY_RESULT.copy() if f == CASH_FILTER
+			else multiverse_candidates.get(f, pd.DataFrame())
+			for f in filters
+			if (f == CASH_FILTER) or (f in multiverse_candidates)
+		]
+
+		if not dfs:	return EMPTY_RESULT.copy()
+		todays_picks = pd.concat(dfs, sort=True)
+		todays_picks = (todays_picks.groupby(level=0).agg(TargetHoldings=('Point_Value', 'size'),Point_Value=('Point_Value', 'last')))
+		todays_picks["TargetHoldings"] /= todays_picks["TargetHoldings"].sum()
+		todays_picks.sort_values('TargetHoldings', ascending=False,inplace=True)
+		todays_picks.index.name = 'Ticker'
+		return todays_picks
+
 	def GetHighestPriceMomentumMulti(self, currentDate: datetime, filterOptions: dict, minPercentGain: float = 0.05):
 		if not isinstance(filterOptions, dict):
 			raise ValueError("filterOptions must be a dict like {filter_id: stock_count}")
-
 		candidates = {}
 		currentDate = ToTimestamp(currentDate)
 		max_allowed_date = (pd.Timestamp.now().normalize() - pd.offsets.BusinessDay(1)).to_pydatetime()
@@ -208,9 +352,9 @@ class StockPicker():
 		#7, 8, 9 are all very poor 
 		filter_map = {
 			0: dict(sort='PC_1Year', mask=lambda df: (df['Average_5Day'] > 0) ),
-			1: dict(sort='PC_1Year', mask=lambda df: (df['PC_1Month3WeekEMA'] > minPC_1Day) ), #currently the defensive strategy			
+			1: dict(sort='PC_1Year', mask=lambda df: (df['PC_1Month3WeekEMA'] > minPC_1Day) ), #CAGR ~38–40%, inconsistent behavior, mediocre Sharpe, Broad / Noisy Exposure
 			2: dict(sort='PC_1Year', mask=lambda df: (df['PC_1Year'] > minPercentGain)), #very high growth
-			3: dict(sort='PC_1Year', mask=lambda df: ((df['PC_1Year'] > minPercentGain) & (df['PC_1Month3WeekEMA'] > 0))), #should be defense
+			3: dict(sort='PC_1Year', mask=lambda df: ((df['PC_1Year'] > minPercentGain) & (df['PC_1Month3WeekEMA'] > 0))), 
 			4: dict(sort='PC_1Month3WeekEMA', mask=lambda df: (df['PC_1Month3WeekEMA'] > minPC_1Day) ),
 			5: dict(sort='Point_Value', mask=lambda df: ( (df['PC_1Year'] > minPercentGain) & (df['Point_Value'] > 0) )), #Gets close to performance of blended, which is very good
 			6: dict(sort='PC_6Month', mask=lambda df: (df['PC_6Month'] > minPercentGain) ), #6 month version of 2 for faster reaction, even faster growth
@@ -271,8 +415,8 @@ class StockPicker():
 			SQL = "select * from fn_GetBlendedPicks('" + str(currentDate) + "', " + str(sqlHistory) + ")"
 			result = db.DataFrameFromSQL(sql=SQL, indexName='Ticker')
 		db.Close()
-		return result	
-			
+		return result				
+	
 	def GeneratePicksBlendedSQL(self, startDate: pd.Timestamp = None, endDate: pd.Timestamp = None, replaceExisting:bool=False, verbose:bool=False):
 		db = PTADatabase()
 		if not db.Open(): return False
@@ -281,26 +425,26 @@ class StockPicker():
 		endDate = ToTimestamp(endDate or self._endDate)
 		endDate = max(endDate, self._endDate)
 		current_date = startDate
-		existing_dates = db.ScalarListFromSQL("SELECT Date FROM PicksBlendedDaily WHERE [Date]>=:startDate AND [Date]<=:endDate ORDER BY Date",	{"startDate": startDate, "endDate": endDate},	column="Date")
 		prev_month = -1
-		date_index = self.priceData[0].historicalPrices.index
 		print(f" GeneratePicksBlendedSQL from {startDate} to {endDate}")				
-		for current_date in date_index:
-			exists = current_date in existing_dates
-			if replaceExisting or not exists:
-				if verbose: print(f" GeneratePicksBlendedSQL: Blended using default filters for date {current_date}")
-				result = self.GetPicksBlended(currentDate=current_date)
-				if len(result) == 0:
-					if verbose: print(" GeneratePicksBlendedSQL: No data found.")
-				else:
-					result['Date'] = current_date 
-					result['TotalStocks'] = len(self._tickerList) 
-					result = result[['Date', 'TargetHoldings', 'Point_Value', 'TotalStocks']]
-					result.index.name='Ticker'
-					if verbose: print(result)
-					db.ExecSQL("DELETE FROM PicksBlendedDaily WHERE Date='" + str(current_date) + "'")
-					db.DataFrameToSQL(result, tableName='PicksBlendedDaily', indexAsColumn=True, clearExistingData=False)
-				result=None
+		existing_dates = pd.to_datetime(db.ScalarListFromSQL("SELECT Date FROM PicksBlendedDaily WHERE [Date]>=:startDate AND [Date]<=:endDate ORDER BY Date", {"startDate": startDate, "endDate": endDate}, column="Date"))
+		full_price_index = self.priceData[0].historicalPrices.index.sort_values().unique()
+		missing_dates = full_price_index[~full_price_index.isin(existing_dates)]
+		target_dates = full_price_index if replaceExisting else missing_dates
+		for current_date in target_dates:
+			if verbose: print(f" GeneratePicksBlendedSQL: Blended using default filters for date {current_date}")
+			result = self.GetPicksBlended(currentDate=current_date)
+			if len(result) == 0:
+				if verbose: print(" GeneratePicksBlendedSQL: No data found.")
+			else:
+				result['Date'] = current_date 
+				result['TotalStocks'] = len(self._tickerList) 
+				result = result[['Date', 'TargetHoldings', 'Point_Value', 'TotalStocks']]
+				result.index.name='Ticker'
+				if verbose: print(result)
+				db.ExecSQL("DELETE FROM PicksBlendedDaily WHERE Date='" + str(current_date) + "'")
+				db.DataFrameToSQL(result, tableName='PicksBlendedDaily', indexAsColumn=True, clearExistingData=False)
+			result=None
 		db.ExecSQL("sp_UpdateBlendedPicks")
 		db.Close()
 	
@@ -372,7 +516,6 @@ class StockPicker():
 			disp_z = (dispersion - disp_mean) / disp_std
 			dispersion_stress = float(np.clip((-disp_z) / 2.0, 0.0, 1.0))  # only penalize low dispersion
 
-
 		# ---------------- AUTOCORR STRESS (Negative autocorr = mean reversion stress) ----------------
 		auto_mean = hist["momentum_autocorr"].mean()
 		auto_std = hist["momentum_autocorr"].std()
@@ -383,7 +526,6 @@ class StockPicker():
 			autocorr_stress = float(np.clip((-auto_z) / 2.0, 0.0, 1.0))  # only penalize weak/negative autocorr
 
 
-		# ---------------- Weighted aggregation ----------------
 		# Volatility is the "damage potential"
 		# Dispersion is the "opportunity surface collapse"
 		# Autocorr is the "trend break / mean reversion"
@@ -394,253 +536,173 @@ class StockPicker():
 		)
 		return float(np.clip(stress, 0.0, 1.0))
 
-	def update_convex_state_with_hysteresis(self, dispersion, autocorr, stress_tamper, dt_days=1):
-		# ---------------- Lockout handling ----------------
-		if getattr(self, "lockout_days_remaining", 0) > 0:
-			self.lockout_days_remaining = max(0, self.lockout_days_remaining - dt_days)
-			self.convex_state = False
-			self.hysteresis_label = f"LOCKED_OUT_{self.lockout_days_remaining}"
-			return False
-		prev_on = bool(self.convex_state)
-
-		# ---------------- Adaptive threshold learning ----------------
-		hist = getattr(self, "_adaptive_history_df", None)
-		if hist is not None and not hist.empty and len(hist) >= 60:
-			disp_enter = float(hist["dispersion"].quantile(0.75))  # harder to enter
-			disp_force = float(hist["dispersion"].quantile(0.90))  # dispersion-only override
-			disp_stay  = float(hist["dispersion"].quantile(0.55))  # easier to stay in
-			auto_enter = float(hist["momentum_autocorr"].quantile(0.40))
-			auto_stay  = float(hist["momentum_autocorr"].quantile(0.30))
-			auto_exit  = float(hist["momentum_autocorr"].quantile(0.15))
-			# Safety clamps (prevents quantiles drifting into nonsense regimes)
-			disp_enter = float(np.clip(disp_enter, 0.20, 0.30))
-			disp_force = float(np.clip(disp_force, disp_enter + 0.01, 0.35))
-			disp_stay  = float(np.clip(disp_stay, 0.12, disp_enter))
-			auto_enter = float(np.clip(auto_enter, -0.08, 0.05))
-			auto_stay  = float(np.clip(auto_stay, -0.12, 0.05))
-			auto_exit  = float(np.clip(auto_exit, -0.20, -0.05))
-		else:
-			# Fallback constants (bootstrapping / insufficient history)
-			disp_enter = 0.24
-			disp_force = 0.27
-			disp_stay  = 0.18
-			auto_enter = -0.03
-			auto_stay  = -0.08
-			auto_exit  = -0.10
-
-		# ---------------- Previously OFF ----------------
-		if not prev_on:
-			if (dispersion >= disp_enter and autocorr > auto_enter) or dispersion >= disp_force:
-				self.convex_state = True
-				self.hysteresis_label = "EXPANDING"
-				return True
-
-			if dispersion >= (disp_enter * 0.85):
-				self.hysteresis_label = "RECOVERING"
-			else:
-				self.hysteresis_label = "NEUTRAL"
-			self.convex_state = False
-			return False
-
-		# ---------------- Previously ON ----------------
-		if dispersion >= disp_stay and autocorr > auto_stay:
-			self.convex_state = True
-			self.hysteresis_label = "ACTIVE"
-			return True
-		# Emergency lockout (mean reversion / hostile regime)
-		if autocorr < auto_exit or stress_tamper < 0.30:
-			self.convex_state = False
-			self.hysteresis_label = "LOCKED_OUT"
-			self.lockout_days_remaining = int(2 + 5 * (1.0 - stress_tamper))
-			return False
-		# Soft exit (normal fade)
-		self.convex_state = False
-		self.hysteresis_label = "CONTRACTING"
-		return False
-	
-	def adaptive_engine_weights(self, dispersion, autocorr, stress_tamper, dt_days: int = 1):
-		# --- 1. Hysteresis gate (discrete, intentional) ---
-		self.convex_state = self.update_convex_state_with_hysteresis(dispersion, autocorr, stress_tamper, dt_days=dt_days)
-		if not self.convex_state:
-			defensive_w    = 0.10 + 0.10 * (1.0 - stress_tamper)
-			linear_w = 0.75 * stress_tamper
-			cash_w   = 1.0 - linear_w - defensive_w
-			target = {"convex": 0.0, "linear": linear_w, "defensive": defensive_w, "cash": cash_w}
-		else:
-			# --- 2. Smooth convex intensity from dispersion (sigmoid) ---
-			disp_center = 0.25
-			disp_width  = 0.04
-			z = (dispersion - disp_center) / disp_width
-			disp_intensity = 1.0 / (1.0 + np.exp(-z))
-
-			# --- 3. Smooth momentum penalty ---
-			mom_floor = -0.15
-			mom_ceiling = 0.05
-			momentum_factor = (autocorr - mom_floor) / (mom_ceiling - mom_floor)
-			momentum_factor = float(np.clip(momentum_factor, 0.0, 1.0))
-
-			# --- 4. Raw convex weight ---
-			convex_w = float(np.clip(disp_intensity * momentum_factor, 0.0, 0.95))
-			if stress_tamper < 0.75: convex_w *= stress_tamper
-
-			# --- 5. Smooth cash response ---
-			min_cash = 0.0 + 0.25 * (1.0 - stress_tamper)
-			max_cash = 0.15
-			cash_power = 0.5
-			cash_w = min_cash + (1.0 - convex_w) ** cash_power * (max_cash - min_cash)
-			cash_w = float(np.clip(cash_w, min_cash, max_cash))
-
-			# --- 6. Linear absorbs remainder ---
-			defensive_w = 0.05 + 0.15 * (1.0 - stress_tamper)
-			linear_w = max(0.0, 1.0 - convex_w - cash_w - defensive_w)
-
-			# --- 7. Normalize ---
-			total = convex_w + linear_w + cash_w
-			if total > 0:
-				convex_w /= total
-				linear_w /= total
-				cash_w   /= total
-			target = {"convex": convex_w, "linear": linear_w, "defensive": 0.0, "cash": cash_w}
-
-		# --- 8. Time-scaled ramp smoothing (dt aware) ---
-		prev = getattr(self, "_prev_weights", {"convex": 0.0, "linear": 0.10, "defensive": 0.0, "cash": 0.90})
-		base_up = 0.25
-		base_dn = 0.08
-
-		prev_convex = prev.get("convex", 0.0)
-		target_convex = target.get("convex", 0.0)
-		alpha_up = 1.0 - np.exp(-base_up * dt_days)
-		alpha_dn = 1.0 - np.exp(-base_dn * dt_days)
-		alpha = alpha_up if target_convex > prev_convex else alpha_dn
-
-		new_weights = {}
-		for k in ("convex", "linear", "defensive", "cash"):
-			new_weights[k] = float(prev[k] + alpha * (target[k] - prev[k]))
-
-		total = sum(new_weights.values())
-		if total > 0:
-			for k in new_weights:
-				new_weights[k] /= total
-		self._prev_weights = new_weights
-		return new_weights
+	def _rolling_regime_percentiles(self, lookback_days: int = 2520):
+		#Compute adaptive dispersion thresholds from history. Default = ~10 trading years.
+		if self._adaptive_history_df is None or len(self._adaptive_history_df) < 50:
+			return 0.25, 0.15  # safe warmup defaults
+		hist = self._adaptive_history_df.tail(lookback_days)
+		p75 = hist["dispersion"].quantile(0.75)
+		p40 = hist["dispersion"].quantile(0.40)
+		return float(p75), float(p40)
 
 	def _append_adaptive_state(self, params: AdaptiveConvexMarketState):
-		row = {"as_of_date": params.as_of_date,"convex_duration": params.convex_duration,"dispersion": params.dispersion,"momentum_autocorr": params.momentum_autocorr,"downside_volatility": params.downside_volatility,"stress_index": params.stress_index,"convex_weight": params.convex_weight,"linear_weight": params.linear_weight,"defensive_weight": params.defensive_weight,"cash_weight": params.cash_weight,"regime_label": params.regime_label,"hysteresis_label": params.hysteresis_label}
-		df_new = pd.DataFrame([row])
-		df_new["as_of_date"] = pd.to_datetime(df_new["as_of_date"])
-		df_new = df_new.set_index("as_of_date")
+		df_new = params.ToDateFrame()
 		if self._adaptive_history_df is None or self._adaptive_history_df.empty:
 			self._adaptive_history_df = df_new
 		else:
-			# 2. Ensure the existing DF is also datetime-indexed before concat
 			if not pd.api.types.is_datetime64_any_dtype(self._adaptive_history_df.index):
-				self._adaptive_history_df.index = pd.to_datetime(self._adaptive_history_df.index)		
+				self._adaptive_history_df.index = pd.to_datetime(self._adaptive_history_df.index)
 			self._adaptive_history_df = pd.concat([self._adaptive_history_df, df_new])
-		# 3. Clean up duplicates and sort
-		self._adaptive_history_df = self._adaptive_history_df[~self._adaptive_history_df.index.duplicated(keep="last")]
-		self._adaptive_history_df = self._adaptive_history_df.sort_index()
-		# 4. Use a Pandas-native Timestamp for the cutoff comparison
-		cutoff = pd.to_datetime(params.as_of_date) - pd.Timedelta(days=365)
-		self._adaptive_history_df = self._adaptive_history_df[self._adaptive_history_df.index >= cutoff]
+		self._adaptive_history_df = (self._adaptive_history_df[~self._adaptive_history_df.index.duplicated(keep="last")].sort_index())
+		cutoff = pd.to_datetime(params.as_of_date) - pd.Timedelta(days=2520)
+		self._adaptive_history_df = (self._adaptive_history_df[self._adaptive_history_df.index >= cutoff])
 
-	def _adaptive_convex_warmup(self, currentDate):
-		if self._adaptive_is_warming or not self._startDate: return
-		bdays = pd.bdate_range(self._startDate, currentDate)
-		if len(bdays) <= 1: return
-		self._adaptive_is_warming = True
-		warmup_days = min(ADAPTIVE_WARMUP_DAYS, len(bdays) - 1)
-		for d in bdays[-(warmup_days + 1):-1]:
-			self.GetAdaptiveConvexPicks(currentDate=d)
-		self._adaptive_is_warming = False
-
-	def GetAdaptiveConvexPicks(self, currentDate, convex_filter:int = 6, linear_filter:int = 2, linear_fast_filter:int = 6, defense_filter:int = 1):		
-		def add_block(df, block_weight):
-			if df is None or df.empty or block_weight <= 0:
-				return
-			out = pd.DataFrame(index=df.index)
-			out["TargetHoldings"] = block_weight / len(df)
-			out["Point_Value"] = df["Point_Value"]
-			frames.append(out)
-
-		if self._adaptive_last_date is None:
-			self._adaptive_convex_warmup(currentDate)
-			dt_days = 1
-		else:
-			dt_days = Business_Days_Since(self._adaptive_last_date, currentDate)
-		self._adaptive_last_date = currentDate
-		filters = {0:250, convex_filter:4, linear_filter:5, linear_fast_filter:4, defense_filter:6}
-		multiverse_candidates = self.GetHighestPriceMomentumMulti(currentDate=currentDate, filterOptions=filters)
-		df = multiverse_candidates[0]
-		if (df.index == CONSTANTS.CASH_TICKER).all() or not 'PC_1Year' in df.columns:
-			todays_picks = EMPTY_RESULT.copy()
-			state = AdaptiveConvexMarketState(as_of_date = currentDate, reevaluation_interval=int(dt_days))
-		else:
-			dispersion = self.compute_cross_sectional_dispersion(df)
-			autocorr = self.compute_momentum_autocorr(df)
-			downside_volatility = self.compute_downside_volatility(df)
-			stress = self.compute_stress_index(dispersion, autocorr, downside_volatility) 
-			if stress > 0.7:
-				self.pickHistoryWindowSize = 20
-			elif stress > 0.4:
-				self.pickHistoryWindowSize = 40
-			else:
-				self.pickHistoryWindowSize = 60
-			tilt, corr_6m_1m, corr_1y_1m = self.compute_leadership_tilt(df)
-			stress_tamper = 1.0 - 0.25 * stress
-			weights = self.adaptive_engine_weights(dispersion, autocorr, stress_tamper, dt_days=dt_days)
-			regime_label = Regime_Label_From_Weights(weights)
-			if weights.get("convex", 0) > 0:
-				self.convex_duration += 1
-			else:
-				self.convex_duration = 0
-
-			# --- enforce min equity ---
-			min_equity = 0.70 - 0.30 * stress_tamper   # ranges 0.40 to 0.70
-			equity_w = weights["convex"] + weights["linear"] + weights["defensive"]
-			if equity_w < min_equity:
-				add = min_equity - equity_w
-				weights["linear"] += add
-				weights["cash"] -= add			
+	def _get_market_state_from_sql(self, forDate, candidate_universe_size):
+		db = PTADatabase()
+		if not db.Open(): return None
 			
-			frames = []			
-			if weights.get("convex", 0) > 0 and convex_filter in multiverse_candidates:
-				add_block(multiverse_candidates[convex_filter], weights["convex"])
-			if weights.get("linear", 0) > 0 and linear_filter in multiverse_candidates:
-				linear_total = weights.get("linear", 0.0)
-				linear_fast_w = linear_total * tilt
-				linear_slow_w = linear_total * (1.0 - tilt)
-				if linear_fast_w > 0 and linear_fast_filter in multiverse_candidates:
-					add_block(multiverse_candidates[linear_fast_filter], linear_fast_w)
-				if linear_slow_w > 0 and linear_filter in multiverse_candidates:
-					add_block(multiverse_candidates[linear_filter], linear_slow_w)
-			if weights.get("defensive", 0) > 0 and defense_filter in multiverse_candidates:
-				add_block(multiverse_candidates[defense_filter], weights["defensive"])
-			if weights.get("cash", 0) > 0:
-				cash_df = EMPTY_RESULT.copy()
-				frames.append(cash_df)
-			if not frames: return pd.DataFrame(columns=["TargetHoldings", "Point_Value"]).rename_axis("Ticker")
-			todays_picks = pd.concat(frames).groupby(level=0).agg(TargetHoldings=("TargetHoldings", "sum"), Point_Value=("Point_Value", "first"))
-			todays_picks["TargetHoldings"] /= todays_picks["TargetHoldings"].sum()
-			state = AdaptiveConvexMarketState(as_of_date = currentDate, reevaluation_interval=int(dt_days), convex_duration  = self.convex_duration, dispersion = dispersion, momentum_autocorr = autocorr, downside_volatility = downside_volatility,  stress_index = stress, corr_6m_1m=corr_6m_1m, corr_1y_1m=corr_1y_1m, convex_weight = weights["convex"], linear_weight = weights["linear"], defensive_weight = weights["defensive"], cash_weight = weights["cash"], regime_label = regime_label, hysteresis_label = self.hysteresis_label, is_warmup=self._adaptive_is_warming)
-		state.Validate()
-		self._append_adaptive_state(state)
-		state.SaveToSQL()
-		todays_picks = self._rolling_history_append(currentDate=currentDate, todays_picks=todays_picks)
-		return todays_picks
-		
-def Regime_Label_From_Weights(weights):
-	if weights["convex"] < 0.05 and weights["cash"] > 0.7:
-		return "OFF_CASH"
-	if weights["convex"] > 0.5:
-		return "CONVEX_DOMINANT"
-	if weights["convex"] > 0.0:
-		return "TRANSITION"
-	return "LINEAR_DOMINANT"
+		sql = f"SELECT * FROM {CONSTANTS.ADAPTIVE_CONVEX_STATE_TABLE} WHERE asOfDate = :asOfDate AND universe_size = :universe_size AND state_version = :state_version"
+		params = {
+			"asOfDate": pd.Timestamp(forDate), 
+			"universe_size": int(candidate_universe_size),
+			"state_version": float(MARKET_STATE_VERSION)
+		}	
+		df = db.DataFrameFromSQL(sql, params)
+		db.Close()
+		if df is None or df.empty: return None		
+		row = df.iloc[0]
+		market_state = AdaptiveConvexMarketState(
+			as_of_date=pd.Timestamp(row["asOfDate"]),
+			convex_duration=int(row.get("convex_duration", 0)),
+			dispersion=float(row.get("dispersion", 0.0)),
+			momentum_autocorr=float(row.get("momentum_autocorr", 0.0)),
+			downside_volatility=float(row.get("downside_volatility", 0.0)),
+			stress_index=float(row.get("stress_index", 0.0)),
+			corr_6m_1m=float(row.get("corr_6m_1m", 0.0)),
+			corr_1y_1m=float(row.get("corr_1y_1m", 0.0)),
+			leadership_tilt=float(row.get("leadership_tilt", 0.0)),
+			disp_p40=float(row.get("disp_p40", 0.0)),
+			disp_p75=float(row.get("disp_p75", 0.0)),
+			expansion_state=str(row.get("expansion_state", "NO_DATA")),
+			state_version=float(row.get("state_version", MARKET_STATE_VERSION)),
+			state_confidence=float(row.get("state_confidence", 0.0)),
+			universe_size=int(row.get("universe_size", 0))
+		)	
+		return market_state
+	
+	def _generate_market_state(self, forDate, universe_size):
+		filters = {0:250}
+		multiverse_candidates = self.GetHighestPriceMomentumMulti(currentDate=forDate, filterOptions=filters)
+		candidate_universe = multiverse_candidates[0]
+		if candidate_universe.empty or CONSTANTS.CASH_TICKER in candidate_universe.index or 'PC_1Year' not in candidate_universe.columns:
+			market_state = None
+		else:
+			dispersion = self.compute_cross_sectional_dispersion(candidate_universe)
+			autocorr = self.compute_momentum_autocorr(candidate_universe)
+			downside_volatility = self.compute_downside_volatility(candidate_universe)
+			stress = self.compute_stress_index(dispersion,autocorr,downside_volatility)
+			leadership_tilt, corr_6m_1m, corr_1y_1m = self.compute_leadership_tilt(candidate_universe)
+			disp_p75, disp_p40 = self._rolling_regime_percentiles()
+			market_state = AdaptiveConvexMarketState(
+				as_of_date=forDate,
+				dispersion=dispersion,
+				momentum_autocorr=autocorr,
+				downside_volatility=downside_volatility,
+				stress_index=stress,
+				corr_6m_1m=corr_6m_1m,
+				corr_1y_1m=corr_1y_1m,
+				leadership_tilt=leadership_tilt,
+				disp_p40=disp_p40,
+				disp_p75=disp_p75,
+				universe_size = universe_size #Note: this was the size requested, not necessarily the size found
+				)
+		return market_state
 
-def Business_Days_Since(prev_date, current_date):
-	if prev_date is None:
-		return None
-	return max(np.busday_count(prev_date.date(), current_date.date()), 1)
+	def _compute_state_confidence_from_history(self, new_state, window=5):
+		if self._adaptive_history_df is None or self._adaptive_history_df.empty:
+			return 0.5  # neutral startup confidence
+		hist = self._adaptive_history_df.tail(window - 1)
+		modes = list(hist["mode_label"]) + [new_state.GetModeLabel()]
+		dispersions = list(hist["dispersion"]) + [new_state.dispersion]
+		autocorrs = list(hist["momentum_autocorr"]) + [new_state.momentum_autocorr]
+		stresses = list(hist["stress_index"]) + [new_state.stress_index]
+		latest_mode = modes[-1]
+		label_score = modes.count(latest_mode) / len(modes)
+		disp_std = np.std(dispersions)
+		auto_std = np.std(autocorrs)
+		stress_std = np.std(stresses)
+		stability_score = 1.0 / (1.0 + 5.0 * (disp_std + auto_std + stress_std))
+		persistence_score = min(new_state.convex_duration / 60.0, 1.0)
+		confidence = (
+			0.5 * label_score +
+			0.3 * stability_score +
+			0.2 * persistence_score
+		)
+		return float(np.clip(confidence, 0.0, 1.0))
+	
+	def _get_market_state(self, forDate, universe_size):
+		prev_state = getattr(self, "_last_market_state", None)
+		market_state = self._get_market_state_from_sql(forDate, universe_size)
+		if not market_state:
+			market_state = self._generate_market_state(forDate, universe_size)
+			if not market_state: return None
+		market_state.set_expansion_state(prev_state) 
+		confidence = self._compute_state_confidence_from_history(market_state)
+		if market_state.geometry_state == "CONVEX":
+			self.convex_duration += 1
+		else:
+			self.convex_duration = 0			
+		market_state.convex_duration = self.convex_duration
+		market_state.state_confidence = confidence
+		market_state.SaveToSQL()		
+		self._last_market_state = market_state			
+		self._append_adaptive_state(market_state)
+		return market_state		
+
+	def _hydrate_market_state_history(self, toDate: pd.Timestamp, universe_size):
+		lookback_start = toDate - pd.offsets.BDay(ADAPTIVE_WARMUP_DAYS)
+		if self._adaptive_history_df is not None and not self._adaptive_history_df.empty:
+			last_date = self._adaptive_history_df.index.max()
+			start_date = max(last_date + pd.offsets.BDay(1), lookback_start)
+		else:
+			start_date = lookback_start
+		bdays = pd.bdate_range(start=start_date, end=toDate)	   
+		if len(bdays) == 0:
+			return self._get_market_state(toDate, universe_size)
+		for d in bdays:
+			if self._adaptive_history_df is not None and d in self._adaptive_history_df.index:
+				continue				
+			state = self._get_market_state(d, universe_size)			
+			if state is None: continue          
+		return self._get_market_state(toDate, universe_size)		
+	
+	def _get_market_state_smoothed(self, forDate, universe_size):
+		current_state = self._hydrate_market_state_history(forDate, universe_size)
+		if self._adaptive_history_df is None or self._adaptive_history_df.empty:
+			return current_state
+		window_size = 5
+		hist = self._adaptive_history_df.tail(window_size)
+		if hist.empty:
+			return current_state
+		smoothed = current_state
+		smoothed.dispersion = hist["dispersion"].mean()
+		smoothed.momentum_autocorr = hist["momentum_autocorr"].mean()
+		smoothed.leadership_tilt = hist["leadership_tilt"].mean()
+		smoothed.state_confidence = hist["state_confidence"].mean()
+		return smoothed
+	
+	def GetAdaptiveConvexPicks(self, currentDate):		
+		filters = {0:250, 3:6, 4:6, 5:6}
+		multiverse_candidates = self.GetHighestPriceMomentumMulti(currentDate=currentDate, filterOptions=filters)
+		universe_size = len(multiverse_candidates[0])
+		market_state = self._get_market_state_smoothed(currentDate, universe_size)
+		if not market_state:
+			return EMPTY_RESULT.copy()
+		filters = market_state.GetExecutionFilters()
+		todays_picks = self._blend_from_multiverse(multiverse_candidates, filters)
+		self.pickHistoryWindowSize = market_state.GetRollingWindowSize()
+		todays_picks = self._rolling_history_append(currentDate=currentDate, todays_picks=todays_picks)
+		return todays_picks	
 
 def Generate_PicksBlendedSQL_DateRange(startYear:int=None, years: int=0, replaceExisting:bool=False, verbose:bool=False):
 	db = PTADatabase()
@@ -656,26 +718,27 @@ def Generate_PicksBlendedSQL_DateRange(startYear:int=None, years: int=0, replace
 		if endDate > today: endDate = today
 		if startDate > today: startDate = today
 		current_date = startDate
+		tickers = []
+		print(f" Generate_PicksBlendedSQL_DateRange from {FormatDate(startDate)} to {FormatDate(endDate)}")				
+		picker = StockPicker(startDate=startDate, endDate=endDate)
 		p = PricingData(CONSTANTS.CASH_TICKER)
 		p.LoadHistory(requestedStartDate=startDate, requestedEndDate=endDate)
-		date_index = p.historicalPrices.index
-		picker = StockPicker(startDate=startDate, endDate=endDate)
-		print(f" Generate_PicksBlendedSQL_DateRange from {startDate} to {endDate}")				
-		prev_month = -1
-		tickers = []
-		for current_date in date_index:
-			if current_date.month != prev_month:	#Load new tickers for each month, can change selection
-				if verbose: print(" Generate_PicksBlended_DateRange: Getting tickers for year " + str(current_date.year))				
-				new_tickers = TickerLists.GetTickerListSQL(year=current_date.year, month=current_date.month, SP500Only=False, filterByFundamentals=False) 
-				if len(new_tickers) > 0:
-					if verbose: print(f" Generate_PicksBlendedSQL_DateRange: Re-query tickers found {len(new_tickers)} instead of previous {len(tickers)}")
-					tickers = new_tickers
-				picker.AlignToList(tickers)			
-				TotalValidCandidates = len(picker._tickerList) 
-				if verbose: print(f" Generate_PicksBlendedSQL_DateRange: Running PicksBlended generation on {TotalValidCandidates} stocks from {FormatDate(startDate)} to {FormatDate(endDate)}")		
-				if TotalValidCandidates==0: assert(False)
-				prev_month = current_date.month
-				endDate = (current_date + timedelta(days=30))
-				picker.GeneratePicksBlendedSQL(startDate=current_date, endDate=endDate, replaceExisting=replaceExisting, verbose=verbose)
+		full_price_index = p.historicalPrices.sort_index().index.unique()
+		existing_dates = pd.to_datetime(db.ScalarListFromSQL("SELECT Date FROM PicksBlendedDaily WHERE [Date]>=:startDate AND [Date]<=:endDate ORDER BY Date", {"startDate": startDate, "endDate": endDate}, column="Date"))
+		missing_dates = full_price_index[~full_price_index.isin(existing_dates)]
+		target_dates = full_price_index if replaceExisting else missing_dates
+		monthly_starts = target_dates[target_dates.to_series().dt.month != target_dates.to_series().dt.month.shift()]
+		for month_start in monthly_starts:
+			month_end = month_start + pd.offsets.MonthEnd(0)
+			if verbose: print(f" Generate_PicksBlended_DateRange: Getting tickers for month {FormatDate(month_start)}")				
+			new_tickers = TickerLists.GetTickerListSQL(year=month_start.year, month=month_start.month, SP500Only=False, filterByFundamentals=False) 
+			if len(new_tickers) > 0:
+				if verbose: print(f" Generate_PicksBlendedSQL_DateRange: Re-query tickers found {len(new_tickers)} instead of previous {len(tickers)}")
+				tickers = new_tickers
+			picker.AlignToList(tickers)			
+			TotalValidCandidates = len(picker._tickerList) 
+			if verbose: print(f" Generate_PicksBlendedSQL_DateRange: Running PicksBlended generation on {TotalValidCandidates} stocks {FormatDate(month_start)} to {FormatDate(month_end)}")		
+			if TotalValidCandidates==0: assert(False)
+			picker.GeneratePicksBlendedSQL(startDate=month_start, endDate=month_end, replaceExisting=replaceExisting, verbose=verbose)
 	db.Close()
 		
