@@ -187,70 +187,78 @@ class PricingData:
 		EARLY_EXIT_PENALTY = 3
 		PV_CAP_CONVEX   = 40.0
 		PV_ALPHA_CONVEX = 1.25
-		df = self._get_full_price_frame().copy()
+		tm = CONSTANTS.TRADING_MONTH
+		ty = CONSTANTS.TRADING_YEAR
+		df = self._get_full_price_frame()
 		avg = df['Average']
-		df['Average_2Day'] = avg.rolling(2).mean()
-		df['Average_3Day'] = avg.rolling(3).mean()
-		df['Average_5Day'] = avg.rolling(5).mean()
-		df[['Average_2Day', 'Average_3Day', 'Average_5Day']] = df[['Average_2Day', 'Average_3Day', 'Average_5Day']].round(2)
-		df['HP_1Mo'] = df['Average_5Day'].shift(CONSTANTS.TRADING_MONTH)
-		df['HP_2Mo'] = df['Average_5Day'].shift(CONSTANTS.TRADING_MONTH * 2)
-		df['HP_3Mo'] = df['Average_5Day'].shift(CONSTANTS.TRADING_MONTH * 3)
-		df['HP_6Mo'] = df['Average_5Day'].shift(CONSTANTS.TRADING_MONTH * 6)
-		df['HP_1Yr'] = df['Average_5Day'].shift(CONSTANTS.TRADING_YEAR)
-		df['HP_2Yr'] = df['Average_5Day'].shift(CONSTANTS.TRADING_YEAR * 2)
-		df['Gain_Monthly'] = (df['Average_3Day'] / df['Average_3Day'].shift(CONSTANTS.TRADING_MONTH)) - 1
-		df['Gain_Monthly'] = df['Gain_Monthly'].fillna(0)
-		df['Losses_Monthly'] = df['Gain_Monthly'].where(df['Gain_Monthly'] < 0, 0)
-		df['LossStd_1Year'] = (df['Losses_Monthly'].rolling(CONSTANTS.TRADING_YEAR).std().fillna(0))
-		df['PC_1Month'] = ((df['Average_3Day'] / df['Average_3Day'].shift(CONSTANTS.TRADING_MONTH)) - 1) * 12.5
-		df['PC_1Month3WeekEMA'] = (df['PC_1Month'].ewm(span=15, adjust=True).mean())
-		df['PC_6Month'] = (df['Average_3Day'] / df['Average_3Day'].shift(125) - 1) * 2
-		df['PC_1Year'] = (df['Average_3Day'] / df['Average_3Day'].shift(CONSTANTS.TRADING_YEAR)) - 1
-		# pv_base = (10 * df['PC_1Year'] + 100 * df['LossStd_1Year']- BASE_OFFSET)
-		# pv_base = pv_base.where(df['PC_1Month'] >= MIN_MONTH_MOMENTUM,pv_base - EARLY_EXIT_PENALTY)
-		# pv_base = pv_base.where((df['PC_1Month3WeekEMA'] >= MIN_EMA_TREND) & (pv_base >= 2), 0.0)
-		# pv_cvx_scaled = pv_base ** PV_ALPHA_CONVEX
-		# #df['Point_Value_CONVEX'] = (pv_cvx_scaled / (1.0 + pv_cvx_scaled / PV_CAP_CONVEX)).clip(lower=0)
-		# df['Point_Value'] = pv_base ** PV_ALPHA_CONVEX 
-		score_f1 = 0.0
-		score_f2 = 0.0
-		score_f3 = 0.0
-		score_f6 = 0.0
-		score_f1 = np.where(df['PC_1Month3WeekEMA'] > MIN_PC_GAIN_DAILY, np.clip(df['PC_1Year'], 0, 2.0), 0.0)
-		score_f2 = np.clip(df['PC_1Year'], 0, 2.0)
-		score_f3 = np.where(df['PC_1Month3WeekEMA'] > 0, np.clip(df['PC_1Year'], 0, 2.0), 0.0)
+		a2 = avg.rolling(2).mean()
+		a3 = avg.rolling(3).mean()
+		a5 = avg.rolling(5).mean()
+		df['Average_2Day'] = a2
+		df['Average_3Day'] = a3
+		df['Average_5Day'] = a5
+		df["Return"] = df["Close"].pct_change()		
+		df['HP_1Mo'] = a5.shift(tm)
+		df['HP_2Mo'] = a5.shift(tm * 2)
+		df['HP_3Mo'] = a5.shift(tm * 3)
+		df['HP_6Mo'] = a5.shift(tm * 6)
+		df['HP_1Yr'] = a5.shift(ty)
+		df['HP_2Yr'] = a5.shift(ty * 2)
+		gain_monthly = (a3 / a3.shift(tm)) - 1
+		gain_monthly = gain_monthly.fillna(0)
+		df['Gain_Monthly'] = gain_monthly
+		df['LossStd_1Year'] = gain_monthly.where(gain_monthly < 0, 0).rolling(ty).std().fillna(0)
+		df['PC_10Day'] = (a3 / a3.shift(10) - 1) * 12.5
+		df['PC_10Day5DayEMA'] = df['PC_10Day'].ewm(span=5, adjust=False).mean()
+		df['PC_1Month'] = (a3 / a3.shift(tm) - 1) * 12.5
+		df['PC_1Month3WeekEMA'] = df['PC_1Month'].ewm(span=15, adjust=False).mean()
+		df['PC_6Month'] = (a3 / a3.shift(125) - 1) * 2
+		df['PC_9Month'] = (a3 / a3.shift(188) - 1) * 4/3
+		df['PC_1Year'] = (a3 / a3.shift(ty)) - 1
+		#PC1 = df['PC_1Month'].ewm(span=3, adjust=False).mean()
+		#PC6 = df['PC_6Month'].ewm(span=3, adjust=False).mean()
+		#df['AutoCorr'] = PC1.rolling(20).corr(PC6)
+		#df['AutoCorr_EMA'] = df['AutoCorr'].ewm(span=5, adjust=False).mean()
+		#df['AutoCorr_Slope'] = df['AutoCorr_EMA'].diff(5)
+		df['AutoCorr_Slope'] =0 #Takes a long time to calculate and not proven benificial
+		pc1y_clip = np.clip(df['PC_1Year'], 0, 2.0)
+		score_f1 = np.where(df['PC_1Month3WeekEMA'] > MIN_PC_GAIN_DAILY, pc1y_clip, 0.0)
+		score_f2 = pc1y_clip
+		score_f3 = np.where(df['PC_1Month3WeekEMA'] > 0, pc1y_clip, 0.0)
 		score_f6 = np.clip(df['PC_6Month'], 0, 1.5)
-		pv_base = (25.0 * score_f1 + 25.0 * score_f2 + 25.0 * score_f3 + 25.0 * score_f6)
-		pv_base = pv_base / (1.0 + 3.0 * df['LossStd_1Year']) # Optional penalty: high downside volatility should reduce score		
-		pv_base = np.where(df['PC_1Month3WeekEMA'] < -0.02, pv_base * 0.25, pv_base) # Optional hard kill: if 1M EMA trend is negative, heavily reduce score	
-		pv_base = pd.Series(pv_base, index=df.index)
-		pv_base_clipped = pv_base.clip(lower=0.0)
-		df['Point_Value'] = pv_base_clipped.ewm(span=20, adjust=False).mean()
-
+		pv_base = (score_f1 + score_f2 + score_f3 + score_f6) * 25.0
+		pv_base += (100.0 * df['LossStd_1Year']) - 6.0
+		#pc9m_clip = df['PC_9Month'].clip(0, 2.0)
+		#score_accel = np.maximum(0, pc9m_clip - pc1y_clip)
+		#pv_base += 10 * score_accel
+		#convex = (df['PC_1Month3WeekEMA'] - df['PC_1Month']).clip(-0.05, 0.1)
+		#pv_base += 8 * convex
+		# dist_bonus = (df['Distance_200DMA'] - 0.2).clip(0, 0.8)
+		# pv_base += 4 * dist_bonus
+		pv_base = np.where(df['PC_1Month3WeekEMA'] < -0.02, pv_base * 0.25, pv_base)
+		df['Point_Value'] = (pd.Series(pv_base, index=df.index).clip(lower=0.0).ewm(span=20, adjust=False).mean() / 10)
 		if fullStats:
+			df["Vol20"] = df["Return"].ewm(span=20, adjust=False).std() * (CONSTANTS.TRADING_YEAR ** 0.5) # Annualized standard deviation
+			df["Vol60"] = df["Return"].ewm(span=60, adjust=False).std() * (CONSTANTS.TRADING_YEAR ** 0.5)
+			df["MA200"] = df["Close"].rolling(200).mean()
+			df["Distance200DMA"] = df["Close"] / df["MA200"] - 1
+			df['EMA_12Day'] = avg.ewm(span=12, adjust=False).mean()
 			df['EMA_1Month'] = avg.ewm(span=CONSTANTS.TRADING_MONTH).mean()
 			df['EMA_3Month'] = avg.ewm(span=CONSTANTS.TRADING_MONTH*3).mean()
 			df['EMA_6Month'] = avg.ewm(span=CONSTANTS.TRADING_MONTH*6).mean()
 			df['EMA_1Year']  = avg.ewm(span=CONSTANTS.TRADING_YEAR).mean()
-			df['EMA_12Day'] = avg.ewm(span=12).mean()
-			df['EMA_26Day'] = avg.ewm(span=26).mean()
-			df['MACD_Line'] = df['EMA_12Day'] - df['EMA_26Day']
+			df['MACD_Line'] = df['EMA_12Day'] - df['EMA_1Month']
 			df['MACD_Signal'] = df['MACD_Line'].ewm(span=9).mean()
 			df['MACD_Histogram'] = df['MACD_Line'] - df['MACD_Signal']
-			df['EMA_Short'] = df['EMA_1Month']
-			df['EMA_Long']  = df['EMA_1Year']
-			df['EMA_ShortSlope'] = df['EMA_Short'].pct_change()
-			df['EMA_LongSlope']  = df['EMA_Long'].pct_change()
 			df['Deviation_1Day'] = (df['High'] - df['Low']) / df['Low']
 			df['Deviation_5Day'] = df['Deviation_1Day'].rolling(5).mean()
 			df['Deviation_10Day'] = df['Deviation_1Day'].rolling(10).mean()
 			df['Deviation_15Day'] = df['Deviation_1Day'].rolling(15).mean()
+			df['Channel_High'] = df['EMA_1Year'] + (avg * df['Deviation_15Day'])
+			df['Channel_Low']  = df['EMA_1Year'] - (avg * df['Deviation_15Day'])
 			df['Gain_10Day'] = (df['Average_2Day'] / df['Average_2Day'].shift(10)) - 1
 			df['Gain_10Day'] = df['Gain_10Day'].fillna(0)
 			df['Target'] = (df['Average_2Day'] * (1 + df['Gain_10Day'] / 9)).round(2)
-			df['Channel_High'] = df['EMA_Long'] + (avg * df['Deviation_15Day'])
-			df['Channel_Low']  = df['EMA_Long'] - (avg * df['Deviation_15Day'])
 			df['PC_1Day'] = avg.pct_change(1) * CONSTANTS.TRADING_YEAR
 			df['PC_3Day'] = avg.pct_change(3) * 83.33
 			df['PC_2Month'] = (df['Average_3Day'] / df['Average_3Day'].shift(41) - 1) * 6.097
@@ -775,14 +783,18 @@ class PricingData:
 
 	def _generate_cash_history(self, start_date: pd.Timestamp | None, end_date: pd.Timestamp | None) -> pd.DataFrame:
 		"""Generates a synthetic DataFrame for the CASH ticker."""
-		#Not ideal as it will include some dates the market is closed
-		if start_date is None: start_date = pd.Timestamp('1980-01-01') + pd.offsets.BusinessDay(1)
-		if end_date is None: end_date = pd.Timestamp.now().normalize() - pd.offsets.BusinessDay(1)
-		date_range = pd.bdate_range(start=start_date, end=end_date)	
-		cal = USFederalHolidayCalendar()		
-		bday = CustomBusinessDay(calendar=cal)
-		date_range = pd.date_range(start=start_date, end=end_date, freq=bday)
-		df = pd.DataFrame({'Open': 1.0, 'High': 1.0, 'Low': 1.0, 'Close': 1.0, 'Volume': 1.0 }, index=date_range)
+		self.ticker = '.INX' #Try .INX is best dates
+		if self.LoadHistory(requestedStartDate=start_date, requestedEndDate=end_date):
+			date_index = self.historicalPrices.index
+		else:
+			#Not ideal as it will include some dates the market is closed
+			if start_date is None: start_date = pd.Timestamp('1980-01-01') + pd.offsets.BusinessDay(1)
+			if end_date is None: end_date = pd.Timestamp.now().normalize() - pd.offsets.BusinessDay(1)
+			cal = USFederalHolidayCalendar()		
+			bday = CustomBusinessDay(calendar=cal)
+			date_index = pd.date_range(start=start_date, end=end_date, freq=bday, name='Date')
+		df = pd.DataFrame(1.0, index=date_index, columns=['Open', 'High', 'Low', 'Close', 'Volume'])
+		self.ticker = CONSTANTS.CASH_TICKER
 		return df
 	#-------------------------------------------- IO Funcitons -----------------------------------------------
 

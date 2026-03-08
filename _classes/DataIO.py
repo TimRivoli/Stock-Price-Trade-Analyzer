@@ -1,8 +1,8 @@
 import time, ssl, requests, pandas as pd
+import yfinance as yf
 import urllib.error, urllib.request as webRequest
 import pyodbc
 import functools
-import yfinance as yf
 from datetime import datetime, timedelta
 from pandas.tseries.offsets import BDay
 from contextlib import suppress
@@ -336,30 +336,19 @@ class DataDownload:
 		if pageData != '': self._ScrapeGoogleFinanceTickerInfoAndFinancials(ticker, pageData)
 
 	def DownloadPriceDataYahooFinance(self, ticker: str):
-		if not ticker:
-			return None
-		t2 = ticker.upper().replace('.INX', '^SPX')
-		if t2.startswith('.'):
-			t2 = t2.replace('.', '^')
-		t2 = t2.replace('.', '-')
+		if not ticker: return None
+		ticker = ticker.upper().replace('.INX', '^SPX')
+		if ticker.startswith('.'): ticker = ticker.replace('.', '^')
+		ticker = ticker.replace('.', '-')
+		print(ticker)
 		try:
-			tkr = yf.Ticker(t2)
-			df = tkr.history(start="1980-01-01", auto_adjust=False)
+			df = yf.Ticker(ticker).history(start="1980-01-01", auto_adjust=True, repair=True)
 		except HTTPError as e:
 			print(f"WARNING: yfinance history() failed for {ticker}: {e}")
 			df = None
 		except Exception as e:
 			print(f"WARNING: unexpected yfinance error for {ticker}: {e}")
 			df = None
-		if df is None or df.empty:
-			df = yf.download(
-				t2,
-				start="1980-01-01",
-				progress=False,
-				auto_adjust=False,
-				group_by="column"
-			)
-
 		if df is None or df.empty:
 			print(f"ERROR: No Yahoo data returned for {ticker}")
 			return None
@@ -616,7 +605,11 @@ class PTADatabase:
 	def ExecSQL(self, sql: str, params: dict | None = None):
 		try:
 			with self.engine.begin() as conn:
-				conn.execute(text(sql), params or {})
+				result = conn.execute(text(sql), params or {})
+				# If the statement has rows (like OUTPUT or SELECT), fetch them now
+				if result.returns_rows:
+					return result.all()  # Returns all rows as a list of Row objects
+				return None
 		except (ProgrammingError, OperationalError, SQLAlchemyError) as e:
 			if isinstance(e, ProgrammingError):
 				raise RuntimeError(f" PTADatabase: SQL syntax error: {sql}") from e

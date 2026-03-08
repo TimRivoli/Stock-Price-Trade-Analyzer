@@ -1,4 +1,5 @@
 import numpy as np, pandas as pd
+import numpy as np, pandas as pd
 import _classes.Constants as CONSTANTS
 from datetime import date, datetime, timedelta
 from dataclasses import dataclass
@@ -107,38 +108,35 @@ class AdaptiveConvexMarketState:
 		return MODE_BLENDED
 
 	def GetRollingWindowSize(self):
-		# leadership_component = (self.leadership_tilt - 0.5) * 2.0
-		# persistence_component = self.momentum_autocorr
-		# velocity_component = self.expansion_velocity
-		# pressure = (
-			# 0.45 * leadership_component +
-			# 0.35 * persistence_component +
-			# 0.20 * velocity_component
-		# )
-		# pressure = max(-1.0, min(1.0, pressure))
-		# base = 15 + pressure * 5
-		# band = 5 * self.state_confidence + 2 # confidence 0 → ±2, confidence 1 → ±7
-		# lower = 15 - band
-		# upper = 15 + band
-		# window = max(lower, min(upper, round(base)))
-		return 30
+		hw = 26 #Moving this up or down reduces returns
+		# if self.leadership_state == "STABLE":
+			# hw += 2
+		# elif self.leadership_state == "TRANSITIONAL":
+			# hw -= 2
+		# elif self.leadership_state == "ROTATING":
+			# hw -= 4
+		return hw
 	
 	def GetExecutionFilters(self):
-		if (self.persistence_break_flag and self.state_confidence < 0.5 and self.stress_index > 0.7 ): return "CASH"
 		g = self.geometry_state
 		e = self.expansion_state
 		l = self.leadership_state
+		filters = [3,3,1,5]   
 		if l == "STABLE":
-			if e == "CONTRACTING":
-				return [3]      # slower confirmation
-			return [4]          # default continuation
-		if l == "TRANSITIONAL":
-			return [4]
-		if l == "ROTATING":
-			if e == "EXPANDING":
-				return [4]
-			return [5]
-		return [4]
+			filters.append(5)      # reinforce proven leaders
+		elif l == "TRANSITIONAL":
+			filters.append(9)      # discover emerging leaders
+		elif l == "ROTATING":
+			filters.append(5)      # retreat to quality
+		if g == "CONVEX":
+			filters.append(4)      # emphasize acceleration
+		elif g == "LINEAR":
+			filters.append(5)      # reinforce stability
+		if e == "EXPANDING":
+			filters.append(9)      # reward medium-trend leaders
+		# if filters.count(5) > 3:
+			# filters.remove(1)
+		return filters
 	
 	def GetRegimeSummary(self) -> str: 
 		return (f"{self.geometry_state}_{self.expansion_state}_{self.leadership_state}"	)
@@ -226,16 +224,18 @@ class StockPicker():
 		self.pickHistoryWindowSize = pickHistoryWindow
 
 	# ---------------- Rolling SQLHist-style aggregation (Adaptive version) ----------------	
-	def _rolling_history_append(self, currentDate, todays_picks, max_picks: int = 15):
+
+	def _rolling_history_append(self, currentDate, todays_picks, max_picks: int = 15, window_size:int = None ):
+		if not window_size: window_size=self.pickHistoryWindowSize
 		if not hasattr(self, "_pick_history") or self._pick_history is None:
 			self._pick_history = pd.DataFrame(columns=["as_of_date", "TargetHoldings", "Point_Value"])
 		todays_picks = todays_picks[["TargetHoldings", "Point_Value"]].copy()
 		todays_picks["as_of_date"] = pd.to_datetime(currentDate)
 		self._pick_history = pd.concat([self._pick_history, todays_picks])
-		cutoff = pd.to_datetime(currentDate) - pd.offsets.BDay(self.pickHistoryWindowSize)
+		cutoff = pd.to_datetime(currentDate) - pd.offsets.BDay(window_size)
 		self._pick_history = self._pick_history[self._pick_history["as_of_date"] >= cutoff].sort_values("as_of_date")
 		hist = self._pick_history.copy()
-		hist["PV_EMA"] = hist.groupby(level=0)["Point_Value"].transform(lambda x: x.ewm(span=self.pickHistoryWindowSize, adjust=False).mean())
+		hist["PV_EMA"] = hist.groupby(level=0)["Point_Value"].transform(lambda x: x.ewm(span=window_size, adjust=False).mean())
 		agg = hist.groupby(hist.index).agg(
 			TargetHoldings=("TargetHoldings", "sum"), 
 			DateCount=("as_of_date", "nunique"),
@@ -304,18 +304,17 @@ class StockPicker():
 			self.priceData[i].NormalizePrices()		
 			
 #-------------------------------------------- Selection routine -----------------------------------------------
-	def _blend_from_multiverse(self, multiverse_candidates, filters):
+	def _blend_from_multiverse(self, multiverse_candidates, filters, normalize: bool=True):
 		dfs = [
 			EMPTY_RESULT.copy() if f == CASH_FILTER
 			else multiverse_candidates.get(f, pd.DataFrame())
 			for f in filters
 			if (f == CASH_FILTER) or (f in multiverse_candidates)
 		]
-
 		if not dfs:	return EMPTY_RESULT.copy()
 		todays_picks = pd.concat(dfs, sort=True)
 		todays_picks = (todays_picks.groupby(level=0).agg(TargetHoldings=('Point_Value', 'size'),Point_Value=('Point_Value', 'last')))
-		todays_picks["TargetHoldings"] /= todays_picks["TargetHoldings"].sum()
+		if normalize: todays_picks["TargetHoldings"] /= todays_picks["TargetHoldings"].sum()
 		todays_picks.sort_values('TargetHoldings', ascending=False,inplace=True)
 		todays_picks.index.name = 'Ticker'
 		return todays_picks
@@ -338,31 +337,34 @@ class StockPicker():
 			row = df.loc[currentDate]
 			if min( row['HP_2Yr'], row['HP_1Yr'], row['HP_6Mo'], row['HP_2Mo'], row['HP_1Mo'], row['Average_5Day'] ) <= 0:
 				continue
-			rows.append({'Ticker': ticker,'hp2Year': row['HP_2Yr'],'hp1Year': row['HP_1Yr'],'hp6mo': row['HP_6Mo'],'hp3mo': row['HP_3Mo'],'hp2mo': row['HP_2Mo'],'hp1mo': row['HP_1Mo'],'Average_5Day': row['Average_5Day'],'Average_2Day': row['Average_2Day'],'Average': row['Average'],'Channel_High': row['Channel_High'],'Channel_Low': row['Channel_Low'],'PC_2Year': row['PC_2Year'],'PC_1Year': row['PC_1Year'],'PC_6Month': row['PC_6Month'],'PC_3Month': row['PC_3Month'],'PC_2Month': row['PC_2Month'],'PC_1Month': row['PC_1Month'],'PC_3Day': row['PC_3Day'],'PC_1Day': row['PC_1Day'],'PC_1Month3WeekEMA': row['PC_1Month3WeekEMA'],'Deviation_15Day': row['Deviation_15Day'],'Deviation_10Day': row['Deviation_10Day'],'Deviation_5Day': row['Deviation_5Day'],'Deviation_1Day': row['Deviation_1Day'],'Gain_Monthly': row['Gain_Monthly'],'LossStd_1Year': row['LossStd_1Year'],'Point_Value': row['Point_Value'],'Comments': row.get('Comments', ''),'HasFullLookback': row.get('HasFullLookback', True),'latestEntry': pd_obj.historyEndDate})
+			rows.append({'Ticker': ticker,'hp2Year': row['HP_2Yr'],'hp1Year': row['HP_1Yr'],'hp6mo': row['HP_6Mo'],'hp3mo': row['HP_3Mo'],'hp2mo': row['HP_2Mo'],'hp1mo': row['HP_1Mo'],'Average_5Day':
+				row['Average_5Day'],'Average_2Day': row['Average_2Day'],'Average': row['Average'],'Channel_High': row['Channel_High'],'Channel_Low': row['Channel_Low'],'PC_2Year': row['PC_2Year'],'PC_1Year': row['PC_1Year'],'PC_9Month': row['PC_9Month'],'PC_6Month': row['PC_6Month'],'PC_3Month': row['PC_3Month'],'PC_2Month': row['PC_2Month'],'PC_1Month': row['PC_1Month'],'PC_3Day': row['PC_3Day'],'PC_1Day': row['PC_1Day'],'PC_1Month3WeekEMA': row['PC_1Month3WeekEMA'],'Deviation_15Day': row['Deviation_15Day'],'Deviation_10Day': row['Deviation_10Day'],'Deviation_5Day': row['Deviation_5Day'],'Deviation_1Day': row['Deviation_1Day'],'Gain_Monthly': row['Gain_Monthly'],'LossStd_1Year': row['LossStd_1Year'],'Point_Value': row['Point_Value'],'PC_10Day5DayEMA': row['PC_10Day5DayEMA'],'AutoCorr_Slope': row['AutoCorr_Slope'],'Comments': row.get('Comments', ''),'HasFullLookback': row.get('HasFullLookback', True),'latestEntry': pd_obj.historyEndDate})
 		if not rows: 
 			for filter_option in filterOptions.keys(): candidates[filter_option] = EMPTY_RESULT.copy()
 			return candidates
 		base = pd.DataFrame(rows).set_index('Ticker')
 		base.index.name = 'Ticker'
 
-		minPC_1Day = minPercentGain / CONSTANTS.TRADING_YEAR
+		#minPC_1Day = minPercentGain / CONSTANTS.TRADING_YEAR
 		#More complex filters that I have tried have all decreased performance which is why these are simple
-		#Greatest factors for improvement are high 5mo-1yr return and a very low selection of stocks, like 1-3
+		#Greatest factors for improvement are high 6mo-1yr return and a very low selection of stocks, like 1-3
 		#Best way to compensate for few stocks is to blend filters of different strengths
-		#7, 8, 9 are all very poor 
+		def basic_quality(df): return ( (df['PC_9Month'] > minPercentGain) & (df['PC_1Month3WeekEMA'] > 0) ) #The reason tight quality filters don't work: I don't buy when the filter is picked, I buy when it accumulates votes.  Letting short term loss accumuate votes is essentially shopping for a discount.
+		def loose_quality(df): return ( (df['PC_9Month'] > minPercentGain)  ) #& (df['PC_10Day5DayEMA'] > -0.15)
 		filter_map = {
 			0: dict(sort='PC_1Year', mask=lambda df: (df['Average_5Day'] > 0) ),
-			1: dict(sort='PC_1Year', mask=lambda df: (df['PC_1Month3WeekEMA'] > minPC_1Day) ), #CAGR ~38–40%, inconsistent behavior, mediocre Sharpe, Broad / Noisy Exposure
-			2: dict(sort='PC_1Year', mask=lambda df: (df['PC_1Year'] > minPercentGain)), #very high growth
-			3: dict(sort='PC_1Year', mask=lambda df: ((df['PC_1Year'] > minPercentGain) & (df['PC_1Month3WeekEMA'] > 0))), 
-			4: dict(sort='PC_1Month3WeekEMA', mask=lambda df: (df['PC_1Month3WeekEMA'] > minPC_1Day) ),
-			5: dict(sort='Point_Value', mask=lambda df: ( (df['PC_1Year'] > minPercentGain) & (df['Point_Value'] > 0) )), #Gets close to performance of blended, which is very good
-			6: dict(sort='PC_6Month', mask=lambda df: (df['PC_6Month'] > minPercentGain) ), #6 month version of 2 for faster reaction, even faster growth
-			7: dict(prep=lambda df: df.assign(BreakoutScore=(2.0 * df['Deviation_10Day'] + 1.0 * df['Deviation_5Day'] + 1.5 * df['PC_3Month'] + 1.0 * df['PC_1Month3WeekEMA'])),sort='BreakoutScore',mask=lambda df: ((df['PC_1Year'] > minPC_1Day) &(df['PC_1Month3WeekEMA'] > 0) &(df['Deviation_10Day'] > 0) &(df['PC_3Month'] > 0))),
-			8: dict(prep=lambda df: df.assign(LowVolScore=(df['PC_1Year'] / (0.0001 + df['LossStd_1Year'])),LossCut=df['LossStd_1Year'].quantile(0.35)),sort='LowVolScore',mask=lambda df: ((df['PC_1Year'] > minPC_1Day) & (df['PC_3Month'] > 0) & (df['LossStd_1Year'] > 0) & (df['LossStd_1Year'] <= df['LossCut']))),
-			9: dict(prep=lambda df: df.assign(RiskAdjMomentum=(df['PC_3Month'] / (0.0001 + df['LossStd_1Year'])), BlowoffCut=df['Deviation_10Day'].quantile(0.97)), sort='RiskAdjMomentum', mask=lambda df: ((df['PC_6Month'] > minPercentGain) & (df['PC_3Month'] > 0) & (df['PC_1Month3WeekEMA'] > 0) & (df['LossStd_1Year'] > 0) & (df['Deviation_10Day'] > 0) & (df['Deviation_10Day'] < df['BlowoffCut'] ) ) ),
+			#trend confirmation and stability
+			2: dict(sort='PC_1Year', mask=lambda df: ( (df['PC_1Month3WeekEMA'] < df['PC_1Month']) & basic_quality(df)) ), #28.11	-46.08 Modified filter 3
+			3: dict(sort='PC_1Year', mask=lambda df: ( (df['PC_1Year'] > minPercentGain) & basic_quality(df)) ), #36.64	-49.72 Long-trend confirmation
+			9: dict(sort='PC_9Month', mask=lambda df:( basic_quality(df)) ), #Medium-trend confirmation
+			5: dict(sort='Point_Value', mask=lambda df: ( (df['Point_Value'] > 0) & basic_quality(df)) ), #Quality robustness stabilizer
+			#Discovery / early growth
+			1: dict(sort='PC_1Year', mask=lambda df: ( loose_quality(df) )), #CAGR 39.95 DD -50.85, inconsistent behavior, mediocre Sharpe, Broad / Noisy Exposure
+			4: dict(sort='PC_1Month3WeekEMA', mask=lambda df: ( (df['PC_1Month3WeekEMA'] > 0) & loose_quality(df)) ), #32.50	-54.80 Discovery and high growth but volitile
+			6: dict(sort='PC_6Month', mask=lambda df: ( loose_quality(df)) ), #
+			7: dict(sort='PC_1Month3WeekEMA', mask=lambda df: ( (df['PC_10Day5DayEMA'] < -0.02) & loose_quality(df)) ), #The big discount
+			8: dict(sort='PC_9Month', mask=lambda df: ( (df['PC_1Month3WeekEMA'] > df['PC_3Month'] ) & loose_quality(df)) ), #
 		}
-		#former 1, was a dud. dict(sort='PC_1Year', mask=lambda df: ((df['PC_1Year'] > minPercentGain) & (df['PC_1Month3WeekEMA'] > 0) & ( df['PC_1Year'] / CONSTANTS.TRADING_YEAR > df['PC_1Month3WeekEMA'] / CONSTANTS.TRADING_MONTH ) ) ),
 		
 		for filter_option, stocks_to_return in filterOptions.items():
 			spec = filter_map.get(filter_option)
@@ -393,18 +395,11 @@ class StockPicker():
 			todays_picks = daily
 		return todays_picks
 
-	def GetPicksBlended(self, currentDate:date, filter1:int = 3, filter2: int = 3, filter3: int = 1, filter4: int = 5, minPercentGain:float = 0.05, useRollingWindow:bool = True):
-		#generates list of tickers with TargetHoldings which indicate proportion of holdings	
-		filter_options = {filter1:3, filter2:3, filter3:3, filter4:4}
-		multiverse_candidates = self.GetHighestPriceMomentumMulti(currentDate=currentDate, filterOptions=filter_options, minPercentGain=minPercentGain)
-		df1 = multiverse_candidates.get(filter1, pd.DataFrame())
-		df2 = multiverse_candidates.get(filter2, pd.DataFrame())
-		df3 = multiverse_candidates.get(filter3, pd.DataFrame())
-		df4 = multiverse_candidates.get(filter4, pd.DataFrame())
-		todays_picks = pd.concat([df1, df2, df3, df4], sort=True)
-		todays_picks = todays_picks.groupby(level=0).agg(TargetHoldings=('Point_Value', 'size'), Point_Value=('Point_Value', 'last'))
-		todays_picks.sort_values('TargetHoldings', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last')
-		todays_picks.index.name='Ticker'
+	def GetPicksBlended(self, currentDate:date, filter_options: dict = None, minPercentGain:float = 0.05, useRollingWindow:bool = True):
+		if not filter_options: filter_options = {3:3, 3:3, 1:3, 5:4, 9:2}
+		filters = list(filter_options.keys())
+		multiverse_candidates = self.GetHighestPriceMomentumMulti(currentDate=currentDate, filterOptions=filter_options, minPercentGain=minPercentGain)	
+		todays_picks = self._blend_from_multiverse(multiverse_candidates, filters, False)
 		if useRollingWindow: todays_picks = self._rolling_history_append(currentDate=currentDate, todays_picks=todays_picks, max_picks=15)
 		return todays_picks
 
@@ -423,17 +418,19 @@ class StockPicker():
 		startDate = ToTimestamp(startDate or self._startDate)
 		startDate = max(startDate, self._startDate)
 		endDate = ToTimestamp(endDate or self._endDate)
-		endDate = max(endDate, self._endDate)
+		endDate = min(endDate, self._endDate)
 		current_date = startDate
 		prev_month = -1
 		print(f" GeneratePicksBlendedSQL from {startDate} to {endDate}")				
-		existing_dates = pd.to_datetime(db.ScalarListFromSQL("SELECT Date FROM PicksBlendedDaily WHERE [Date]>=:startDate AND [Date]<=:endDate ORDER BY Date", {"startDate": startDate, "endDate": endDate}, column="Date"))
 		full_price_index = self.priceData[0].historicalPrices.index.sort_values().unique()
-		missing_dates = full_price_index[~full_price_index.isin(existing_dates)]
-		target_dates = full_price_index if replaceExisting else missing_dates
+		mask = (full_price_index >= startDate) & (full_price_index <= endDate)
+		range_price_index = full_price_index[mask]
+		existing_dates = pd.to_datetime(db.ScalarListFromSQL("SELECT Date FROM PicksBlendedDaily WHERE [Date]>=:startDate AND [Date]<=:endDate ORDER BY Date", {"startDate": startDate, "endDate": endDate}, column="Date"))
+		missing_dates = range_price_index[~range_price_index.isin(existing_dates)]
+		target_dates = range_price_index if replaceExisting else missing_dates
 		for current_date in target_dates:
 			if verbose: print(f" GeneratePicksBlendedSQL: Blended using default filters for date {current_date}")
-			result = self.GetPicksBlended(currentDate=current_date)
+			result = self.GetPicksBlended(currentDate=current_date, useRollingWindow=False)
 			if len(result) == 0:
 				if verbose: print(" GeneratePicksBlendedSQL: No data found.")
 			else:
@@ -691,17 +688,18 @@ class StockPicker():
 		smoothed.state_confidence = hist["state_confidence"].mean()
 		return smoothed
 	
-	def GetAdaptiveConvexPicks(self, currentDate):		
-		filters = {0:250, 3:6, 4:6, 5:6}
+	def GetAdaptiveConvexPicks(self, currentDate):
+		#filter_options = {3:3, 3:3, 1:3, 5:4} #Classic Blended
+		filters = {0:250, 1:3, 3:3, 4:3, 5:4, 6:3, 7:2}
 		multiverse_candidates = self.GetHighestPriceMomentumMulti(currentDate=currentDate, filterOptions=filters)
 		universe_size = len(multiverse_candidates[0])
 		market_state = self._get_market_state_smoothed(currentDate, universe_size)
 		if not market_state:
 			return EMPTY_RESULT.copy()
 		filters = market_state.GetExecutionFilters()
+		window_size = market_state.GetRollingWindowSize()
 		todays_picks = self._blend_from_multiverse(multiverse_candidates, filters)
-		self.pickHistoryWindowSize = market_state.GetRollingWindowSize()
-		todays_picks = self._rolling_history_append(currentDate=currentDate, todays_picks=todays_picks)
+		todays_picks = self._rolling_history_append(currentDate=currentDate, todays_picks=todays_picks, window_size=window_size)
 		return todays_picks	
 
 def Generate_PicksBlendedSQL_DateRange(startYear:int=None, years: int=0, replaceExisting:bool=False, verbose:bool=False):

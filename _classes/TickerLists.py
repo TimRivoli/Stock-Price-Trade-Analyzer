@@ -1,13 +1,37 @@
 #https://en.wikipedia.org/wiki/List_of_S%26P_500_companies
 import datetime
-def ScaleMarketCap(year:int, marketCap:int):
-	base_year = 1980
-	final_year = 2025   
-	reduction_factor = 0.9  # 10-fold reduction 90% decrease from 1980 to 2025
-	scale = 1 - ((final_year - year) / (final_year - base_year)) * reduction_factor
-	r = marketCap * scale
-	if marketCap > 0: print(f" ScaleMarketCap: MarketCap {marketCap} scaled to {r} for year {year}")
-	return r
+
+def ScaleMarketCap(year: int, market_cap: float):
+	# Scale Factors relative to the year 2015 (2015 = 1.0)
+	# These are approx S&P 500 levels normalized to 2015
+	historical_factors = {
+		1980: 0.05, 1985: 0.09, 1990: 0.16, 1995: 0.25,
+		2000: 0.68, 2005: 0.58, 2008: 0.43, 2010: 0.53, 2015: 1.0
+	}  
+	base_year = 2025
+	cagr = 0.09  # 9% average growth for the post-2015 era	
+	if year in historical_factors: # 1. Determine the "2015-equivalent" value
+		factor_to_2015 = 1 / historical_factors[year]
+	elif year < 2015:
+		factor_to_2015 = (1 + 0.07) ** (2015 - year)
+	else:
+		factor_to_2015 = 1.0
+	to_2025_multiplier = (1 + cagr) ** (base_year - 2015)
+	
+	if year >= 2015:
+		final_multiplier = (1 + cagr) ** (base_year - year)
+	else:
+		final_multiplier = factor_to_2015 * to_2025_multiplier       
+	return market_cap * final_multiplier
+	
+# def ScaleMarketCap(year:int, marketCap:int):
+	# base_year = 1980
+	# final_year = 2025   
+	# reduction_factor = 0.9  # 10-fold reduction 90% decrease from 1980 to 2025
+	# scale = 1 - ((final_year - year) / (final_year - base_year)) * reduction_factor
+	# r = marketCap * scale
+	# if marketCap > 0: print(f" ScaleMarketCap: MarketCap {marketCap} scaled to {r} for year {year}")
+	# return r
 
 class TickerLists:
 	theList = {"Indexes":['.INX','.DJI','.IXIC']}

@@ -424,7 +424,13 @@ class Portfolio:
 
 	def GetAssetValue(self): return self._asset_value	
 
-	def GetCommittedCash(self): return self._cash_committed_to_orders	
+	def GetCommittedCash(self): return self._cash_committed_to_orders
+	
+	def GetIdleCashPCT(self):
+		available_cash = (self._total_cash - self._cash_committed_to_orders)
+		asset_value = self._asset_value
+		total_value = available_cash + asset_value
+		return (available_cash / total_value) if total_value > 0 else 0
 
 	def GetBuyOrders(self): return self._pendingBuys
 	
@@ -943,7 +949,7 @@ class TradingModel(Portfolio):
 		a = self._asset_value
 		gain = 100 * (((c + a) / self._initialValue) - 1)
 		print(f"Cash: ${c:,.0f} ' assets: ${a:,.0f} total: ${(c+a):,.0f} gain: {gain:,.0f}%")
-		print(f"Processing time: {params.processing_minutes} minutes")
+		print(f"Processing time: {params.processing_minutes} minutes.  Completion Time: {self.end_processing}")
 		print('')
 		if params.saveTradeHistory:
 			self.SaveDailyValue(self._dataFolderTradeModel)
