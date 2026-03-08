@@ -11,7 +11,6 @@ from datetime import datetime
 use_sql = PTADatabase().database_configured
 
 #------------------------------------------- Specific model functions  ----------------------------------------------		
-
 def ModelSP500(startDate: str = '1/1/2000', durationInYears:int = 10):
 	#Baseline model to compare against.  Buy on day one, hold for the duration and then sell
 	ticker = '.INX'
@@ -47,6 +46,7 @@ def RunPriceMomentum(params: TradeModelParams):
 	#reEvaluationInterval is how often to reevaluate our choices, ideally this should be very short and not matter, otherwise the date selection is biased.
 	
 	params.modelName = ''
+	if params.pickHistoryWindow > 0: params.allocateByPointValue = False #Much better performance with this
 	params.AddModelNameModifiers()
 	tm = TradingModel(modelName=params.modelName, startingTicker=CONSTANTS.CASH_TICKER, startDate=params.startDate, durationInYears=params.durationInYears, totalFunds=params.portfolioSize, verbose=params.verbose)
 	tickerList = TickerLists.SP500_2026()
@@ -65,7 +65,7 @@ def RunPriceMomentum(params: TradeModelParams):
 			if dayCounter ==0: 				
 				candidates = picker.GetHighestPriceMomentum(currentDate, stocksToReturn=params.stockCount, filterOption=params.filterOption, minPercentGain=params.minPercentGain, allocateByTargetHoldings=(not params.allocateByPointValue), allocateByPointValue=params.allocateByPointValue, useRollingWindow=True)
 				tm.AlignPositions(targetPositions=candidates, rateLimitTransactions=params.rateLimitTransactions, shopBuyPercent=params.shopBuyPercent, shopSellPercent=params.shopSellPercent) 
-			elif (dayCounter % 3 == 1) and (params.rateLimitTransactions or params.trimProfitsPercent > 0): #Every three days run these two
+			elif (tm.GetIdleCashPCT() >= .005) or (dayCounter % 3 == 1) and (params.rateLimitTransactions or params.trimProfitsPercent > 0):
 				tm.AlignPositions(targetPositions=candidates, rateLimitTransactions=params.rateLimitTransactions, shopBuyPercent=params.shopBuyPercent, shopSellPercent=params.shopSellPercent) 
 				if params.trimProfitsPercent: tm.TrimProfits(params.trimProfitsPercent)
 			tm.ProcessDay()
@@ -74,10 +74,11 @@ def RunPriceMomentum(params: TradeModelParams):
 	closing_value = tm.CloseModel(params)
 	return closing_value
 
-def RunPriceMomentumAdaptiveConvex(params: TradeModelParams, convex_filter:int = 6, linear_filter:int = 2, defense_filter:int = 1):
+def RunPriceMomentumAdaptiveConvex(params: TradeModelParams):
 	params.filterOption = 98
 	params.allocateByPointValue = False
-	params.modelName = f"AdaptiveConvex_v3.5_({convex_filter}.{linear_filter}.{defense_filter})"
+	params.modelName = f"AdaptiveConvex_v4"
+	params.pickHistoryWindow = -1
 	params.AddModelNameModifiers()
 	tm = TradingModel(modelName=params.modelName, startingTicker = CONSTANTS.CASH_TICKER, startDate=params.startDate, durationInYears=params.durationInYears, totalFunds=params.portfolioSize, verbose=params.verbose)
 	tickerList = TickerLists.SP500_2026()
@@ -89,11 +90,12 @@ def RunPriceMomentumAdaptiveConvex(params: TradeModelParams, convex_filter:int =
 		if currentYear != currentDate.year:
 			currentYear = currentDate.year
 			if use_sql: tickerList = TickerLists.GetTickerListSQL(currentYear, SP500Only=params.SP500Only, filterByFundamentals=params.filterByFundamentals,  marketCapMax=params.marketCapMax, marketCapMin=params.marketCapMin)
+			#tickerList = tickerList[:10]
 			picker.AlignToList(tickerList)
 		if dayCounter == 0:
-			candidates = picker.GetAdaptiveConvexPicks(currentDate, convex_filter, linear_filter, defense_filter)
+			candidates = picker.GetAdaptiveConvexPicks(currentDate)
 			tm.AlignPositions(targetPositions = candidates, rateLimitTransactions = params.rateLimitTransactions, shopBuyPercent = params.shopBuyPercent, shopSellPercent = params.shopSellPercent) 
-		elif (dayCounter % 3 == 1) and (params.rateLimitTransactions or params.trimProfitsPercent > 0):
+		elif (tm.GetIdleCashPCT() >= .005) or (dayCounter % 3 == 1) and (params.rateLimitTransactions or params.trimProfitsPercent > 0):
 			tm.AlignPositions(targetPositions = candidates, rateLimitTransactions = params.rateLimitTransactions, shopBuyPercent = params.shopBuyPercent, shopSellPercent = params.shopSellPercent) 
 			if params.trimProfitsPercent: tm.TrimProfits(params.trimProfitsPercent)
 		tm.ProcessDay()
@@ -102,17 +104,18 @@ def RunPriceMomentumAdaptiveConvex(params: TradeModelParams, convex_filter:int =
 	closing_value = tm.CloseModel(params)
 	return closing_value
 	
-def RunPriceMomentumBlended(params: TradeModelParams, filter1:int = 3, filter2: int = 3, filter3: int = 1, filter4: int = 5):
+def RunPriceMomentumBlended(params: TradeModelParams, filter_options: dict = None):
 	#Uses blended option for selecting stocks using three different filters, produces the best overall results.
-	#2 long term performer
-	#4 short term performer
-	#1 Short term gain meets min requirements, sort long value
-	#5 point value, aka PV
+	if not filter_options: filter_options = {3:3, 3:3, 1:3, 5:4, 9:2} #CAGR 52.00, MadDD -52.03
+	filters = list(filter_options.keys())	
+	filter_string = ".".join(str(f) for f in filters)
 	params.filterOption = 99
 	params.allocateByPointValue = False
-	params.modelName = f"PM_Blended_({filter1}.{filter2}.{filter3}.{filter4})"
+	params.modelName = "PM_Blended" 
+	if not params.useDatabase: 
+		params.modelName +=f"_({filter_string})" #Note: if using the database records, you are using whatever filters they were created with
 	params.AddModelNameModifiers()
-	print('RunPriceMomentumBlended ', params.startDate, params.endDate)
+	print(f" Running {params.modelName} ", params.startDate, params.endDate)
 	picker = StockPicker(startDate=params.startDate, endDate=params.endDate, pickHistoryWindow=params.pickHistoryWindow) 
 	tm = TradingModel(modelName=params.modelName , startingTicker=CONSTANTS.CASH_TICKER, startDate=params.startDate, durationInYears=params.durationInYears, totalFunds=params.portfolioSize, verbose=params.verbose)
 	tickerList = TickerLists.SP500_2026()
@@ -131,9 +134,9 @@ def RunPriceMomentumBlended(params: TradeModelParams, filter1:int = 3, filter2: 
 				if params.useDatabase:
 					candidates = picker.GetPicksBlendedSQL(currentDate=currentDate, sqlHistory=params.pickHistoryWindow)
 				else:
-					candidates = picker.GetPicksBlended(currentDate=currentDate, filter1=filter1, filter2=filter2, filter3=filter3, filter4=filter4, useRollingWindow=(params.pickHistoryWindow>0) )
+					candidates = picker.GetPicksBlended(currentDate=currentDate, filter_options=filter_options, useRollingWindow=(params.pickHistoryWindow>0) )
 				tm.AlignPositions(targetPositions = candidates, rateLimitTransactions = params.rateLimitTransactions, shopBuyPercent = params.shopBuyPercent, shopSellPercent = params.shopSellPercent) 
-			elif (dayCounter % 3 == 1) and (params.rateLimitTransactions or params.trimProfitsPercent > 0):
+			elif (tm.GetIdleCashPCT() >= .005) or (dayCounter % 3 == 1) and (params.rateLimitTransactions or params.trimProfitsPercent > 0):
 				tm.AlignPositions(targetPositions = candidates, rateLimitTransactions = params.rateLimitTransactions, shopBuyPercent = params.shopBuyPercent, shopSellPercent = params.shopSellPercent) 
 				if params.trimProfitsPercent: tm.TrimProfits(params.trimProfitsPercent)
 			tm.ProcessDay() #Adjust prices and trades every day
@@ -153,8 +156,7 @@ def ModelPastFewYears(params: TradeModelParams):
 	params.durationInYears = years
 	params.reEvaluationInterval = 5
 	params.rateLimitTransactions = True
-	params.verbose = True
-	
+	params.verbose = True	
 	params.filterOption = 5
 	RunPriceMomentum(params)
 	params.useDatabase = False
@@ -175,10 +177,10 @@ def ExtensiveTestingAddTests():
 	params.trimProfitsPercent = 0.0
 	params.useDatabase = False
 	params.rateLimitTransactions = True
-	for i in [98]:
-		for ii in [5, 10, 20]:
-			params.filterOption = i
-			params.reEvaluationInterval = ii
+	for fo in [1,2,3,4,5,6,98,99]:
+		for i in [5, 10, 20]:
+			params.filterOption = fo
+			params.reEvaluationInterval = i
 			tester.add_to_queue(params)
 	
 def ExtensiveTestingRun():
@@ -192,7 +194,7 @@ def ExtensiveTestingRun():
 			time.sleep(30)
 			continue  # Jump back to the start of the while loop
 		if params.filterOption == 99:
-			RunPriceMomentumBlended(params, 3, 3, 1, 5)
+			RunPriceMomentumBlended(params)
 		elif params.filterOption == 98:
 			RunPriceMomentumAdaptiveConvex(params)
 		else:
@@ -217,9 +219,9 @@ if __name__ == '__main__':
 	params.trimProfitsPercent = 0.0
 	params.reEvaluationInterval = 5
 	params.stockCount = 15
-	params.filterOption = 5
+	params.pickHistoryWindow = 26	#26 days is optimal
 	params.rateLimitTransactions = True
-	params.allocateByPointValue = True
+	params.allocateByPointValue = False
 	params.saveResults = True
 	params.verbose = True
 
