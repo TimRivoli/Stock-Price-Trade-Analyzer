@@ -163,13 +163,13 @@ def RunTradingModelTrending(tm: TradingModel, ticker: str):
 	trendState = prevTrendState
 
 	# ---- Determine trend state ----
-	if p.EMA_LongSlope >= minActionableSlope and p.EMA_ShortSlope >= minActionableSlope:
+	if p.EMA_1Year_Slope >= minActionableSlope and p.EMA_3Month_Slope >= minActionableSlope:
 		trendState = '++'
-	elif p.EMA_LongSlope >= minActionableSlope and p.EMA_ShortSlope < minActionableSlope:
+	elif p.EMA_1Year_Slope >= minActionableSlope and p.EMA_3Month_Slope < minActionableSlope:
 		trendState = '+-'
-	elif p.EMA_LongSlope < -minActionableSlope and p.EMA_ShortSlope < -minActionableSlope:
+	elif p.EMA_1Year_Slope < -minActionableSlope and p.EMA_3Month_Slope < -minActionableSlope:
 		trendState = '--'
-	elif p.EMA_LongSlope < (-1 * minActionableSlope) and p.EMA_ShortSlope < (-1 * minActionableSlope):
+	elif p.EMA_1Year_Slope < (-1 * minActionableSlope) and p.EMA_3Month_Slope < (-1 * minActionableSlope):
 		trendState = '-+'
 	else:
 		trendState = 'Flat'
@@ -254,13 +254,13 @@ def RunTradingModelSwingTrend(tm: TradingModel, ticker: str):
 		tm.PlaceSell(ticker=ticker, units=units, price=price, marketOrder=market, expireAfterDays=expire)
 
 	# ---------------- TREND LOGIC ----------------
-	if p.EMA_LongSlope >= minActionableSlope and p.EMA_ShortSlope >= minActionableSlope:
+	if p.EMA_1Year_Slope >= minActionableSlope and p.EMA_3Month_Slope >= minActionableSlope:
 		# ++ Positive trend, stay long
 		trendState = '++'
 		if buy_pending_count < 2 and tm.GetAvailableCash() > p.High:
 			BuyPctCash(pct=0.35, price=targetBuy, market=True, expire=3)
 
-	elif p.EMA_LongSlope >= minActionableSlope and p.EMA_ShortSlope < minActionableSlope:
+	elif p.EMA_1Year_Slope >= minActionableSlope and p.EMA_3Month_Slope < minActionableSlope:
 		# +- Correction / early downturn, trim highs
 		trendState = '+-'
 		if p.Low > p.Channel_High:
@@ -271,7 +271,7 @@ def RunTradingModelSwingTrend(tm: TradingModel, ticker: str):
 			if sell_pending_count < 3 and long_position_count > 0:
 				SellPctHoldings(pct=0.20, price=targetSell * 0.98, market=False, expire=3)
 
-	elif p.EMA_LongSlope < -minActionableSlope and p.EMA_ShortSlope < -minActionableSlope:
+	elif p.EMA_1Year_Slope < -minActionableSlope and p.EMA_3Month_Slope < -minActionableSlope:
 		# -- Negative trend, get out
 		trendState = '--'
 
@@ -292,7 +292,7 @@ def RunTradingModelSwingTrend(tm: TradingModel, ticker: str):
 			if trendDuration > 2 and sell_pending_count < 5 and long_position_count > 0:
 				SellPctHoldings(pct=0.50, price=targetSell, market=True, expire=3)
 
-	elif p.EMA_LongSlope < (-1 * minActionableSlope) and p.EMA_ShortSlope < (-1 * minActionableSlope):
+	elif p.EMA_1Year_Slope < (-1 * minActionableSlope) and p.EMA_3Month_Slope < (-1 * minActionableSlope):
 		# -+ Bounce or early recovery
 		trendState = '-+'
 
@@ -360,7 +360,7 @@ def RunTradingModelSwingTrade(tm: TradingModel, ticker: str):
 		tm.PlaceSell(ticker=ticker, units=units, price=price, marketOrder=market, expireAfterDays=expire)
 
 	# ---------------- DETERMINE TREND STATE ----------------
-	if p.EMA_LongSlope >= minActionableSlope and p.EMA_ShortSlope >= minActionableSlope:
+	if p.EMA_1Year_Slope >= minActionableSlope and p.EMA_3Month_Slope >= minActionableSlope:
 		# ++ Positive trend
 		trendState = '++'
 		marketBuy = True
@@ -371,7 +371,7 @@ def RunTradingModelSwingTrade(tm: TradingModel, ticker: str):
 		elif p.Low < p.Channel_Low:
 			# very early in trend, buy aggressively
 			marketBuy = True
-	elif p.EMA_LongSlope >= minActionableSlope and p.EMA_ShortSlope < minActionableSlope:
+	elif p.EMA_1Year_Slope >= minActionableSlope and p.EMA_3Month_Slope < minActionableSlope:
 		# +- Correction / downturn
 		trendState = '+-'
 		marketBuy = False
@@ -379,12 +379,12 @@ def RunTradingModelSwingTrade(tm: TradingModel, ticker: str):
 		if p.Low < p.Channel_Low and p.High > p.Channel_Low:
 			# deep correction: buy
 			marketBuy = True
-	elif p.EMA_LongSlope < -minActionableSlope and p.EMA_ShortSlope < -minActionableSlope:
+	elif p.EMA_1Year_Slope < -minActionableSlope and p.EMA_3Month_Slope < -minActionableSlope:
 		# -- Negative trend
 		trendState = '--'
 		marketSell = True
 		marketBuy = False
-	elif p.EMA_LongSlope < (-1 * minActionableSlope) and p.EMA_ShortSlope < (-1 * minActionableSlope):
+	elif p.EMA_1Year_Slope < (-1 * minActionableSlope) and p.EMA_3Month_Slope < (-1 * minActionableSlope):
 		# -+ Bounce / early recovery
 		trendState = '-+'
 		marketBuy = False

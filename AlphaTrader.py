@@ -1,10 +1,15 @@
-import sys, time
+#Past returns are your only predictor of future returns. The forces that propelled a price to do well for 12 months, will continue to do so for another month
+#for a top SP500 stock that rate will average about 2.66%/mo or 32%/year, a broader spectrum can get up to 62.5% CAGR.
+#Extending this through low cap stocks (< 5B USD) increases average yield by about 20% and decreases the worst year loss by about the same.
+#reEvaluationInterval short 3-5 day is generally best but 20 or 40 beat 30, a pick history window of about 26 days makes reEvaluationInterval work about the same for 5-30 days.
+#the most significant factor of filters is sort by 1 year price change descending, some gain for filtering out high stdev or shorter periods
+import sys, time, io, os
 import pandas as pd
 import _classes.Constants as CONSTANTS
 from _classes.DataIO import PTADatabase
 from _classes.Prices import PricingData
 from _classes.Trading import TradingModel, TradeModelParams, ExtensiveTesting, UpdateTradeModelComparisonsFromDailyValue
-from _classes.Selection import StockPicker
+from _classes.Selection import StockPicker, DEFAULT_BLEND
 from _classes.TickerLists import TickerLists
 from _classes.Utility import *
 from datetime import datetime
@@ -22,7 +27,7 @@ def ModelSP500(startDate: str = '1/1/2000', durationInYears:int = 10):
 	tm = TradingModel(modelName=modelName, startingTicker=ticker, startDate=params.startDate, durationInYears=params.durationInYears, totalFunds=params.portfolioSize, verbose=False)
 	tickerList = TickerLists.SP500_2026()
 	if not tm.modelReady:
-		print(' ModelSP500: Unable to initialize price history for date ' + str(startDate))
+		print(' ModelSP500: Unable to initialize price history for date ' + FormatDate(startDate))
 		return 0
 	else:
 		dayCounter = 0
@@ -42,32 +47,34 @@ def ModelSP500(startDate: str = '1/1/2000', durationInYears:int = 10):
 
 def RunPriceMomentum(params: TradeModelParams):
 	#Choose stockCount stocks with the greatest long term (longHistory days) price appreciation, using different filter options defined in the StockPicker class
-	#shortHistory is a shorter time frame (like 90 days) used differently by different filters
 	#reEvaluationInterval is how often to reevaluate our choices, ideally this should be very short and not matter, otherwise the date selection is biased.
 	
 	params.modelName = ''
-	if params.pickHistoryWindow > 0: params.allocateByPointValue = False #Much better performance with this
 	params.AddModelNameModifiers()
+	print(f" Running {params.modelName} ", FormatDate(params.startDate), FormatDate(params.endDate))
 	tm = TradingModel(modelName=params.modelName, startingTicker=CONSTANTS.CASH_TICKER, startDate=params.startDate, durationInYears=params.durationInYears, totalFunds=params.portfolioSize, verbose=params.verbose)
-	tickerList = TickerLists.SP500_2026()
-	dayCounter = 0
-	currentYear = 0
-	picker = StockPicker(startDate=params.startDate, endDate=params.endDate, pickHistoryWindow=params.pickHistoryWindow) 
+	picker = StockPicker(startDate=params.startDate, endDate=params.endDate, pickHistoryWindow=params.pickHistoryWindow, verbose=params.verbose) 
 	if not tm.modelReady:
 		print(f" RunPriceMomentum: Unable to initialize price history for PriceMomentum date {startDate}")
 	else:
-		while not tm.ModelCompleted(): 
-			currentDate = tm.currentDate 
-			if currentYear != currentDate.year:
-				currentYear = currentDate.year
-				if use_sql: tickerList = TickerLists.GetTickerListSQL(currentYear, SP500Only=params.SP500Only, filterByFundamentals=params.filterByFundamentals,  marketCapMax=params.marketCapMax, marketCapMin=params.marketCapMin)
+		dayCounter = 0
+		current_month = 0
+		if not use_sql:
+			tickerList = TickerLists.SP500_2026()
+			picker.AlignToList(tickerList)
+		while not tm.ModelCompleted():
+			currentDate =  tm.currentDate #These are calendar days but trades are only processed on weekdays
+			if use_sql and current_month != currentDate.month:
+				current_month = currentDate.month
+				tickerList = TickerLists.GetTickerListSQL(year=currentDate.year, month=currentDate.month, SP500Only=params.SP500Only, filterByFundamentals=params.filterByFundamentals, marketCapMin=params.marketCapMin, marketCapMax=params.marketCapMax)
 				picker.AlignToList(tickerList)
 			if dayCounter ==0: 				
-				candidates = picker.GetHighestPriceMomentum(currentDate, stocksToReturn=params.stockCount, filterOption=params.filterOption, minPercentGain=params.minPercentGain, allocateByTargetHoldings=(not params.allocateByPointValue), allocateByPointValue=params.allocateByPointValue, useRollingWindow=True)
+				candidates = picker.GetHighestPriceMomentum(currentDate, stocksToReturn=params.stockCount, filterOption=params.filterOption, allocateByPointValue=params.allocateByPointValue, useRollingWindow=(params.pickHistoryWindow>0))
 				tm.AlignPositions(targetPositions=candidates, rateLimitTransactions=params.rateLimitTransactions, shopBuyPercent=params.shopBuyPercent, shopSellPercent=params.shopSellPercent) 
-			elif (tm.GetIdleCashPCT() >= .005) or (dayCounter % 3 == 1) and (params.rateLimitTransactions or params.trimProfitsPercent > 0):
-				tm.AlignPositions(targetPositions=candidates, rateLimitTransactions=params.rateLimitTransactions, shopBuyPercent=params.shopBuyPercent, shopSellPercent=params.shopSellPercent) 
-				if params.trimProfitsPercent: tm.TrimProfits(params.trimProfitsPercent)
+			else:
+				if (tm.GetAvailableCash() >= 1000 or params.trimProfitsPercent > 0):
+					tm.AlignPositions(targetPositions=candidates, rateLimitTransactions=params.rateLimitTransactions, shopBuyPercent=params.shopBuyPercent, shopSellPercent=params.shopSellPercent) 
+					if params.trimProfitsPercent: tm.TrimProfits(params.trimProfitsPercent)
 			tm.ProcessDay()
 			dayCounter+=1
 			if dayCounter >= params.reEvaluationInterval: dayCounter=0
@@ -80,65 +87,73 @@ def RunPriceMomentumAdaptiveConvex(params: TradeModelParams):
 	params.modelName = f"AdaptiveConvex_v4"
 	params.pickHistoryWindow = -1
 	params.AddModelNameModifiers()
+	print(f" Running {params.modelName} ", FormatDate(params.startDate), FormatDate(params.endDate))
 	tm = TradingModel(modelName=params.modelName, startingTicker = CONSTANTS.CASH_TICKER, startDate=params.startDate, durationInYears=params.durationInYears, totalFunds=params.portfolioSize, verbose=params.verbose)
-	tickerList = TickerLists.SP500_2026()
-	dayCounter = 0
-	currentYear = 0
-	picker = StockPicker(startDate=params.startDate, endDate=params.endDate, pickHistoryWindow=params.pickHistoryWindow) 
-	while not tm.ModelCompleted():
-		currentDate = tm.currentDate
-		if currentYear != currentDate.year:
-			currentYear = currentDate.year
-			if use_sql: tickerList = TickerLists.GetTickerListSQL(currentYear, SP500Only=params.SP500Only, filterByFundamentals=params.filterByFundamentals,  marketCapMax=params.marketCapMax, marketCapMin=params.marketCapMin)
-			#tickerList = tickerList[:10]
+	picker = StockPicker(startDate=params.startDate, endDate=params.endDate, pickHistoryWindow=params.pickHistoryWindow, verbose=params.verbose) 
+	if not tm.modelReady:
+		print('Unable to initialize price history for PriceMomentum date ' + str(startDate))
+	else:
+		dayCounter = 0
+		current_month = 0
+		if not use_sql:
+			tickerList = TickerLists.SP500_2026()
 			picker.AlignToList(tickerList)
-		if dayCounter == 0:
-			candidates = picker.GetAdaptiveConvexPicks(currentDate)
-			tm.AlignPositions(targetPositions = candidates, rateLimitTransactions = params.rateLimitTransactions, shopBuyPercent = params.shopBuyPercent, shopSellPercent = params.shopSellPercent) 
-		elif (tm.GetIdleCashPCT() >= .005) or (dayCounter % 3 == 1) and (params.rateLimitTransactions or params.trimProfitsPercent > 0):
-			tm.AlignPositions(targetPositions = candidates, rateLimitTransactions = params.rateLimitTransactions, shopBuyPercent = params.shopBuyPercent, shopSellPercent = params.shopSellPercent) 
-			if params.trimProfitsPercent: tm.TrimProfits(params.trimProfitsPercent)
-		tm.ProcessDay()
-		dayCounter += 1
-		if dayCounter >= params.reEvaluationInterval: dayCounter = 0
+		while not tm.ModelCompleted():
+			currentDate =  tm.currentDate #These are calendar days but trades are only processed on weekdays
+			if use_sql and current_month != currentDate.month:
+				current_month = currentDate.month
+				tickerList = TickerLists.GetTickerListSQL(year=currentDate.year, month=currentDate.month, SP500Only=params.SP500Only, filterByFundamentals=params.filterByFundamentals, marketCapMin=params.marketCapMin, marketCapMax=params.marketCapMax)
+				picker.AlignToList(tickerList)
+			if dayCounter == 0:
+				candidates = picker.GetAdaptiveConvexPicks(currentDate)
+				tm.AlignPositions(targetPositions = candidates, rateLimitTransactions = params.rateLimitTransactions, shopBuyPercent = params.shopBuyPercent, shopSellPercent = params.shopSellPercent) 
+			else:
+				if (tm.GetAvailableCash() >= 1000 or params.trimProfitsPercent > 0):
+					tm.AlignPositions(targetPositions=candidates, rateLimitTransactions=params.rateLimitTransactions, shopBuyPercent=params.shopBuyPercent, shopSellPercent=params.shopSellPercent) 
+					if params.trimProfitsPercent: tm.TrimProfits(params.trimProfitsPercent)
+			tm.ProcessDay()
+			dayCounter += 1
+			if dayCounter >= params.reEvaluationInterval: dayCounter = 0
 	closing_value = tm.CloseModel(params)
 	return closing_value
 	
-def RunPriceMomentumBlended(params: TradeModelParams, filter_options: dict = None):
+def RunPriceMomentumBlended(params: TradeModelParams, filterOptions: list = None):
 	#Uses blended option for selecting stocks using three different filters, produces the best overall results.
-	if not filter_options: filter_options = {3:3, 3:3, 1:3, 5:4, 9:2} #CAGR 52.00, MadDD -52.03
-	filters = list(filter_options.keys())	
-	filter_string = ".".join(str(f) for f in filters)
+	if not filterOptions: filterOptions = DEFAULT_BLEND
+	filter_string = ".".join(str(f) for f in [item[0] for item in filterOptions])
 	params.filterOption = 99
 	params.allocateByPointValue = False
 	params.modelName = "PM_Blended" 
 	if not params.useDatabase: 
 		params.modelName +=f"_({filter_string})" #Note: if using the database records, you are using whatever filters they were created with
 	params.AddModelNameModifiers()
-	print(f" Running {params.modelName} ", params.startDate, params.endDate)
-	picker = StockPicker(startDate=params.startDate, endDate=params.endDate, pickHistoryWindow=params.pickHistoryWindow) 
+	print(f" Running {params.modelName} ", FormatDate(params.startDate), FormatDate(params.endDate))
 	tm = TradingModel(modelName=params.modelName , startingTicker=CONSTANTS.CASH_TICKER, startDate=params.startDate, durationInYears=params.durationInYears, totalFunds=params.portfolioSize, verbose=params.verbose)
-	tickerList = TickerLists.SP500_2026()
-	dayCounter = 0
-	currentYear = 0
+	picker = StockPicker(startDate=params.startDate, endDate=params.endDate, pickHistoryWindow=params.pickHistoryWindow, verbose=params.verbose) 
 	if not tm.modelReady:
 		print('Unable to initialize price history for PriceMomentum date ' + str(startDate))
 	else:
+		dayCounter = 0
+		current_month = 0
+		if not use_sql:
+			tickerList = TickerLists.SP500_2026()
+			picker.AlignToList(tickerList)
 		while not tm.ModelCompleted():
 			currentDate =  tm.currentDate #These are calendar days but trades are only processed on weekdays
-			if currentYear != currentDate.year and not params.useDatabase:
-				currentYear = currentDate.year
-				if use_sql: tickerList = TickerLists.GetTickerListSQL(currentYear, SP500Only=params.SP500Only, filterByFundamentals=params.filterByFundamentals, marketCapMin=params.marketCapMin, marketCapMax=params.marketCapMax)
+			if use_sql and current_month != currentDate.month:
+				current_month = currentDate.month
+				tickerList = TickerLists.GetTickerListSQL(year=currentDate.year, month=currentDate.month, SP500Only=params.SP500Only, filterByFundamentals=params.filterByFundamentals, marketCapMin=params.marketCapMin, marketCapMax=params.marketCapMax)
 				picker.AlignToList(tickerList)
 			if dayCounter == 0: #New picks on reevaluation interval
 				if params.useDatabase:
 					candidates = picker.GetPicksBlendedSQL(currentDate=currentDate, sqlHistory=params.pickHistoryWindow)
 				else:
-					candidates = picker.GetPicksBlended(currentDate=currentDate, filter_options=filter_options, useRollingWindow=(params.pickHistoryWindow>0) )
+					candidates = picker.GetPicksBlended(currentDate=currentDate, filterOptions=filterOptions, useRollingWindow=(params.pickHistoryWindow>0) )
 				tm.AlignPositions(targetPositions = candidates, rateLimitTransactions = params.rateLimitTransactions, shopBuyPercent = params.shopBuyPercent, shopSellPercent = params.shopSellPercent) 
-			elif (tm.GetIdleCashPCT() >= .005) or (dayCounter % 3 == 1) and (params.rateLimitTransactions or params.trimProfitsPercent > 0):
-				tm.AlignPositions(targetPositions = candidates, rateLimitTransactions = params.rateLimitTransactions, shopBuyPercent = params.shopBuyPercent, shopSellPercent = params.shopSellPercent) 
-				if params.trimProfitsPercent: tm.TrimProfits(params.trimProfitsPercent)
+			else:
+				if (tm.GetAvailableCash() >= 1000 or params.trimProfitsPercent > 0):
+					tm.AlignPositions(targetPositions=candidates, rateLimitTransactions=params.rateLimitTransactions, shopBuyPercent=params.shopBuyPercent, shopSellPercent=params.shopSellPercent) 
+					if params.trimProfitsPercent: tm.TrimProfits(params.trimProfitsPercent)
 			tm.ProcessDay() #Adjust prices and trades every day
 			dayCounter+=1
 			if dayCounter >= params.reEvaluationInterval: dayCounter=0
@@ -151,7 +166,7 @@ def ModelPastFewYears(params: TradeModelParams):
 	#Show how each strategy performs on the recent years 
 	years = 5
 	endDate = GetLatestBDay()
-	startDate = AddDays(endDate, -365 * years)
+	startDate = endDate - pd.offsets.BDay(CONSTANTS.TRADING_YEAR * years)
 	params.startDate = startDate
 	params.durationInYears = years
 	params.reEvaluationInterval = 5
@@ -219,7 +234,7 @@ if __name__ == '__main__':
 	params.trimProfitsPercent = 0.0
 	params.reEvaluationInterval = 5
 	params.stockCount = 15
-	params.pickHistoryWindow = 26	#26 days is optimal
+	params.pickHistoryWindow = 28	
 	params.rateLimitTransactions = True
 	params.allocateByPointValue = False
 	params.saveResults = True
@@ -235,6 +250,8 @@ if __name__ == '__main__':
 	elif switch == '3':
 		print('Running option 3 RunPriceMomentumBlended')		
 		params.useDatabase = False
+		filterOptions = None
+		#filterOptions = [(3,3),(1,3),(9,3),(9,3),(6,1)]
 		RunPriceMomentumBlended(params)
 	else:
 		print('Running default option ModelPastFewYears')
