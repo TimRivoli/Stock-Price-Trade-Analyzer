@@ -5,7 +5,7 @@ from tqdm import tqdm
 from math import floor
 from typing import Dict, Union, Optional
 from dataclasses import dataclass, asdict, field, fields, is_dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from _classes.DataIO import PTADatabase
 from _classes.Prices import PriceSnapshot, PricingData
 from _classes.Utility import *
@@ -79,7 +79,7 @@ class TradeModelParams(SQLFriendlyMixin):
 		self._startDate = pd.to_datetime(value)	
 		self.init_startDate = self._startDate
 	@property
-	def endDate(self) -> pd.Timestamp: return self.startDate + pd.Timedelta(days=CONSTANTS.CALENDAR_YEAR * self.durationInYears)
+	def endDate(self) -> pd.Timestamp: return self.startDate + pd.offsets.BDay(CONSTANTS.TRADING_YEAR * self.durationInYears) 
 	def AddModelNameModifiers(self):
 		mn = self.modelName
 		if mn == '':
@@ -422,6 +422,19 @@ class Portfolio:
 
 	def GetCashValue(self): return self._total_cash
 
+	def GetCAGR(self):
+		days_elapsed = (self.currentDate - self.modelStartDate).days
+		years = days_elapsed / 365.25
+		c = self._total_cash
+		a = self._asset_value
+		if days_elapsed ==0 or self._initialValue == 0: return 0
+		total_ratio = (c + a) / self._initialValue
+		daily_rate = (total_ratio ** (1 / days_elapsed)) - 1
+		if days_elapsed < 365:
+			return (total_ratio - 1) * 100
+		else:
+			return (((1 + daily_rate) ** 365.25) - 1) * 100
+		
 	def GetAssetValue(self): return self._asset_value	
 
 	def GetCommittedCash(self): return self._cash_committed_to_orders
@@ -596,7 +609,7 @@ class TradingModel(Portfolio):
 		#pricesAsPercentages:bool=False would be good but often results in NaN values
 		#expects date format in local format, from there everything will be converted to database format				
 		startDate = ToDateTime(startDate)
-		endDate = startDate + timedelta(days=CONSTANTS.CALENDAR_YEAR * durationInYears)
+		endDate = startDate + pd.offsets.BDay(CONSTANTS.TRADING_YEAR * durationInYears) 
 		super(TradingModel, self).__init__(portfolioName=modelName, startDate=startDate, totalFunds=totalFunds, trackHistory=trackHistory, useDatabase=useDatabase, verbose=verbose)	
 		self.start_processing = datetime.today()
 		self.end_processing = None
@@ -708,7 +721,7 @@ class TradingModel(Portfolio):
 
 	def GetPrice(self, ticker:str = None): 
 		#returns snapshot object of yesterday's pricing info to help make decisions today
-		forDate = self.currentDate + timedelta(days=-1)
+		forDate = self.currentDate - pd.offsets.BDay(1) 
 		r = None
 		if ticker:
 			if not ticker in self._tickerList: self.AddTicker(ticker)
@@ -719,7 +732,7 @@ class TradingModel(Portfolio):
 
 	def GetPriceSnapshot(self, ticker:str=''): 
 		#returns snapshot object of yesterday's pricing info to help make decisions today
-		forDate = self.currentDate + timedelta(days=-1)
+		forDate = self.currentDate - pd.offsets.BDay(1) 
 		r = None
 		if ticker =='':
 			r = self.priceHistory[0].GetPriceSnapshot(forDate)
@@ -781,6 +794,7 @@ class TradingModel(Portfolio):
 			targetPositions = pd.DataFrame({"TargetHoldings":[1.0]}, index=[CONSTANTS.CASH_TICKER])
 		else: 
 			targetPositions = targetPositions.copy()
+			for ticker in targetPositions.index: self.AddTicker(ticker) #Should be handled by Buy but just in case
 		for position in self._positions: #add existing positions, if they were not in target then they need to be sold
 			if position.ticker not in targetPositions.index:
 				targetPositions.loc[position.ticker, "TargetHoldings"] = 0.0
@@ -947,8 +961,8 @@ class TradingModel(Portfolio):
 		print('Model ' + self.modelName + ' from ' + str(self.modelStartDate)[:10] + ' to ' + str(self.modelEndDate)[:10])
 		c = self._total_cash
 		a = self._asset_value
-		gain = 100 * (((c + a) / self._initialValue) - 1)
-		print(f"Cash: ${c:,.0f} ' assets: ${a:,.0f} total: ${(c+a):,.0f} gain: {gain:,.0f}%")
+		gain = self.GetCAGR()
+		print(f"Cash: ${c:,.0f} ' assets: ${a:,.0f} total: ${(c+a):,.0f} CAGR: {gain:,.0f}%")
 		print(f"Processing time: {params.processing_minutes} minutes.  Completion Time: {self.end_processing}")
 		print('')
 		if params.saveTradeHistory:
@@ -1023,8 +1037,8 @@ class TradingModel(Portfolio):
 		if self.pbar:
 			c = self._total_cash
 			a = self._asset_value
-			gain = 100 * (((c + a) / self._initialValue) - 1)
-			self.pbar.set_description(f"Model: {self.modelName} from {FormatDate(self.modelStartDate)} to {FormatDate(self.modelEndDate)} currentDate: {FormatDate(self.currentDate)} Cash: ${c:,.0f} Assets: ${a:,.0f} Total: ${(c + a):,.0f} Return: {gain:,.0f}%")
+			gain = self.GetCAGR()
+			self.pbar.set_description(f"Model: {self.modelName} Date: {FormatDate(self.currentDate)} CAGR: {gain:,.0f}% Cash: ${c:,.0f} Assets: ${a:,.0f} Total: ${(c + a):,.0f} ({FormatDate(self.modelStartDate)} to {FormatDate(self.modelEndDate)})")
 		if withIncrement:
 			idx = self.priceHistory[0].historicalPrices.index
 			pos = idx.searchsorted(self.currentDate, side='right')
@@ -1035,7 +1049,7 @@ class TradingModel(Portfolio):
 					next_date = idx[pos]
 				self.currentDate = next_date
 			else:
-				self.currentDate = self.modelEndDate + pd.Timedelta(days=1)
+				self.currentDate = self.modelEndDate + pd.offsets.BDay(1) 
 			if self.pbar: self.pbar.update(1)
 
 	#--------------------------------------  Custom value get/set ---------------------------------------

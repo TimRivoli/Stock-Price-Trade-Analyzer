@@ -175,78 +175,77 @@ class PricingData:
 
 	def CalculateStats(self, fullStats: bool = True, fancyPantsStats: bool = False):
 		if not self.pricesLoaded:
-			if not self.LoadHistory():
-				return False
+			if not self.LoadHistory(): return False
 		lookback_cutoff = None
 		if self._lookbackBuffer is not None and not self._lookbackBuffer.empty:
 			lookback_cutoff = self._lookbackBuffer.index.max()
-		MIN_EMA_TREND = -0.00175
-		MIN_MONTH_MOMENTUM = 0.00175
-		MIN_PC_GAIN_DAILY = 0.05/CONSTANTS.TRADING_YEAR
-		BASE_OFFSET = 6
-		EARLY_EXIT_PENALTY = 3
-		PV_CAP_CONVEX   = 40.0
-		PV_ALPHA_CONVEX = 1.25
 		tm = CONSTANTS.TRADING_MONTH
 		ty = CONSTANTS.TRADING_YEAR
 		df = self._get_full_price_frame()
 		avg = df['Average']
 		a2 = avg.rolling(2).mean()
-		a3 = avg.rolling(3).mean()
+		a3 = avg.rolling(3).mean() #.round(2) #TCR: accidental noise filter, moved to PC values
 		a5 = avg.rolling(5).mean()
 		df['Average_2Day'] = a2
 		df['Average_3Day'] = a3
 		df['Average_5Day'] = a5
 		df["Return"] = df["Close"].pct_change()		
-		df['HP_1Mo'] = a5.shift(tm)
-		df['HP_2Mo'] = a5.shift(tm * 2)
-		df['HP_3Mo'] = a5.shift(tm * 3)
-		df['HP_6Mo'] = a5.shift(tm * 6)
-		df['HP_1Yr'] = a5.shift(ty)
-		df['HP_2Yr'] = a5.shift(ty * 2)
-		gain_monthly = (a3 / a3.shift(tm)) - 1
-		gain_monthly = gain_monthly.fillna(0)
+		gain_monthly = ((a3 / a3.shift(tm)) - 1).fillna(0).round(3)
 		df['Gain_Monthly'] = gain_monthly
-		df['LossStd_1Year'] = gain_monthly.where(gain_monthly < 0, 0).rolling(ty).std().fillna(0)
-		df['PC_10Day'] = (a3 / a3.shift(10) - 1) * 12.5
+		neg_returns = gain_monthly.where(gain_monthly < 0, 0)
+		neg_only = gain_monthly.where(gain_monthly < 0)
+		returns = np.log(df['Average'] / df['Average'].shift(1))
+		rolling_std = returns.rolling(60, min_periods=20).std()
+		rolling_max = returns.abs().rolling(60, min_periods=20).max()
+		price = df['Average']
+		peak_5y = df['Average'].rolling(ty*5, min_periods=50).max()
+		drawdown_5y = (df['Average'] - peak_5y) / (peak_5y + 1e-9)
+		peak_index = np.maximum.accumulate(np.where(price >= peak_5y, np.arange(len(price)), -1))
+		days_since_peak = np.arange(len(price)) - peak_index
+		df['LossStd_1Year']  = neg_returns.rolling(ty, min_periods=1).std().fillna(0)
+		df['LossSkew_1Year'] = neg_only.rolling(ty, min_periods=1).skew().fillna(0)
+		df['MaxLoss_1Year']  = gain_monthly.rolling(ty, min_periods=1).min()
+		df['LogDrawdown'] = np.log(df['Average'] / df['Average'].cummax())
+		df['JumpRatio'] = (rolling_max / (rolling_std + 1e-9)).clip(upper=25)
+		df['PathologyScore'] = abs(df['LogDrawdown']) * df['JumpRatio']
+		df['DamageScore'] = abs(drawdown_5y) * np.sqrt(np.clip(days_since_peak,0,None) / ty)
+		df['PC_1Day'] = avg.pct_change(1) * ty
+		df['PC_3Day'] = avg.pct_change(3) * ty/3
+		df['PC_10Day'] = ((a3 / a3.shift(10) - 1) * 12.5).round(3)
 		df['PC_10Day5DayEMA'] = df['PC_10Day'].ewm(span=5, adjust=False).mean()
-		df['PC_1Month'] = (a3 / a3.shift(tm) - 1) * 12.5
+		df['PC_1Month'] = ((a3 / a3.shift(tm) - 1) * 12.5).round(3)
 		df['PC_1Month3WeekEMA'] = df['PC_1Month'].ewm(span=15, adjust=False).mean()
-		df['PC_6Month'] = (a3 / a3.shift(125) - 1) * 2
-		df['PC_9Month'] = (a3 / a3.shift(188) - 1) * 4/3
-		df['PC_1Year'] = (a3 / a3.shift(ty)) - 1
-		#PC1 = df['PC_1Month'].ewm(span=3, adjust=False).mean()
-		#PC6 = df['PC_6Month'].ewm(span=3, adjust=False).mean()
-		#df['AutoCorr'] = PC1.rolling(20).corr(PC6)
-		#df['AutoCorr_EMA'] = df['AutoCorr'].ewm(span=5, adjust=False).mean()
-		#df['AutoCorr_Slope'] = df['AutoCorr_EMA'].diff(5)
-		df['AutoCorr_Slope'] =0 #Takes a long time to calculate and not proven benificial
-		pc1y_clip = np.clip(df['PC_1Year'], 0, 2.0)
-		score_f1 = np.where(df['PC_1Month3WeekEMA'] > MIN_PC_GAIN_DAILY, pc1y_clip, 0.0)
-		score_f2 = pc1y_clip
-		score_f3 = np.where(df['PC_1Month3WeekEMA'] > 0, pc1y_clip, 0.0)
-		score_f6 = np.clip(df['PC_6Month'], 0, 1.5)
-		pv_base = (score_f1 + score_f2 + score_f3 + score_f6) * 25.0
-		pv_base += (100.0 * df['LossStd_1Year']) - 6.0
-		#pc9m_clip = df['PC_9Month'].clip(0, 2.0)
-		#score_accel = np.maximum(0, pc9m_clip - pc1y_clip)
-		#pv_base += 10 * score_accel
-		#convex = (df['PC_1Month3WeekEMA'] - df['PC_1Month']).clip(-0.05, 0.1)
-		#pv_base += 8 * convex
-		# dist_bonus = (df['Distance_200DMA'] - 0.2).clip(0, 0.8)
-		# pv_base += 4 * dist_bonus
-		pv_base = np.where(df['PC_1Month3WeekEMA'] < -0.02, pv_base * 0.25, pv_base)
-		df['Point_Value'] = (pd.Series(pv_base, index=df.index).clip(lower=0.0).ewm(span=20, adjust=False).mean() / 10)
+		df['PC_2Month'] = (a3 / a3.shift(41) - 1) * 6.097
+		df['PC_3Month'] = (a3 / a3.shift(62) - 1) * 4.03
+		df['PC_6Month'] = ((a3 / a3.shift(125) - 1) * 2).round(3)
+		df['PC_9Month'] = ((a3 / a3.shift(188) - 1) * 4/3).round(3)
+		df['PC_1Year'] = ((a3 / a3.shift(ty)) - 1).round(3)
+		df['PC_18Month'] = (a3 / a3.shift(375) - 1) * 0.667
+		df['PC_2Year'] = (a3 / a3.shift(500) - 1) / 2
+		# alpha = 0.5
+		# m1 = np.power(df['PC_1Year'].clip(lower=0), alpha)
+		# m9 = np.power(df['PC_9Month'].clip(lower=0), alpha)
+		# m6 = np.power(df['PC_6Month'].clip(lower=0), alpha)
+		# pv = (9*m1 + 3*m9 + m6)/13
+		pv = (10*df['PC_1Year'] + 100*df['LossStd_1Year'] - 6).round()
+		pv -= (df['PC_1Month'] < 0.00175) * 3
+		pv = pv.where(pv >= 2, 0)
+		pv_mask = df.eval("(PC_1Month3WeekEMA > -0.05) & (PC_9Month > 0) & (LogDrawdown > -0.5) & (MaxLoss_1Year > -0.6) & (PathologyScore < 2) & (DamageScore < 0.5)")
+		pv *= pv_mask
+		df['Point_Value'] = (pv.ewm(span=3, adjust=False).mean().fillna(0)) * 10
+		df['Gain_10Day'] = ((a2 / a2.shift(10)) - 1).fillna(0)
+		df['Target'] = (a2 * (1 + df['Gain_10Day'] / 9)).round(2)
+
 		if fullStats:
-			df["Vol20"] = df["Return"].ewm(span=20, adjust=False).std() * (CONSTANTS.TRADING_YEAR ** 0.5) # Annualized standard deviation
-			df["Vol60"] = df["Return"].ewm(span=60, adjust=False).std() * (CONSTANTS.TRADING_YEAR ** 0.5)
+			df["Vol20"] = df["Return"].ewm(span=20, adjust=False).std() * (ty ** 0.5) # Annualized standard deviation
+			df["Vol60"] = df["Return"].ewm(span=60, adjust=False).std() * (ty ** 0.5)
 			df["MA200"] = df["Close"].rolling(200).mean()
 			df["Distance200DMA"] = df["Close"] / df["MA200"] - 1
 			df['EMA_12Day'] = avg.ewm(span=12, adjust=False).mean()
-			df['EMA_1Month'] = avg.ewm(span=CONSTANTS.TRADING_MONTH).mean()
-			df['EMA_3Month'] = avg.ewm(span=CONSTANTS.TRADING_MONTH*3).mean()
-			df['EMA_6Month'] = avg.ewm(span=CONSTANTS.TRADING_MONTH*6).mean()
-			df['EMA_1Year']  = avg.ewm(span=CONSTANTS.TRADING_YEAR).mean()
+			df['EMA_1Month'] = avg.ewm(span=tm).mean()
+			df['EMA_3Month'] = avg.ewm(span=tm*3).mean()
+			df['EMA_6Month'] = avg.ewm(span=tm*6).mean()
+			df['EMA_1Year']  = avg.ewm(span=ty).mean()
 			df['MACD_Line'] = df['EMA_12Day'] - df['EMA_1Month']
 			df['MACD_Signal'] = df['MACD_Line'].ewm(span=9).mean()
 			df['MACD_Histogram'] = df['MACD_Line'] - df['MACD_Signal']
@@ -256,29 +255,16 @@ class PricingData:
 			df['Deviation_15Day'] = df['Deviation_1Day'].rolling(15).mean()
 			df['Channel_High'] = df['EMA_1Year'] + (avg * df['Deviation_15Day'])
 			df['Channel_Low']  = df['EMA_1Year'] - (avg * df['Deviation_15Day'])
-			df['Gain_10Day'] = (df['Average_2Day'] / df['Average_2Day'].shift(10)) - 1
-			df['Gain_10Day'] = df['Gain_10Day'].fillna(0)
-			df['Target'] = (df['Average_2Day'] * (1 + df['Gain_10Day'] / 9)).round(2)
-			df['PC_1Day'] = avg.pct_change(1) * CONSTANTS.TRADING_YEAR
-			df['PC_3Day'] = avg.pct_change(3) * 83.33
-			df['PC_2Month'] = (df['Average_3Day'] / df['Average_3Day'].shift(41) - 1) * 6.097
-			df['PC_3Month'] = (df['Average_3Day'] / df['Average_3Day'].shift(62) - 1) * 4.03
-			df['PC_18Month'] = (df['Average_3Day'] / df['Average_3Day'].shift(375) - 1) * 0.667
-			df['PC_2Year'] = (df['Average_3Day'] / df['Average_3Day'].shift(500) - 1) / 2
+			df['EMA_3Month_Slope'] = df['EMA_3Month'].pct_change()
+			df['EMA_1Year_Slope']  = df['EMA_1Year'].pct_change()
 		if fancyPantsStats:
 			temp = df.copy()
 			vwma_period = 20
-			temp['VWMA'] = (
-				temp['Close'] * temp['Volume']
-			).rolling(vwma_period).sum() / temp['Volume'].rolling(vwma_period).sum()
+			temp['VWMA'] = (temp['Close'] * temp['Volume']).rolling(vwma_period).sum() / temp['Volume'].rolling(vwma_period).sum()
 			df['VWMA'] = temp['VWMA']
-
 			ao_short, ao_long = 5, 34
 			temp['Midpoint'] = (temp['High'] + temp['Low']) / 2
-			temp['AO'] = (
-				temp['Midpoint'].rolling(ao_short).mean()
-				- temp['Midpoint'].rolling(ao_long).mean()
-			)
+			temp['AO'] = (temp['Midpoint'].rolling(ao_short).mean()- temp['Midpoint'].rolling(ao_long).mean())
 			df['AO'] = temp['AO']
 			uo_short, uo_medium, uo_long = 7, 14, 28
 			temp['BP'] = temp['Close'] - np.minimum(temp['Low'], temp['Close'].shift(1))
@@ -290,34 +276,15 @@ class PricingData:
 			) / 7
 			df['UO'] = temp['UO']
 			adx_period = 14
-			temp['DM+'] = np.where(
-				(temp['High'] - temp['High'].shift(1)) > (temp['Low'].shift(1) - temp['Low']),
-				np.maximum(temp['High'] - temp['High'].shift(1), 0),
-				0
-			)
-			temp['DM-'] = np.where(
-				(temp['Low'].shift(1) - temp['Low']) > (temp['High'] - temp['High'].shift(1)),
-				np.maximum(temp['Low'].shift(1) - temp['Low'], 0),
-				0
-			)
-			temp['TR'] = np.maximum(
-				temp['High'] - temp['Low'],
-				np.maximum(
-					abs(temp['High'] - temp['Close'].shift(1)),
-					abs(temp['Low'] - temp['Close'].shift(1))
-				)
-			)
+			temp['DM+'] = np.where((temp['High'] - temp['High'].shift(1)) > (temp['Low'].shift(1) - temp['Low']),np.maximum(temp['High'] - temp['High'].shift(1), 0),0)
+			temp['DM-'] = np.where((temp['Low'].shift(1) - temp['Low']) > (temp['High'] - temp['High'].shift(1)),np.maximum(temp['Low'].shift(1) - temp['Low'], 0),0)
+			temp['TR'] = np.maximum(temp['High'] - temp['Low'],np.maximum(	abs(temp['High'] - temp['Close'].shift(1)),	abs(temp['Low'] - temp['Close'].shift(1))))
 			temp['DI+'] = 100 * temp['DM+'].rolling(adx_period).mean() / temp['TR'].rolling(adx_period).mean()
 			temp['DI-'] = 100 * temp['DM-'].rolling(adx_period).mean() / temp['TR'].rolling(adx_period).mean()
 			temp['DX'] = 100 * abs(temp['DI+'] - temp['DI-']) / (temp['DI+'] + temp['DI-'])
 			df['ADX'] = temp['DX'].rolling(adx_period).mean()
-		df['HasFullLookback'] = True
-		if lookback_cutoff is not None: 
-			df.loc[df.index <= lookback_cutoff, 'HasFullLookback'] = False    # Flag incomplete lookback rows
-		df = df.loc[df.index >= self.historyStartDate] # Trim back to visible window
-		df.ffill(inplace=True)
-		df.bfill(inplace=True)
-		self.historicalPrices = df
+		df = df.loc[df.index >= self.historyStartDate].copy() # Trim back to visible window
+		self.historicalPrices = df.ffill().bfill()
 		self._assert_lookback_validity()
 		self.statsLoaded = True
 		return True
@@ -340,59 +307,59 @@ class PricingData:
 				bucket = self.historicalPrices.copy()
 				bucket['Predicted_Low']  = bucket['Average'].shift(1) * (1-bucket['Deviation_15Day']/2) + (abs(bucket['PC_1Day'].shift(1)))
 				bucket['Predicted_High'] = bucket['Average'].shift(1) * (1+bucket['Deviation_15Day']/2) + (abs(bucket['PC_1Day'].shift(1)))
-				bucket = bucket.query('EMA_LongSlope >= -' + str(minActionableSlope) + ' or EMA_ShortSlope >= -' + str(minActionableSlope)) #must filter after rolling calcuations
+				bucket = bucket.query('EMA_1Year_Slope >= -' + str(minActionableSlope) + ' or EMA_3Month_Slope >= -' + str(minActionableSlope)) #must filter after rolling calcuations
 				bucket = bucket[['Predicted_Low','Predicted_High']]
 				self.pricePredictions = bucket
 					#-- downward trend
 				bucket = self.historicalPrices.copy()
 				bucket['Predicted_Low'] = bucket['Low'].shift(1).rolling(3).min() * .99
 				bucket['Predicted_High'] = bucket['High'].shift(1).rolling(3).min() 
-				bucket = bucket.query('not (EMA_LongSlope >= -' + str(minActionableSlope) + ' or EMA_ShortSlope >= -' + str(minActionableSlope) +')')
+				bucket = bucket.query('not (EMA_1Year_Slope >= -' + str(minActionableSlope) + ' or EMA_3Month_Slope >= -' + str(minActionableSlope) +')')
 				bucket = bucket[['Predicted_Low','Predicted_High']]
 				self.pricePredictions = pd.concat([self.pricePredictions, bucket], ignore_index=False)
 				self.pricePredictions.sort_index(inplace=True)	
 			elif method==2:	#Slope plus momentum with full consideration for trend.
 					#++ Often over bought, strong momentum
 				bucket = self.historicalPrices.copy() 
-				#bucket['Predicted_Low']  = bucket['Low'].shift(1).rolling(4).max()  * (1 + abs(bucket['EMA_ShortSlope'].shift(1)))
-				#bucket['Predicted_High'] = bucket['High'].shift(1).rolling(4).max()  * (1 + abs(bucket['EMA_ShortSlope'].shift(1)))
+				#bucket['Predicted_Low']  = bucket['Low'].shift(1).rolling(4).max()  * (1 + abs(bucket['EMA_3Month_Slope'].shift(1)))
+				#bucket['Predicted_High'] = bucket['High'].shift(1).rolling(4).max()  * (1 + abs(bucket['EMA_3Month_Slope'].shift(1)))
 				bucket['Predicted_Low']  = bucket['Low'].shift(1).rolling(4).max()  + (abs(bucket['PC_1Day'].shift(1)))
 				bucket['Predicted_High'] = bucket['High'].shift(1).rolling(4).max() + (abs(bucket['PC_1Day'].shift(1)))
-				bucket = bucket.query('EMA_LongSlope >= ' + str(minActionableSlope) + ' and EMA_ShortSlope >= ' + str(minActionableSlope)) #must filter after rolling calcuations
+				bucket = bucket.query('EMA_1Year_Slope >= ' + str(minActionableSlope) + ' and EMA_3Month_Slope >= ' + str(minActionableSlope)) #must filter after rolling calcuations
 				bucket = bucket[['Predicted_Low','Predicted_High']]
 				self.pricePredictions = bucket
 					#+- correction or early down turn, loss of momentum
 				bucket = self.historicalPrices.copy()
 				bucket['Predicted_Low']  = bucket['Low'].shift(1).rolling(2).min() 
-				bucket['Predicted_High'] = bucket['High'].shift(1).rolling(3).max()  * (1.005 + abs(bucket['EMA_ShortSlope'].shift(1)))
-				bucket = bucket.query('EMA_LongSlope >= ' + str(minActionableSlope) + ' and EMA_ShortSlope < -' + str(minActionableSlope))
+				bucket['Predicted_High'] = bucket['High'].shift(1).rolling(3).max()  * (1.005 + abs(bucket['EMA_3Month_Slope'].shift(1)))
+				bucket = bucket.query('EMA_1Year_Slope >= ' + str(minActionableSlope) + ' and EMA_3Month_Slope < -' + str(minActionableSlope))
 				bucket = bucket[['Predicted_Low','Predicted_High']]
 				self.pricePredictions = pd.concat([self.pricePredictions, bucket], ignore_index=False)
 					 #-+ bounce or early recovery, loss of momentum
 				bucket = self.historicalPrices.copy()
 				bucket['Predicted_Low']  = bucket['Low'].shift(1)
 				bucket['Predicted_High'] = bucket['High'].shift(1).rolling(3).max() * 1.02 
-				bucket = bucket.query('EMA_LongSlope < -' + str(minActionableSlope) + ' and EMA_ShortSlope >= ' + str(minActionableSlope))
+				bucket = bucket.query('EMA_1Year_Slope < -' + str(minActionableSlope) + ' and EMA_3Month_Slope >= ' + str(minActionableSlope))
 				bucket = bucket[['Predicted_Low','Predicted_High']]
 					#-- Often over sold
 				self.pricePredictions = pd.concat([self.pricePredictions, bucket], ignore_index=False)
 				bucket = self.historicalPrices.copy() 
 				bucket['Predicted_Low'] = bucket['Low'].shift(1).rolling(3).min() * .99
 				bucket['Predicted_High'] = bucket['High'].shift(1).rolling(3).min() 
-				bucket = bucket.query('EMA_LongSlope < -' + str(minActionableSlope) + ' and EMA_ShortSlope < -' + str(minActionableSlope))
+				bucket = bucket.query('EMA_1Year_Slope < -' + str(minActionableSlope) + ' and EMA_3Month_Slope < -' + str(minActionableSlope))
 				bucket = bucket[['Predicted_Low','Predicted_High']]
 				self.pricePredictions = pd.concat([self.pricePredictions, bucket], ignore_index=False)
 					#== no significant slope
 				bucket = self.historicalPrices.copy() 
 				bucket['Predicted_Low']  = bucket['Low'].shift(1).rolling(4).mean()
 				bucket['Predicted_High'] = bucket['High'].shift(1).rolling(4).mean()
-				bucket = bucket.query(str(minActionableSlope) + ' > EMA_LongSlope >= -' + str(minActionableSlope) + ' or ' + str(minActionableSlope) + ' > EMA_ShortSlope >= -' + str(minActionableSlope))
+				bucket = bucket.query(str(minActionableSlope) + ' > EMA_1Year_Slope >= -' + str(minActionableSlope) + ' or ' + str(minActionableSlope) + ' > EMA_3Month_Slope >= -' + str(minActionableSlope))
 				bucket = bucket[['Predicted_Low','Predicted_High']]
 				self.pricePredictions = pd.concat([self.pricePredictions, bucket], ignore_index=False)
 				self.pricePredictions.sort_index(inplace=True)	
 			d = self.historicalPrices.index[-1] 
-			ls = self.historicalPrices['EMA_LongSlope'].iloc[-1]
-			ss = self.historicalPrices['EMA_ShortSlope'].iloc[-1]
+			ls = self.historicalPrices['EMA_1Year_Slope'].iloc[-1]
+			ss = self.historicalPrices['EMA_3Month_Slope'].iloc[-1]
 			deviation = self.historicalPrices['Deviation_15Day'].iloc[-1]/2
 			momentum = self.historicalPrices['PC_3Day'].iloc[-1]/2 
 			random.seed(42)
@@ -510,14 +477,6 @@ class PricingData:
 		return r
 		
 	def GetNearestTradingDate(self,	targetDate: datetime,direction: str = "prior") -> pd.Timestamp | None:
-		"""
-		Find the nearest trading date in historicalPrices.
-		direction:
-			"prior"   → latest trading day <= targetDate
-			"next"    → earliest trading day >= targetDate
-			"nearest" → closest trading day (prefers prior on ties)
-		"""
-
 		if self.historicalPrices is None or self.historicalPrices.empty:
 			return None
 		idx = self.historicalPrices.index
@@ -534,25 +493,11 @@ class PricingData:
 		else:
 			raise ValueError(f"Invalid direction: {direction}")
 
-	def GetPriceData(self, forDate: datetime, field_list: list,	*,	tradingDaysOnly: bool = False,	requireFullLookback: bool = False, returnType: str = "values", verbose: bool = False):
-		"""
-		Retrieve price/stat data for a given date.
-		tradingDaysOnly:
-			False → calendar-date tolerant (ffill)
-			True  → exact trading-day match required
-		requireFullLookback:
-			If True, row must have HasFullLookback == True
-		returnType:
-			"values" → numpy array (legacy)
-			"series" → pandas Series
-			"dict"   → dict with field names
-		"""
-
+	def GetPriceData(self, forDate: datetime, field_list: list,	*,	tradingDaysOnly: bool = False, returnType: str = "values", verbose: bool = False):
 		if self.historicalPrices is None or self.historicalPrices.empty:
 			if verbose: print(f" GetPriceData: {self.ticker}: no historical prices loaded")
 			return None
 		forDate = ToTimestamp(forDate)
-
 		try:
 			if tradingDaysOnly:	# Exact trading-day lookup
 				if forDate not in self.historicalPrices.index:
@@ -564,9 +509,6 @@ class PricingData:
 				if i < 0:
 					return None
 				row = self.historicalPrices.iloc[i]
-			if requireFullLookback and not row.get("HasFullLookback", True):
-				if verbose:	print(f" GetPriceData: {self.ticker}: insufficient lookback at {FormatDate(forDate)}")
-				return None
 			data = row[field_list]
 			if returnType == "series":
 				return data
@@ -634,7 +576,7 @@ class PricingData:
 				endDate = self.pricePredictions.index.max()
 			endDate = ToTimestamp(endDate)
 			startDate = endDate - BDay(daysToGraph)
-			fieldSet = ['High', 'Low', 'Channel_High', 'Channel_Low', 'Predicted_High', 'Predicted_Low', 'EMA_Short', 'EMA_Long']
+			fieldSet = ['High', 'Low', 'Channel_High', 'Channel_Low', 'Predicted_High', 'Predicted_Low', 'EMA_3Month', 'EMA_1Year']
 			if trimHistoricalPredictions:
 				preds = self.pricePredictions[self.pricePredictions.index >= self.historyEndDate]
 				x = self.historicalPrices.join(preds, how='outer')
@@ -648,7 +590,7 @@ class PricingData:
 				endDate = self.historyEndDate
 			endDate = ToTimestamp(endDate)
 			startDate = endDate - BDay(daysToGraph)
-			fieldSet = ['High', 'Low', 'Channel_High', 'Channel_Low', 'EMA_Short', 'EMA_Long']
+			fieldSet = ['High', 'Low', 'Channel_High', 'Channel_Low', 'EMA_3Month', 'EMA_1Year']
 			if daysToGraph > 1800:
 				fieldSet = ['Average']
 			x = self.historicalPrices.copy()

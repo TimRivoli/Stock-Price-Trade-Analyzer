@@ -2,6 +2,7 @@ import os, configparser, ast, sys
 import numpy as np, pandas as pd
 import urllib.error, urllib.request as webRequest
 from datetime import datetime, timedelta, date
+from dateutil import parser
 
 def get_git_commit():
 	import subprocess
@@ -103,9 +104,6 @@ def FileExists(f): return 	os.path.isfile(f)
 
 def GetMyDateFormat(): return '%m/%d/%Y'
 
-from datetime import datetime
-from dateutil import parser
-
 def FormatDate(value):
     if value is None:
         return "None"
@@ -152,23 +150,17 @@ def ToTimestamp(given_date):
 	"""
 	if given_date is None:
 		return None
-
 	if isinstance(given_date, pd.Timestamp):
 		return given_date
-
 	if isinstance(given_date, np.datetime64):
 		return pd.Timestamp(given_date)
-
 	if isinstance(given_date, datetime):
 		return pd.Timestamp(given_date)
-
 	if isinstance(given_date, date):
 		return pd.Timestamp(datetime.combine(given_date, datetime.min.time()))
-
 	if isinstance(given_date, str):
 		# pandas handles almost all formats safely
 		return pd.to_datetime(given_date)
-
 	# Last-resort: assume caller knows what they’re doing
 	return pd.Timestamp(given_date)
 
