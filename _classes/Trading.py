@@ -70,7 +70,7 @@ class TradeModelParams(SQLFriendlyMixin):
 		'pickHistoryWindow', 'shopBuyPercent', 'shopSellPercent', 'trimProfitsPercent', 'allocateByPointValue', 'filterOption', 'useDatabase','filterByFundamentals', 'rateLimitTransactions','marketCapMin', 'marketCapMax', 'processing_minutes', 'batchName'
 	]		
 	def __post_init__(self):		
-		self.startDate = self.init_startDate # Trigger the setters to convert types immediately on startup
+		self.startDate = pd.Timestamp(self.init_startDate) # Trigger the setters to convert types immediately on startup
 	@property
 	def startDate(self) -> pd.Timestamp:
 		return self._startDate
@@ -79,7 +79,7 @@ class TradeModelParams(SQLFriendlyMixin):
 		self._startDate = pd.to_datetime(value)	
 		self.init_startDate = self._startDate
 	@property
-	def endDate(self) -> pd.Timestamp: return self.startDate + pd.offsets.BDay(CONSTANTS.TRADING_YEAR * self.durationInYears) 
+	def endDate(self) -> pd.Timestamp: return self.startDate + pd.DateOffset(years=self.durationInYears) 
 	def AddModelNameModifiers(self):
 		mn = self.modelName
 		if mn == '':
@@ -609,7 +609,7 @@ class TradingModel(Portfolio):
 		#pricesAsPercentages:bool=False would be good but often results in NaN values
 		#expects date format in local format, from there everything will be converted to database format				
 		startDate = ToDateTime(startDate)
-		endDate = startDate + pd.offsets.BDay(CONSTANTS.TRADING_YEAR * durationInYears) 
+		endDate = startDate + pd.DateOffset(years=durationInYears)
 		super(TradingModel, self).__init__(portfolioName=modelName, startDate=startDate, totalFunds=totalFunds, trackHistory=trackHistory, useDatabase=useDatabase, verbose=verbose)	
 		self.start_processing = datetime.today()
 		self.end_processing = None

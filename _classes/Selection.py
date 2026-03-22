@@ -21,7 +21,7 @@ MODE_CONVEX_LATE   = "CONVEX_LATE"
 MODE_BLENDED       = "BLENDED"
 MODE_DEFENSIVE     = "DEFENSIVE"
 MODE_TRANSITION = "TRANSITION"
-MARKET_STATE_VERSION = 4.0
+MARKET_STATE_VERSION = 4.5
 DEFAULT_BLEND = [(1,3),(3,3),(9,3),(9,3),(6,1)] 
 
 @dataclass
@@ -38,6 +38,7 @@ class AdaptiveConvexMarketState:
 	disp_p40: float = 0.0
 	disp_p75: float = 0.0
 	expansion_velocity: float = 0.0
+	velocity_ewm: float = 0.0        # 5-day EWM of expansion_velocity — smoothed regime momentum
 	expansion_state: Optional[str] = "NO_DATA"    # EXPANDING / STABLE / CONTRACTING
 	state_version: Optional[float] = MARKET_STATE_VERSION
 	state_confidence: float = 0.0
@@ -91,6 +92,8 @@ class AdaptiveConvexMarketState:
 			self.expansion_state = "CONTRACTING"
 	
 	def GetModeLabel(self) -> str:
+		# Label kept for SQL logging and diagnostics only — no longer drives decisions.
+		# All execution decisions now use the continuous signal methods below.
 		if self.state_confidence < 0.45:
 			return MODE_TRANSITION
 		if self.regime_tension_flag or self.leadership_break_flag:
@@ -101,69 +104,157 @@ class AdaptiveConvexMarketState:
 		if self.persistence_break_flag:
 			return MODE_DEFENSIVE
 		if g == "CONVEX":
-			if e == "EXPANDING" and l == "STABLE": return MODE_CONVEX_FULL		
-			if e == "CONTRACTING": return MODE_CONVEX_LATE			
+			if e == "EXPANDING" and l == "STABLE": return MODE_CONVEX_FULL
+			if e == "CONTRACTING": return MODE_CONVEX_LATE
 			return MODE_CONVEX_STABLE
 		if g == "LINEAR": return MODE_DEFENSIVE
 		return MODE_BLENDED
 
-	def GetRollingWindowSize(self):
-		hw = 26 #Moving this up or down reduces returns
-		# if self.leadership_state == "STABLE":
-			# hw += 2
-		# elif self.leadership_state == "TRANSITIONAL":
-			# hw -= 2
-		# elif self.leadership_state == "ROTATING":
-			# hw -= 4
-		return hw
-	
-	# def GetExecutionFilters(self):
-		# g = self.geometry_state
-		# e = self.expansion_state
-		# l = self.leadership_state
-		# filters = [3,3,1,5] 
-		# if l == "STABLE":
-			# filters.append(5)      # reinforce proven leaders
-		# elif l == "TRANSITIONAL":
-			# filters.append(9)      # discover emerging leaders
-		# elif l == "ROTATING":
-			# filters.append(5)      # retreat to quality
-		# if g == "CONVEX":
-			# filters.append(4)      # emphasize acceleration
-		# elif g == "LINEAR":
-			# filters.append(5)      # reinforce stability
-		# if e == "EXPANDING":
-			# filters.append(9)      # reward medium-trend leaders
-		# # if filters.count(5) > 3:
-			# # filters.remove(1)
-		# return filters
+	# ── Continuous signal properties ───────────────────────────────────────────
+	# All three execution methods below operate on the raw underlying floats,
+	# not the discretised label strings.  This avoids the information loss where
+	# a velocity of +0.001 and +0.08 both read as "EXPANDING" and received
+	# identical treatment.
+	#
+	# Key signals from 1980-2023 analysis:
+	#   disp_norm  Spearman 0.070 vs 21d return — strongest predictor.
+	#              Best periods: median 1.46. Worst periods: median 0.14.
+	#   velocity   Spearman 0.147 vs 1d return — regime momentum signal.
+	#              Weak at 21 days (0.018). Drives window size only.
+	#   stress_idx D10 (highest stress) returns 7.76% vs mid-decile 4-5%.
+	#              Peak stress is a recovery signal — do NOT penalise it.
+	#   autocorr   Essentially flat across deciles — no standalone predictive
+	#              power. Retained only as velocity component.
 
-	def GetExecutionFilters(self):
-		g = self.geometry_state        # CONVEX / LINEAR / MIXED
-		e = self.expansion_state       # EXPANDING / CONTRACTING / STABLE
-		l = self.leadership_state      # STABLE / TRANSITIONAL / ROTATING
+	@property
+	def disp_norm(self) -> float:
+		"""Dispersion normalised to its own rolling percentile band.
+		0 = at the p40 (LINEAR) boundary; 1 = at the p75 (CONVEX) boundary.
+		Negative = unusually compressed; >1 = unusually wide (convex zone).
+		Far richer than the three-bucket geometry label."""
+		denom = max(self.disp_p75 - self.disp_p40, 1e-6)
+		return (self.dispersion - self.disp_p40) / denom
+
+	@property
+	def conviction_score(self) -> float:
+		"""Composite conviction score in [0, 1].
+		High = concentrate positions; low = diversify.
+
+		Components:
+		  disp_norm      Primary driver (Spearman 0.070 at 21d). Best periods median 1.46.
+		  stress_index   Recovery signal: D10 highest stress returned 7.76% vs 4-5% mid.
+		                 Treated as mild positive (opportunity at stress peaks), not a penalty.
+		  leadership_tilt Persistent leadership adds moderate conviction.
+		  velocity_ewm   5-day EWM of expansion_velocity. Single-day velocity is noise
+		                 (Spearman 0.018 at 21d) but sustained negative velocity signals
+		                 genuine regime deterioration — reduce concentration proportionally.
+		                 This is the fix for v4.2's max_rec regression (636 → 1117 days):
+		                 disp_norm can stay elevated while held stocks collapse; the velocity
+		                 EWM catches the regime momentum turning negative and pulls back."""
+		disp_signal   = float(np.clip(self.disp_norm / 2.0, 0.0, 1.0))
+		stress_signal = float(np.clip(self.stress_index * 0.4, 0.0, 0.25))
+		lt_signal     = float(np.clip((self.leadership_tilt - 0.5) * 0.5, 0.0, 0.25))
+		# velocity_ewm: scale to ±0.20 impact on conviction.
+		# Positive sustained velocity → small boost (capped at +0.20).
+		# Negative sustained velocity → penalty (floored at -0.20).
+		# Asymmetric clip: penalise deterioration harder than rewarding acceleration,
+		# since the cost of holding concentrated positions through a regime break is
+		# higher than the cost of being slightly underweighted at the start of a run.
+		vel_signal = float(np.clip(self.velocity_ewm * 3.0, -0.30, 0.20))
+		raw = disp_signal + stress_signal + lt_signal + vel_signal
+		return float(np.clip(raw, 0.0, 1.0))
+
+	def GetRollingWindowSize(self) -> int:
+		"""Window driven by velocity_ewm (smoothed regime momentum).
+		Using the 5-day EWM rather than raw single-day velocity reduces noise
+		while preserving the directional signal.
+		Positive velocity_ewm → shorten window (capture accelerating leaders faster).
+		Negative velocity_ewm → lengthen window (hold persistent leaders in decel regime).
+		Base 26 ± up to 8 days."""
+		v  = float(np.clip(self.velocity_ewm, -1.0, 1.0))
+		hw = 26 + int(round(-8.0 * v))
+		return int(np.clip(hw, 18, 34))
+
+	def GetStockCount(self) -> int:
+		"""Position count driven continuously by conviction_score.
+		Score 1.0 → 7 stocks (maximum concentration).
+		Score 0.0 → 15 stocks (maximum diversification).
+		Interpolates linearly. conviction_score incorporates velocity_ewm
+		so sustained regime deterioration smoothly reduces concentration.
+
+		Floor in EXPANDING regime: even if disp_norm is compressed (unusual —
+		dispersion can lag the expansion label by a day or two), we don't want
+		15-stock diversification during an expanding regime. Floor at 10."""
+		score = self.conviction_score
+		# Apply a conviction floor during expanding regimes so compressed dispersion
+		# doesn't accidentally push stock count too high when the regime is clearly bullish
+		if self.expansion_state == "EXPANDING":
+			score = max(score, 0.40)   # floor → max 11 stocks in expanding regime
+		count = 15 - int(round(score * 8.0))
+		return int(np.clip(count, 7, 15))
+
+	def GetExecutionFilters(self) -> list:
+		"""Filter blend selected by regime label (v4.1 approach, restored in v4.4).
+
+		Hybrid architecture rationale:
+		  GetExecutionFilters  → label-based (decisive, preserves explosive compounding years)
+		  GetStockCount        → continuous conviction_score with velocity_ewm (smooth concentration)
+		  GetRollingWindowSize → continuous velocity_ewm (smooth window adaptation)
+
+		Backtesting showed continuous filter selection (v4.2/v4.3) applied a mild
+		daily discount that compounded against CAGR by ~2.7pp over 43 years.
+		Label-based selection makes high-conviction choices that capture the full
+		return in expanding regimes without that drag.
+
+		Filter reference (HW26 standalone, 1980-2023):
+		  F3  CAGR 67%  DD -55%  4 neg yrs  — core anchor, 1yr momentum
+		  F9  CAGR 68%  DD -63%  5 neg yrs  — core anchor, 9mo momentum
+		  F1  CAGR 64%  DD -57%  6 neg yrs  — broad discovery (loose mask)
+		  F8  CAGR 54%  DD -62%  4 neg yrs  — quality gate (EMA > 3mo)
+		  F4  CAGR 44%  DD -66%  6 neg yrs  — acceleration (short signal life)
+		"""
+		g = self.geometry_state    # CONVEX / LINEAR / MIXED
+		e = self.expansion_state   # EXPANDING / CONTRACTING / STABLE
+		l = self.leadership_state  # STABLE / TRANSITIONAL / ROTATING
+
+		# EXPANDING: maximum aggression — data shows 100%+ annualised in all geometries.
+		# F4 included in CONVEX expanding; velocity_ewm window shortening suits its short signal life.
+		if e == "EXPANDING":
+			if g == "CONVEX" and l == "STABLE":
+				return [3,3,9,9,1,4,4]   # peak conviction
+			if g == "CONVEX":
+				return [3,3,9,9,1,4]
+			return [1,3,3,9,9,8]          # LINEAR/MIXED expanding: quality-anchored aggression
+
+		# CONTRACTING: stay with blended default — data showed 75-84% ann. in contraction.
+		# Continuous stock count (via conviction_score + velocity_ewm) handles concentration
+		# reduction; filter blend stays aggressive so we don't give up the return.
+		if e == "CONTRACTING":
+			return [1,3,3,9,9,8]
+
+		# STABLE CONVEX
 		if g == "CONVEX":
-			if e == "EXPANDING" and l == "STABLE": # Maximum convex exposure          
-				return [3,3,9,9,4,4,7]
-			if e == "EXPANDING": # Still aggressive, slightly less conviction
-				return [3,3,9,9,4,7]
-			if e == "CONTRACTING": # Late-stage convex, protect gains            
-				return [3,3,9,7,1]        
-			return [3,3,9,4,7] # Default convex    
-		if g == "LINEAR":
-			if l == "STABLE": # Classic trend following            
-				return [3,3,3,9,1]
-			if l == "ROTATING": # Defensive / churn environment           
-				return [1,1,3,7]
-			return [3,3,1,9]
-		if g == "MIXED":
 			if l == "STABLE":
-				return [3,3,9,1,7]
+				return [3,3,9,9,8,1]
 			if l == "ROTATING":
-				return [1,1,7,3]
-			return [3,3,1,9]
-		return [3,3,1,9]
-		
+				return [3,3,9,9,8]        # drop F1 in churn
+			return [3,3,9,9,8,1]          # TRANSITIONAL
+
+		# STABLE LINEAR
+		if g == "LINEAR":
+			if l == "STABLE":
+				return [1,3,3,9,9,8]
+			if l == "ROTATING":
+				return [3,3,9,9,8]
+			return [1,3,3,9,8]            # TRANSITIONAL
+
+		# STABLE MIXED
+		if l == "STABLE":
+			return [1,3,3,9,9,8]
+		if l == "ROTATING":
+			return [3,3,9,9,8]
+		return [1,3,3,9,8]                # fallback
+
 	def GetRegimeSummary(self) -> str: 
 		return (f"{self.geometry_state}_{self.expansion_state}_{self.leadership_state}"	)
 
@@ -174,7 +265,7 @@ class AdaptiveConvexMarketState:
 		sql_delete = f"DELETE FROM {CONSTANTS.ADAPTIVE_CONVEX_STATE_TABLE} WHERE asOfDate = :as_of_date AND universe_size = :universe_size"
 		delete_params = {"as_of_date": self.as_of_date, "universe_size": int(self.universe_size)}
 		db.ExecSQL(sql_delete, delete_params)
-		sql_insert = f"INSERT INTO {CONSTANTS.ADAPTIVE_CONVEX_STATE_TABLE} (asOfDate, convex_duration, dispersion, momentum_autocorr, downside_volatility, stress_index, corr_6m_1m, corr_1y_1m, leadership_tilt, disp_p40, disp_p75, geometry_state, expansion_state, leadership_state, regime_tension_flag, leadership_break_flag, persistence_break_flag, state_confidence, universe_size, state_version ) VALUES (:as_of_date, :convex_duration, :dispersion, :momentum_autocorr, :downside_volatility, :stress_index, :corr_6m_1m, :corr_1y_1m, :leadership_tilt, :disp_p40, :disp_p75, :geometry_state, :expansion_state, :leadership_state, :regime_tension_flag, :leadership_break_flag, :persistence_break_flag, :state_confidence, :universe_size, :state_version)"
+		sql_insert = f"INSERT INTO {CONSTANTS.ADAPTIVE_CONVEX_STATE_TABLE} (asOfDate, convex_duration, dispersion, momentum_autocorr, downside_volatility, stress_index, corr_6m_1m, corr_1y_1m, leadership_tilt, disp_p40, disp_p75, expansion_velocity, velocity_ewm, geometry_state, expansion_state, leadership_state, regime_tension_flag, leadership_break_flag, persistence_break_flag, state_confidence, universe_size, state_version ) VALUES (:as_of_date, :convex_duration, :dispersion, :momentum_autocorr, :downside_volatility, :stress_index, :corr_6m_1m, :corr_1y_1m, :leadership_tilt, :disp_p40, :disp_p75, :expansion_velocity, :velocity_ewm, :geometry_state, :expansion_state, :leadership_state, :regime_tension_flag, :leadership_break_flag, :persistence_break_flag, :state_confidence, :universe_size, :state_version)"
 		insert_params = {
 			"as_of_date": self.as_of_date,
 			"convex_duration": int(self.convex_duration), 
@@ -187,6 +278,8 @@ class AdaptiveConvexMarketState:
 			"leadership_tilt": float(self.leadership_tilt),
 			"disp_p40": float(self.disp_p40),
 			"disp_p75": float(self.disp_p75),
+			"expansion_velocity": float(self.expansion_velocity),
+			"velocity_ewm": float(self.velocity_ewm),
 			"geometry_state": self.geometry_state,
 			"expansion_state": self.expansion_state,
 			"leadership_state": self.leadership_state,
@@ -216,7 +309,8 @@ class AdaptiveConvexMarketState:
 			"corr_1y_1m": float(self.corr_1y_1m),
 			"leadership_tilt": float(self.leadership_tilt),		
 			"disp_p40": float(self.disp_p40),
-			"disp_p75": float(self.disp_p75),		
+			"disp_p75": float(self.disp_p75),
+			"expansion_velocity": float(self.expansion_velocity),  # stored for EWM in smoothed state
 			"geometry_state": self.geometry_state,
 			"expansion_state": self.expansion_state,
 			"leadership_state": self.leadership_state,
@@ -344,12 +438,102 @@ class StockPicker():
 	def _blend_from_multiverse(self, multiverse_candidates, filters):
 		dfs = []
 		for f in filters:
-			if f not in multiverse_candidates:	continue			
+			if f not in multiverse_candidates: continue
 			df = multiverse_candidates.get(f, pd.DataFrame())
-			dfs.append(df[["Point_Value"]].copy())
-		if not dfs:	return CASH_RESULT.copy()
+			if df.empty: continue
+			pick = df[["Point_Value"]].copy()
+			pick["_vote_weight"] = 1.0
+
+			# ── 1. PathologyScore penalty AND zero-flag boost ──────────────────────
+			# Trade analysis finding: PathologyScore is a FLAG not a gradient.
+			# D1 (score = exactly 0.0): 73.9% win rate.  D2-D10: 37-53%.
+			# Two separate adjustments:
+			#   a) Score > 1: soft penalty 0.5x (existing blow-off dampener)
+			#   b) Score = 0: boost 1.25x — stocks at all-time highs, no spike history
+			if "PathologyScore" in df.columns:
+				ps = df["PathologyScore"].reindex(pick.index).fillna(0.5)
+				pick["_vote_weight"] *= ps.map(lambda s: 0.5 if s > 1.0 else (1.25 if s == 0.0 else 1.0))
+
+			# ── 2. DamageScore zero-flag boost ────────────────────────────────────
+			# Trade analysis: DamageScore D1 (score = 0.0): 78.2% win rate vs 37-53% elsewhere.
+			# Same binary pattern as PathologyScore — boost the zero case.
+			if "DamageScore" in df.columns:
+				dam = df["DamageScore"].reindex(pick.index).fillna(0.1)
+				pick["_vote_weight"] *= dam.map(lambda d: 1.20 if d == 0.0 else 1.0)
+
+			# ── 3. LossSkew quality gate ─────────────────────────────────────────
+			# Trade analysis: strongest continuous predictor (t=8.01, p<0.001).
+			# Win rate: 62.5% at LossSkew>0.5, 44.8% at -1.5/-1.0.
+			# Not currently used anywhere in the engine.
+			# Less negative / positive = losses were small+frequent (safer profile).
+			# Very negative = concentrated large losses (fat left tail = dangerous).
+			# Soft penalty only — never hard-exclude, discount approach consistent
+			# with the vote architecture.
+			if "LossSkew_1Year" in df.columns:
+				skew = df["LossSkew_1Year"].reindex(pick.index).fillna(-0.5)
+				# Penalty ramps from 1.0 at skew=-0.8 down to 0.6 at skew<=-1.5
+				# Boost from 1.0 at skew=0 up to 1.20 at skew>=0.5
+				skew_weight = skew.apply(lambda s:
+					1.20 if s >= 0.5 else
+					1.10 if s >= 0.0 else
+					1.00 if s >= -0.8 else
+					0.80 if s >= -1.2 else
+					0.65
+				)
+				pick["_vote_weight"] *= skew_weight
+
+			# ── 4. Distance from 200DMA sweet spot ───────────────────────────────
+			# Trade analysis: win rate 54.8% and avg return 0.11 at 80-100% above.
+			# Below 20% above 200DMA: win rate 41.6%, avg return slightly negative.
+			# Apply a mild boost in the sweet spot (60-100% above) and mild
+			# discount when too close to the 200DMA (below 20% extension).
+			if "Distance_200DMA" in df.columns:
+				dma = df["Distance_200DMA"].reindex(pick.index).fillna(0.4)
+				dma_weight = dma.apply(lambda d:
+					1.15 if 0.6 <= d <= 1.0 else   # sweet spot: 60-100% above
+					1.05 if 0.4 <= d < 0.6  else   # reasonable zone
+					0.85 if d < 0.2          else   # too close to 200DMA
+					1.00                            # >100%: extended, neutral
+				)
+				pick["_vote_weight"] *= dma_weight
+
+			# ── 5. Pullback vote boost ────────────────────────────────────────────
+			# Stocks in a controlled pullback with intact medium trend earn a boost.
+			# LossSkew gate applied inside: pullback stocks with dangerous loss
+			# skew profiles (very fat left tail) are not boosted.
+			# This prevents amplifying stocks that are dipping due to structural damage.
+			if all(c in df.columns for c in ["LogDrawdown","PC_3Month","PC_9Month","PathologyScore","LossSkew_1Year"]):
+				ld   = df["LogDrawdown"].reindex(pick.index).fillna(0)
+				pc3  = df["PC_3Month"].reindex(pick.index).fillna(0)
+				pc9  = df["PC_9Month"].reindex(pick.index).fillna(0)
+				ps2  = df["PathologyScore"].reindex(pick.index).fillna(99)
+				sk2  = df["LossSkew_1Year"].reindex(pick.index).fillna(-2.0)
+				in_controlled_pullback = (
+					(ld < -0.02)  & (ld > -0.15) &  # in pullback, not a breakdown
+					(pc3 > 0)     &                   # 3-month trend still rising
+					(pc9 > 0)     &                   # medium trend intact
+					(ps2 < 1.5)   &                   # not damaged/spiky
+					(sk2 > -1.2)                      # loss skew not dangerously fat-tailed
+				)
+				pick["_vote_weight"] *= in_controlled_pullback.map({True: 1.3, False: 1.0})
+			elif all(c in df.columns for c in ["LogDrawdown","PC_3Month","PC_9Month","PathologyScore"]):
+				ld  = df["LogDrawdown"].reindex(pick.index).fillna(0)
+				pc3 = df["PC_3Month"].reindex(pick.index).fillna(0)
+				pc9 = df["PC_9Month"].reindex(pick.index).fillna(0)
+				ps2 = df["PathologyScore"].reindex(pick.index).fillna(99)
+				in_controlled_pullback = (
+					(ld < -0.02) & (ld > -0.15) &
+					(pc3 > 0) & (pc9 > 0) & (ps2 < 1.5)
+				)
+				pick["_vote_weight"] *= in_controlled_pullback.map({True: 1.3, False: 1.0})
+
+			dfs.append(pick)
+		if not dfs: return CASH_RESULT.copy()
 		result = pd.concat(dfs, sort=True)
-		result = (result.groupby(level=0).agg(TargetHoldings=('Point_Value', 'size'),Point_Value=('Point_Value', 'mean'))) #TargetHoldings created here as size of the rows
+		result = (result.groupby(level=0).agg(
+			TargetHoldings=('_vote_weight', 'sum'),
+			Point_Value=('Point_Value', 'mean')
+		))
 		result.sort_values('TargetHoldings', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last')
 		result.index.name = 'Ticker'
 		return result
@@ -372,7 +556,7 @@ class StockPicker():
 			row = df.loc[currentDate]
 			if min(row['Average'], row['Average_5Day'] ) <= 0:
 				continue
-			rows.append({'Ticker': ticker,'Average_5Day': row['Average_5Day'],'Average_2Day': row['Average_2Day'],'Average': row['Average'],'PC_2Year': row['PC_2Year'],'PC_1Year': row['PC_1Year'],'PC_9Month': row['PC_9Month'],'PC_6Month': row['PC_6Month'],'PC_3Month': row['PC_3Month'],'PC_2Month': row['PC_2Month'],'PC_1Month': row['PC_1Month'],'PC_3Day': row['PC_3Day'],'PC_1Day': row['PC_1Day'],'PC_1Month3WeekEMA': row['PC_1Month3WeekEMA'],'PC_10Day5DayEMA': row['PC_10Day5DayEMA'], 'LossStd_1Year': row['LossStd_1Year'],'Point_Value': row['Point_Value'], 'LogDrawdown': row['LogDrawdown'], 'PathologyScore': row['PathologyScore'], 'MaxLoss_1Year': row['MaxLoss_1Year'], 'DamageScore': row['DamageScore'], 'Comments': row.get('Comments', ''),'latestEntry': pd_obj.historyEndDate})
+			rows.append({'Ticker': ticker,'Average_5Day': row['Average_5Day'],'Average_2Day': row['Average_2Day'],'Average': row['Average'],'PC_2Year': row['PC_2Year'],'PC_1Year': row['PC_1Year'],'PC_9Month': row['PC_9Month'],'PC_6Month': row['PC_6Month'],'PC_3Month': row['PC_3Month'],'PC_2Month': row['PC_2Month'],'PC_1Month': row['PC_1Month'],'PC_3Day': row['PC_3Day'],'PC_1Day': row['PC_1Day'],'PC_1Month3WeekEMA': row['PC_1Month3WeekEMA'],'PC_10Day5DayEMA': row['PC_10Day5DayEMA'], 'LossStd_1Year': row['LossStd_1Year'],'LossSkew_1Year': row.get('LossSkew_1Year', 0.0), 'Point_Value': row['Point_Value'], 'LogDrawdown': row['LogDrawdown'], 'PathologyScore': row['PathologyScore'], 'MaxLoss_1Year': row['MaxLoss_1Year'], 'DamageScore': row['DamageScore'], 'Distance_200DMA': row.get('Distance_200DMA', 0.0), 'Comments': row.get('Comments', ''),'latestEntry': pd_obj.historyEndDate})
 		if not rows: 
 			for filter_option, stocks_to_return in filterOptions:
 				candidates[filter_option] = CASH_RESULT.copy()
@@ -406,8 +590,29 @@ class StockPicker():
 			1: dict(sort='PC_1Year', mask=lambda df: (df['PC_1Month3WeekEMA'] > 0) ), #52.81	-69.44	
 			4: dict(sort='PC_1Month3WeekEMA', mask=lambda df: ( (df['PC_1Month3WeekEMA'] > 0) & base_filter(df, True)) ), #43.90	-59.93 Discovery and high growth but volitile
 			6: dict(sort='PC_6Month', mask=lambda df: ( base_filter(df, True)) ), #59.93	-75.91
-			7: dict(sort='PC_9Month', mask=lambda df: ( (df["PC_10Day5DayEMA"] < -0.01) & (df["PC_10Day5DayEMA"] > -0.12) & (df["PC_1Month3WeekEMA"] > df["PC_3Month"]) & base_filter(df, False)) ),	
+			# F7: discount reversal — never worked well as standalone; replaced by F10 + vote boost in _blend_from_multiverse
+			7: dict(sort='PC_9Month', mask=lambda df: ( (df["PC_10Day5DayEMA"] < -0.01) & (df["PC_10Day5DayEMA"] > -0.12) & (df["PC_1Month3WeekEMA"] > df["PC_3Month"]) & base_filter(df, False)) ),
 			8: dict(sort='PC_9Month', mask=lambda df: ( (df['PC_1Month3WeekEMA'] > df['PC_3Month'] ) & base_filter(df, True)) ), #50.13	-55.80
+			# F10: Shopping/discount filter — finds controlled pullbacks within intact medium-term trends.
+			# Design principles:
+			#   - Never standalone: only adds votes to stocks already nominated by other filters.
+			#     Architecturally safe because the vote window is the true shopping mechanism.
+			#   - Sort by LogDrawdown ascending = deepest controlled pullback first (most discounted).
+			#   - Pullback band [-0.15, -0.02]: excludes at-highs stocks AND real breakdowns.
+			#   - PC_3Month > 0: 3-month trend still rising even as price dips = higher-low setup.
+			#   - PathologyScore < 1.5: tighter than base — spike + drawdown combos excluded.
+			#   - DamageScore < 0.3: tighter than base — no sustained multi-month damage.
+			#   - Keeps loose EMA gate: a pullback will naturally have weak short-term EMA,
+			#     that's the point. We gate damage instead.
+			10: dict(sort='LogDrawdown', mask=lambda df: (
+				(df['LogDrawdown'] < -0.02) &          # Actually in a pullback (not at highs)
+				(df['LogDrawdown'] > -0.15) &           # Controlled — not a breakdown
+				(df['PC_9Month'] > 0) &                 # Medium trend intact
+				(df['PC_3Month'] > 0) &                 # 3-month trend still positive
+				(df['PathologyScore'] < 1.5) &          # Tighter damage gate than base
+				(df['DamageScore'] < 0.3) &             # No sustained multi-month damage
+				(df['MaxLoss_1Year'] > -0.6)            # Max monthly loss gate from base
+			)),
 		}
 		for filter_option, stocks_to_return in filterOptions:
 			spec = filter_map.get(filter_option)
@@ -467,7 +672,7 @@ class StockPicker():
 		db.Close()
 		return result				
 
-	def GeneratePicksBlendedSQL(self, startDate: pd.Timestamp = None, endDate: pd.Timestamp = None, replaceExisting:bool=False, verbose:bool=False):
+	def GeneratePicksForSQL(self, startDate: pd.Timestamp = None, endDate: pd.Timestamp = None, replaceExisting:bool=False, adaptiveModel:bool=False, verbose:bool=False):
 		db = PTADatabase()
 		filterOptions = DEFAULT_BLEND
 		if not db.Open(): return False
@@ -477,25 +682,31 @@ class StockPicker():
 		endDate = min(endDate, self._endDate)
 		current_date = startDate
 		prev_month = -1
-		print(f" GeneratePicksBlendedSQL from {startDate} to {endDate}")				
+		tableName = 'PicksBlendedDaily'
+		if adaptiveModel:
+			tableName = 'PicksAdaptiveDaily'
+		print(f" GeneratePicksForSQL from {startDate} to {endDate}")				
 		full_price_index = self.priceData[0].historicalPrices.index.sort_values().unique()
 		mask = (full_price_index >= startDate) & (full_price_index <= endDate)
 		range_price_index = full_price_index[mask]
-		existing_dates = pd.to_datetime(db.ScalarListFromSQL("SELECT Date FROM PicksBlendedDaily WHERE [Date]>=:startDate AND [Date]<=:endDate ORDER BY Date", {"startDate": startDate, "endDate": endDate}, column="Date"))
+		existing_dates = pd.to_datetime(db.ScalarListFromSQL(f"SELECT Date FROM {tableName} WHERE [Date]>=:startDate AND [Date]<=:endDate ORDER BY Date", {"startDate": startDate, "endDate": endDate}, column="Date"))
 		missing_dates = range_price_index[~range_price_index.isin(existing_dates)]
 		target_dates = range_price_index if replaceExisting else missing_dates
 		for current_date in target_dates:
-			result = self.GetPicksBlended(currentDate=current_date, filterOptions=filterOptions, useRollingWindow=False, normalize=False) 
+			if adaptiveModel:
+				result = self.GetAdaptiveConvexPicks(currentDate=current_date) 
+			else:
+				result = self.GetPicksBlended(currentDate=current_date, filterOptions=filterOptions, useRollingWindow=False, normalize=False) 
 			if len(result) == 0:
-				if verbose: print(" GeneratePicksBlendedSQL: No data found.")
+				if verbose: print(" GeneratePicksForSQL: No data found.")
 			else:
 				result['Date'] = current_date 
 				result['TotalStocks'] = len(self._tickerList) 
 				result = result[['Date', 'TargetHoldings', 'Point_Value', 'TotalStocks']]
 				result.index.name='Ticker'
 				if verbose: print(result)
-				db.ExecSQL("DELETE FROM PicksBlendedDaily WHERE Date='" + str(current_date) + "'")
-				db.DataFrameToSQL(result, tableName='PicksBlendedDaily', indexAsColumn=True, clearExistingData=False)
+				db.ExecSQL(f"DELETE FROM {tableName} WHERE Date='" + str(current_date) + "'")
+				db.DataFrameToSQL(result, tableName=tableName, indexAsColumn=True, clearExistingData=False)
 			result=None
 		db.ExecSQL("sp_UpdateBlendedPicks")
 		db.Close()
@@ -735,14 +946,35 @@ class StockPicker():
 		if hist.empty:
 			return current_state
 		smoothed = current_state
-		smoothed.dispersion = hist["dispersion"].mean()
+		smoothed.dispersion        = hist["dispersion"].mean()
 		smoothed.momentum_autocorr = hist["momentum_autocorr"].mean()
-		smoothed.leadership_tilt = hist["leadership_tilt"].mean()
-		smoothed.state_confidence = hist["state_confidence"].mean()
+		smoothed.leadership_tilt   = hist["leadership_tilt"].mean()
+		smoothed.state_confidence  = hist["state_confidence"].mean()
+		# Compute EWM of expansion_velocity over the history window.
+		# A single day of negative velocity is noise (Spearman 0.018 at 21d).
+		# Sustained negative velocity over 5 days is a genuine regime deterioration
+		# signal that should reduce conviction and concentration.
+		# span=5 gives ~50% weight to the most recent 2 days, decaying smoothly.
+		if "expansion_velocity" in hist.columns:
+			vel_series = hist["expansion_velocity"].dropna()
+			if len(vel_series) >= 2:
+				smoothed.velocity_ewm = float(
+					vel_series.ewm(span=5, adjust=False).mean().iloc[-1]
+				)
+			elif len(vel_series) == 1:
+				smoothed.velocity_ewm = float(vel_series.iloc[-1])
+			# else: leave at dataclass default 0.0
 		return smoothed
 	
 	def GetAdaptiveConvexPicks(self, currentDate):
-		filterOptions =  [(0,250),(7,2)] + DEFAULT_BLEND
+		# Pre-fetch all filters any regime path may need.
+		# F4 (acceleration): EXPANDING CONVEX only, fetched at 3 stocks.
+		# F8 (accel vs trend quality): replaces F6 across all blends — better DD, similar CAGR.
+		# F10 (shopping/discount): controlled pullback + intact trend; never generates cash
+		#      because it only amplifies votes already cast by other filters via vote boost in
+		#      _blend_from_multiverse. Including it in filterOptions here pre-fetches candidates
+		#      so the vote boost logic has PathologyScore/LogDrawdown/PC_3Month available.
+		filterOptions = [(0,250),(4,3),(8,3),(10,5)] + DEFAULT_BLEND
 		multiverse_candidates = self.GetHighestPriceMomentumMulti(currentDate=currentDate, filterOptions=filterOptions)
 		universe_size = len(multiverse_candidates[0])
 		market_state = self._get_market_state_smoothed(currentDate, universe_size)
@@ -750,11 +982,17 @@ class StockPicker():
 			return CASH_RESULT.copy()
 		filters = market_state.GetExecutionFilters()
 		window_size = market_state.GetRollingWindowSize()
+		stock_count = market_state.GetStockCount()
 		todays_picks = self._blend_from_multiverse(multiverse_candidates, filters)
-		todays_picks = self._rolling_history_append(currentDate=currentDate, todays_picks=todays_picks, window_size=window_size)
-		return todays_picks	
+		todays_picks = self._rolling_history_append(
+			currentDate=currentDate,
+			todays_picks=todays_picks,
+			window_size=window_size,
+			max_picks=stock_count
+		)
+		return todays_picks
 
-def Generate_PicksBlendedSQL_DateRange(startYear:int=None, years: int=0, replaceExisting:bool=False, verbose:bool=False):
+def Generate_Picks_For_SQL_DateRange(startYear:int=None, years: int=0, replaceExisting:bool=False, adaptiveModel:bool=False, verbose:bool=False):
 	db = PTADatabase()
 	if db.Open():
 		today = ToTimestamp(GetLatestBDay())
@@ -769,13 +1007,16 @@ def Generate_PicksBlendedSQL_DateRange(startYear:int=None, years: int=0, replace
 		if startDate > today: startDate = today
 		current_date = startDate
 		tickers = []
+		tableName = 'PicksBlendedDaily'
+		if adaptiveModel:
+			tableName = 'PicksAdaptiveDaily'
 		params = TradeModelParams()
-		print(f" Generate_PicksBlendedSQL_DateRange from {FormatDate(startDate)} to {FormatDate(endDate)}")				
+		print(f" Generate_Picks_For_SQL_DateRange from {FormatDate(startDate)} to {FormatDate(endDate)}")				
 		picker = StockPicker(startDate=startDate, endDate=endDate)
 		p = PricingData(CONSTANTS.CASH_TICKER)
 		p.LoadHistory(requestedStartDate=startDate, requestedEndDate=endDate)
 		full_price_index = p.historicalPrices.sort_index().index.unique()
-		existing_dates = pd.to_datetime(db.ScalarListFromSQL("SELECT Date FROM PicksBlendedDaily WHERE [Date]>=:startDate AND [Date]<=:endDate ORDER BY Date", {"startDate": startDate, "endDate": endDate}, column="Date"))
+		existing_dates = pd.to_datetime(db.ScalarListFromSQL(f"SELECT Date FROM {tableName} WHERE [Date]>=:startDate AND [Date]<=:endDate ORDER BY Date", {"startDate": startDate, "endDate": endDate}, column="Date"))
 		missing_dates = full_price_index[~full_price_index.isin(existing_dates)]
 		target_dates = full_price_index if replaceExisting else missing_dates
 		monthly_starts = target_dates[target_dates.to_series().dt.month != target_dates.to_series().dt.month.shift()]
@@ -784,12 +1025,12 @@ def Generate_PicksBlendedSQL_DateRange(startYear:int=None, years: int=0, replace
 			if verbose: print(f" Generate_PicksBlended_DateRange: Getting tickers for month {FormatDate(month_start)}")				
 			new_tickers = TickerLists.GetTickerListSQL(year=month_start.year, month=month_start.month, SP500Only=params.SP500Only, filterByFundamentals=params.filterByFundamentals, marketCapMin=params.marketCapMin, marketCapMax=params.marketCapMax) 
 			if len(new_tickers) > 0:
-				if verbose: print(f" Generate_PicksBlendedSQL_DateRange: Re-query tickers found {len(new_tickers)} instead of previous {len(tickers)}")
+				if verbose: print(f" Generate_Picks_For_SQL_DateRange: Re-query tickers found {len(new_tickers)} instead of previous {len(tickers)}")
 				tickers = new_tickers
 			picker.AlignToList(tickers)			
 			TotalValidCandidates = len(picker._tickerList) 
-			if verbose: print(f" Generate_PicksBlendedSQL_DateRange: Running PicksBlended generation on {TotalValidCandidates} stocks {FormatDate(month_start)} to {FormatDate(month_end)}")		
+			if verbose: print(f" Generate_Picks_For_SQL_DateRange: Running PicksBlended generation on {TotalValidCandidates} stocks {FormatDate(month_start)} to {FormatDate(month_end)}")		
 			if TotalValidCandidates==0: assert(False)
-			picker.GeneratePicksBlendedSQL(startDate=month_start, endDate=month_end, replaceExisting=replaceExisting, verbose=verbose)
+			picker.GeneratePicksForSQL(startDate=month_start, endDate=month_end, replaceExisting=replaceExisting, adaptiveModel=adaptiveModel, verbose=verbose)
 	db.Close()
 		

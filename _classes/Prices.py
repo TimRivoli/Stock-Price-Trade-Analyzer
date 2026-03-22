@@ -222,17 +222,32 @@ class PricingData:
 		df['PC_1Year'] = ((a3 / a3.shift(ty)) - 1).round(3)
 		df['PC_18Month'] = (a3 / a3.shift(375) - 1) * 0.667
 		df['PC_2Year'] = (a3 / a3.shift(500) - 1) / 2
-		# alpha = 0.5
-		# m1 = np.power(df['PC_1Year'].clip(lower=0), alpha)
-		# m9 = np.power(df['PC_9Month'].clip(lower=0), alpha)
-		# m6 = np.power(df['PC_6Month'].clip(lower=0), alpha)
-		# pv = (9*m1 + 3*m9 + m6)/13
-		pv = (10*df['PC_1Year'] + 100*df['LossStd_1Year'] - 6).round()
-		pv -= (df['PC_1Month'] < 0.00175) * 3
-		pv = pv.where(pv >= 2, 0)
+		alpha = 0.5
+		m1 = np.power(df['PC_1Year'].clip(lower=0), alpha)
+		m9 = np.power(df['PC_9Month'].clip(lower=0), alpha)
+		m6 = np.power(df['PC_6Month'].clip(lower=0), alpha)
+		# Core multi-timeframe momentum — mirrors F3 (1yr) and F9 (9mo) sort signals
+		pv = (9*m1 + 3*m9 + m6)/13
+		# F8 acceleration component: PC_1Month3WeekEMA outpacing PC_3Month.
+		# Directly encodes the F8 mask condition so stocks earning F8 votes
+		# also score higher here. sqrt-compressed to reduce sensitivity to extremes.
+		accel = (df['PC_1Month3WeekEMA'] - df['PC_3Month']).clip(lower=0)
+		pv += np.power(accel, alpha) * 0.5
+		# F4 discovery component: raw short-term EMA momentum when positive.
+		# Adds modest weight to early-acceleration candidates that F4 targets.
+		f4 = df['PC_1Month3WeekEMA'].clip(lower=0)
+		pv += np.power(f4, alpha) * 0.3
+		# Softened short-term penalty: stocks in a controlled pullback still
+		# accumulate votes during the dip — the penalty should damp rather than kill.
+		pv -= (df['PC_1Month'] < 0.00175) * 1.5
+		# Lowered hard zero: reduces from 2.0 to 1.5 so modest-but-genuine
+		# momentum candidates aren't zeroed out entirely.
+		pv = pv.where(pv >= 1.5, 0)
 		pv_mask = df.eval("(PC_1Month3WeekEMA > -0.05) & (PC_9Month > 0) & (LogDrawdown > -0.5) & (MaxLoss_1Year > -0.6) & (PathologyScore < 2) & (DamageScore < 0.5)")
 		pv *= pv_mask
-		df['Point_Value'] = (pv.ewm(span=3, adjust=False).mean().fillna(0)) * 10
+		# span=7: suppresses single-day noise without duplicating the 26-28 day
+		# vote window's persistence smoothing. ~40% weight on last 2 days.
+		df['Point_Value'] = (pv.ewm(span=7, adjust=False).mean().fillna(0)) * 10
 		df['Gain_10Day'] = ((a2 / a2.shift(10)) - 1).fillna(0)
 		df['Target'] = (a2 * (1 + df['Gain_10Day'] / 9)).round(2)
 
