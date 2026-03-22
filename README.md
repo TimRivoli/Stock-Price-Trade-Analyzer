@@ -72,6 +72,72 @@ See `TrainPrices.py` for worked examples of training and evaluating the model.
 
 ---
 
+## Database Backend (Optional)
+
+The `database/` folder contains everything needed to swap the flat-file CSV backend for a **Microsoft SQL Server** database, unlocking more sophisticated backtesting and analysis across a large universe of stocks.
+
+### Files
+
+| File | Description |
+|---|---|
+| `PTA_Generate.sql` | Creates the `PTA` database, all tables, views, and stored procedures |
+| `PriceDatabaseUpdate.py` | Orchestrates data downloads and database refreshes |
+| `tickerlist.csv` | Seed list of tickers to populate the database on first run |
+| `config.ini` | Connection settings (server, database name, credentials) |
+
+### What the database adds
+
+**Broader ticker coverage** — the updater seeds from `tickerlist.csv` and automatically pulls in S&P 500 and extended watchlist tickers, storing full price history, company fundamentals, and financial data.
+
+**Automated price maintenance** — `PriceDatabaseUpdate.py` provides several update routines:
+
+- `TickersFullRefresh` — bulk-downloads missing price history for up to 150 tickers at a time, then calls `sp_UpdateEverything` to recompute all derived stats
+- `TickerDataRefresh` — lighter daily/monthly refresh for tickers with recent gaps
+- `DownloadIntraday` — pulls current-day prices and merges them into daily history via the `sp_UpdateDailyFromIntraday` stored procedure
+- `DownloadAllTickerInfo` — fills in missing company metadata and financials
+
+**Deep trade analysis** — `Update_TradeModel_Trade_Analysis` enriches every historical trade record with entry/exit market context, including momentum scores, volatility measures, distance from the 200-day moving average, max favorable/adverse excursion, and max drawdown during the trade. This runs multi-threaded across up to 6 workers for speed.
+
+**Working set and stock picking** — `RefreshPricesWorkingSet` builds a curated watchlist of up to ~300 momentum stocks (plus a hard-coded set of forced inclusions) and writes it to the `PricesWorkingSet` table. It also regenerates the `PicksBlended` table covering the past 30 days.
+
+**Key database objects** (created by `PTA_Generate.sql`):
+
+- `Tickers` — master ticker list with exchange, market cap, fundamentals, and S&P 500 membership
+- `TickerFinancials` / `TickerHistoricalQualityFactors` — per-ticker financial and quality metrics over time
+- `TradeModel_Trades` / `TradeModel_DailyValue` / `TradeModelComparisons` — full backtest output storage
+- `TradeModel_Trade_Analysis` — enriched per-trade analytics
+- `PricesWorkingSet` — current momentum-filtered working universe
+- `Options_Sentiment_Daily` — options-derived sentiment scores
+- `SP500ConstituentsMonthly` / `SP500ConstituentsYearly` — historical S&P 500 membership snapshots
+- Stored procedures: `sp_UpdateEverything`, `sp_UpdateDailyFromIntraday`, `sp_UpdateTickerPrices`, `sp_UpdateTradeHistory`, and more
+
+### Setup
+
+1. Install and start **Microsoft SQL Server** (2019 or later recommended).
+2. Run `PTA_Generate.sql` in SSMS or `sqlcmd` to create the `PTA` database and all objects.
+3. Edit `database/config.ini` with your server name and credentials:
+
+```ini
+[Database]
+usesqldriver = True
+databaseserver = localhost
+databasename = PTA
+databaseusername = your_username
+databasepassword = your_password
+```
+
+4. Run the initial population script:
+
+```bash
+python database/PriceDatabaseUpdate.py
+```
+
+This will seed the ticker list, download price history, and populate the working set. Subsequent runs will perform incremental updates only.
+
+> **Note:** The database backend requires the `pyodbc` package and a working ODBC driver for SQL Server. The CSV-based workflow works without any database setup.
+
+---
+
 ## Project Structure
 
 ```
@@ -79,6 +145,11 @@ Stock-Price-Trade-Analyzer/
 ├── _classes/
 │   ├── PriceTradeAnalyzer.py   # PricingData, Portfolio, TradingModel
 │   └── SeriesPrediction.py     # StockPredictionNN
+├── database/
+│   ├── PTA_Generate.sql        # Creates the SQL Server database and all objects
+│   ├── PriceDatabaseUpdate.py  # Automated price/data refresh orchestration
+│   ├── tickerlist.csv          # Seed ticker list for initial population
+│   └── config.ini              # Database connection settings
 ├── EvaluatePrices.py           # Price analysis and charting examples
 ├── EvaluateTradeModels.py      # Strategy backtesting examples
 ├── TrainPrices.py              # ML model training examples
@@ -99,6 +170,7 @@ Stock-Price-Trade-Analyzer/
 - `yahoofinance` (or compatible Yahoo Finance library)
 - `tensorflow` >= 1.5 (tested up to 2.x) *(optional — only needed for SeriesPrediction)*
 - `keras` *(bundled with TensorFlow 2.x)*
+- `pyodbc` + Microsoft ODBC Driver for SQL Server *(optional — only needed for the database backend)*
 
 To skip loading the ML modules entirely, set `enableTensorFlow=False` in `PriceTradeAnalyzer.py`.
 
