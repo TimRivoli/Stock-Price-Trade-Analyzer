@@ -103,6 +103,7 @@ def RunPriceMomentumAdaptiveConvex(params: TradeModelParams):
 			if use_sql and current_month != currentDate.month:
 				current_month = currentDate.month
 				tickerList = TickerLists.GetTickerListSQL(year=currentDate.year, month=currentDate.month, SP500Only=params.SP500Only, filterByFundamentals=params.filterByFundamentals, marketCapMin=params.marketCapMin, marketCapMax=params.marketCapMax)
+				tickerList = tickerList[:5]
 				picker.AlignToList(tickerList)
 			if dayCounter == 0:
 				candidates = picker.GetAdaptiveConvexPicks(currentDate)
@@ -166,7 +167,7 @@ def ModelPastFewYears(params: TradeModelParams):
 	#Show how each strategy performs on the recent years 
 	years = 5
 	endDate = GetLatestBDay()
-	startDate = endDate - pd.offsets.BDay(CONSTANTS.TRADING_YEAR * years)
+	startDate = endDate - pd.DateOffset(years=years)
 	params.startDate = startDate
 	params.durationInYears = years
 	params.reEvaluationInterval = 5
