@@ -1,49 +1,147 @@
+# Stock Price Trade Analyzer
 
+A Python 3 toolkit for downloading, analyzing, and backtesting stock trading strategies, with optional deep-learning price prediction via TensorFlow/Keras.
 
-This is a Python 3 project for analyzing stock prices and methods of stock trading. It uses native Python tools and Google TensorFlow machine learning.
+---
 
-Module: PriceTradeAnalyzer
-Class PricingData
-Given a stock ticker, this will go out and download historical price data using the yahoofinance library.  Downloaded data is cached to .csv file and stored in a Pandas dataframe which is easy to manipulate.  PricingData helper functions allow you to TrimToDateRange, ConvertToPercentages, NormalizePrices, CalculateStats (EMA, channels, momentum, etc), perform time frame graphing (using matplotlib), and a few other bells and whistles.  There are also several prediction models for predicting future prices. 
+## Overview
 
-EvaluatePrices.py shows how to use the PricingData class to PlotAnnualPerformance of a stock, DownloadAndGraphStocks for a list of stocks such as the S&P 500, CalculatePriceCorrelation of a list of stocks, OpportunityFinder to identify recent drops or over-bought/over-sold conditions from a list of stocks.
+This project gives you two tightly integrated modules:
 
-Classes Portfolio and TradingModel are used to test emulations of trading strategies.  EvaluateTradeModels.py shows examples of how to the TradingModel class to create and test trading strategies.  The models will use actual historical prices from PricingData. You specify the stocks you want to work with, the time frame you want to test against, and the logic you want to use for buying and selling.  Example strategies are included for BuyAndHold, Seasonal investing, and two different Trending approaches.  The resulting daily value and trade history are dataframes which are graphed and saved to .csv and .png files so you can view the performance details later.  ExtendedDurationTest allows you to test the performance of any model over various time frames and durations.  CompareModels allows you to compare the performance of any two models over a given time period.  It would be great to create a re-enforcement learning module using Deep Q or Policy Gradient.  I'm also thinking of making a stock trading game and using the code to run it against historical time periods.  It could be a good educational tool.  I know it has been for me!
+- **PriceTradeAnalyzer** — historical price retrieval, technical analysis, and trading strategy backtesting
+- **SeriesPrediction** — neural-network price forecasting (LSTM, CNN, GRU, BiLSTM, and more)
 
-Class ForcastModel has been added to forecast the effect of a series of potential actions on a TradingModel.  I'm using this to create a "best actions" sequence for supervised machine learning in another project.  Given a market state and a sequence of actions (or every possible action) which one produces the best result after X days.  This can then be used to train a robotic trainer with supervised learning.
+Whether you want to explore classical technical indicators, stress-test a trading strategy against decades of historical data, or experiment with deep learning for price prediction, this library provides a self-contained Python environment to do it.
 
-StateSurprisePredictionNN is a machine-learning model designed to predict surprise deviations from trend rather than predicting raw price. It works by first generating a baseline forecast using a simple trend continuation model (typically a linear extrapolation of recent price slope over a chosen horizon). 
-The model then computes the residual: Residual = FuturePrice − BaselineForecast
-This residual represents the unexpected component of price movement — effectively the “surprise” change from what the trend would predict. The network is trained on a set of engineered state features (momentum, volatility, deviation from mean/trend, compression, etc.) and learns a nonlinear mapping from the current market state to the expected residual outcome. 
-The output is split into:
-	Direction likelihood (probability of positive vs negative surprise)
-	Magnitude estimate (expected size of the surprise move)
-This allows the model to identify when price is likely to break from its expected trend path and estimate how large that divergence may be.
+---
 
-TrainPrices.py shows samples of using the StateSurprisePredictionNN class to train and test PricingData using machine learning techniques.  Results are then statistically analyzed for significance.
+## Modules
 
-I've added support for using SQL as a back-end instead of .csv files.  There is a PTAGenerate.sql file to help you get started.  I use sqlalchemy which supports a lot of ODBC data sources.  I use Microsoft "ODBC Driver 18 for SQL Server". If you populate the Database information in the config.ini then the code will attempt to use the SQL database.  Create a ConnectionString setting in the .ini or if you are using MS SQL with ODBC 18 then DatabaseServer, DatabaseName, and optinal DatabaseUsername and DatabasePasswor.
+### PriceTradeAnalyzer
 
-Special thanks to these people for helping me understand deep neural network machine learning:
-Siraj Raval: https://www.linkedin.com/in/sirajraval/
-Magnus Erik Hvass Pedersen: https://github.com/Hvass-Labs/TensorFlow-Tutorials
-Nicholas T. Smith https://nicholastsmith.wordpress.com/ 
-Luka Anicin: https://github.com/lucko515/tesla-stocks-prediction
-And of course, special thanks to ChatGPT and Gemini for helping my modernize my code.
+#### `PricingData`
+Given a stock ticker symbol, `PricingData` fetches historical OHLCV data (via the Yahoo Finance library), caches it to CSV, and loads it into a Pandas DataFrame.
 
-I've tested this on both Windows Python 3.10-3.13, TensorFlow 2.13.1, Keras 2.13.1.
-Requirements: happily all native Python and no C++ compilers
+Key methods:
 
-Windows PIP install requirements with:
-pip install tqdm, pandas numpy matplotlib scipy requests pyodbc yfinance sqlalchemy curl_cffi
-pip install tensorflow keras
+| Method | Description |
+|---|---|
+| `TrimToDateRange` | Slice data to a specific start/end date |
+| `ConvertToPercentages` | Express prices as percentage changes |
+| `NormalizePrices` | Normalize price series for comparison or ML input |
+| `CalculateStats` | Compute EMA, Bollinger Bands, momentum, price channels, and more |
+| `Graph` | Plot price charts for multiple time frames using matplotlib |
 
-Tensorflow and Keras are picky with their versions.  I'm using these:
-tensorflow: 2.13.1
-keras: 2.13.1
-typing_extensions: 4.15.0
-NumPy: 1.26.4
-pip install tensorflow==2.13.1 keras==2.13.1 typing-extensions==4.15.0 numpy==1.26.4
+Several price-prediction helpers are also built in, including wrappers that delegate to the `SeriesPrediction` module for ML-based forecasts.
 
-Have fun and keep programming!
--Tim
+#### `Portfolio` and `TradingModel`
+These classes simulate portfolio management and strategy execution against real historical prices.
+
+**How it works:**
+1. Pick the tickers and date range you want to test.
+2. Define your buy/sell logic.
+3. Run the backtest — the framework tracks daily portfolio value and every trade.
+4. Results are exported as CSV and PNG so you can review performance later.
+
+**Included example strategies** (see `EvaluateTradeModels.py`):
+- **Buy and Hold** — baseline benchmark
+- **Seasonal** — time-of-year entry and exit signals
+- **Trending (2 variants)** — momentum-based approaches
+
+**Additional tools:**
+- `ExtendedDurationTest` — run any model across multiple time windows automatically
+- `CompareModels` — side-by-side performance comparison of two strategies over a shared period
+
+---
+
+### SeriesPrediction
+
+#### `StockPredictionNN`
+A dual-output neural network built with TensorFlow and Keras that predicts both the **direction** and **magnitude** of a price move from a feature vector.
+
+**Architecture:** Two fully connected hidden layers (64 units, ReLU) feeding into two separate output heads:
+
+| Output | Activation | Loss | Description |
+|---|---|---|---|
+| `direction` | Sigmoid | Binary crossentropy | Probability that the next move is up |
+| `magnitude` | ReLU | Huber | Expected size of the price move |
+
+The two losses are combined during training with `direction` weighted at 1.0 and `magnitude` at 0.5, so the model prioritizes getting the direction right.
+
+See `TrainPrices.py` for worked examples of training and evaluating the model.
+
+---
+
+## Project Structure
+
+```
+Stock-Price-Trade-Analyzer/
+├── _classes/
+│   ├── PriceTradeAnalyzer.py   # PricingData, Portfolio, TradingModel
+│   └── SeriesPrediction.py     # StockPredictionNN
+├── EvaluatePrices.py           # Price analysis and charting examples
+├── EvaluateTradeModels.py      # Strategy backtesting examples
+├── TrainPrices.py              # ML model training examples
+├── data/
+│   ├── charts/                 # Output PNG charts
+│   └── *.csv                   # Cached price data and results
+└── README.md
+```
+
+---
+
+## Requirements
+
+- Python 3.6+
+- `pandas`
+- `numpy`
+- `matplotlib`
+- `yahoofinance` (or compatible Yahoo Finance library)
+- `tensorflow` >= 1.5 (tested up to 2.x) *(optional — only needed for SeriesPrediction)*
+- `keras` *(bundled with TensorFlow 2.x)*
+
+To skip loading the ML modules entirely, set `enableTensorFlow=False` in `PriceTradeAnalyzer.py`.
+
+---
+
+## Getting Started
+
+```python
+from _classes.PriceTradeAnalyzer import PricingData, TradingModel, Portfolio
+
+# Download and analyze a stock
+prices = PricingData('AAPL')
+prices.CalculateStats()
+prices.Graph(90)   # chart the last 90 days
+
+# Run a backtest
+model = TradingModel(ticker='AAPL', startDate='2015-01-01', endDate='2023-12-31')
+# ... define your buy/sell logic, then:
+model.RunModel()
+model.GraphResults()
+```
+
+See `EvaluatePrices.py`, `EvaluateTradeModels.py`, and `TrainPrices.py` for complete, runnable examples.
+
+---
+
+## Related Projects
+
+- [**Price-Momentum-Trader**](https://github.com/TimRivoli/Price-Momentum-Trader) — backtests a momentum strategy of holding the top 9 performing S&P 500 stocks, rotated monthly, over 35 years.
+- [**RobotTrader**](https://github.com/TimRivoli/RobotTrader) — treats trading as a classification problem using a supervised RNN, built on top of this library.
+
+---
+
+## Acknowledgements
+
+Thanks to the following for their TensorFlow/deep learning tutorials and inspiration:
+- [Siraj Raval](https://www.linkedin.com/in/sirajraval/)
+- [Magnus Erik Hvass Pedersen](https://github.com/Hvass-Labs/TensorFlow-Tutorials)
+- [Nicholas T. Smith](https://nicholastsmith.wordpress.com/)
+- [Luka Anicin](https://github.com/lucko515/tesla-stocks-prediction)
+
+---
+
+## Disclaimer
+
+This project is for educational and research purposes only. Nothing here constitutes financial advice. Past backtested performance does not guarantee future results.
