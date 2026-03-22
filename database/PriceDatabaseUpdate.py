@@ -88,7 +88,7 @@ def TickersFullRefresh():
 	db = PTADatabase()
 	current_date = GetLatestBDay()
 	recentDate = current_date - pd.offsets.BDay(5)
-	startDate = current_date - pd.offsets.BDay(CONSTANTS.TRADING_YEAR * 3) 
+	startDate = current_date - pd.DateOffset(years=3)
 	if db.Open():
 		db.ExecSQL("EXEC sp_UpdateDailyFromIntraday")  # requires NOCOUNT ON
 		df = db.DataFrameFromSQL(f"SELECT TOP {maxStockCount} Ticker, Exchange FROM rpt_TickerRefreshFullNeeded")
