@@ -563,6 +563,34 @@ class PTADatabase:
 		except Exception as e:
 			raise RuntimeError(" PTADatabase: Unexpected error while initializing database engine.") from e
 
+	# def __init__(self, verbose: bool = False):
+		# self.verbose = verbose
+		# self.server = ReadConfigString("Database", "DatabaseServer")
+		# self.database = ReadConfigString("Database", "DatabaseName")
+		# self.username = ReadConfigString("Database", "DatabaseUsername")
+		# self.password = ReadConfigString("Database", "DatabasePassword")
+		# url = ReadConfigString("Database", "ConnectionString")
+		# self.use_trusted = True
+		# self.engine = None
+		# self.Session = None
+		# self.session = None
+		# self.database_configured = False
+		# if url == '': url = SQLAlchemy_Connection_URL(server=self.server, database=self.database, username=self.username, password=self.password, use_trusted=self.use_trusted)
+		# if url:
+			# self.engine = create_engine(
+				# url, 
+				# connect_args={'trusted_connection': 'yes', 'Encrypt': 'no', 'TrustServerCertificate': 'yes'}, 
+				# fast_executemany=True, 
+				# pool_pre_ping=True, 
+				# pool_recycle=1800, 
+				# pool_timeout=60
+			# )
+			# self.Session = sessionmaker(bind=self.engine)
+			# self.database_configured  = True
+			# if self.verbose: print(" PTADatabase: SQLAlchemy engine created")
+		# else:
+			# if self.verbose: print(" PTADatabase: Database config missing — SQL disabled")
+
 	def __init__(self, verbose: bool = False):
 		self.verbose = verbose
 		self.server = ReadConfigString("Database", "DatabaseServer")
@@ -570,24 +598,48 @@ class PTADatabase:
 		self.username = ReadConfigString("Database", "DatabaseUsername")
 		self.password = ReadConfigString("Database", "DatabasePassword")
 		url = ReadConfigString("Database", "ConnectionString")
-		self.use_trusted = True
+		
+		# Logic: If username is blank, use Trusted. If not, use SQL Auth.
+		self.use_trusted = True if not self.username else False
+		
 		self.engine = None
 		self.Session = None
-		self.session = None
 		self.database_configured = False
-		if url == '': url = SQLAlchemy_Connection_URL(server=self.server, database=self.database, username=self.username, password=self.password, use_trusted=self.use_trusted)
+
+		if url == '':
+			# We pass use_trusted here so the URL generator knows which format to use
+			url = SQLAlchemy_Connection_URL(
+				server=self.server, 
+				database=self.database, 
+				username=self.username, 
+				password=self.password, 
+				use_trusted=self.use_trusted
+			)
+
 		if url:
+			# Dynamic connection arguments based on Auth type
+			c_args = {
+				'Encrypt': 'yes',
+				'TrustServerCertificate': 'yes'
+			}
+			
+			if self.use_trusted:
+				c_args['trusted_connection'] = 'yes'
+			else:
+				# Explicitly disable SSPI/Kerberos when using a username
+				c_args['trusted_connection'] = 'no'
+
 			self.engine = create_engine(
 				url, 
-				connect_args={'trusted_connection': 'yes', 'Encrypt': 'no', 'TrustServerCertificate': 'yes'}, 
+				connect_args=c_args, 
 				fast_executemany=True, 
 				pool_pre_ping=True, 
 				pool_recycle=1800, 
 				pool_timeout=60
 			)
 			self.Session = sessionmaker(bind=self.engine)
-			self.database_configured  = True
-			if self.verbose: print(" PTADatabase: SQLAlchemy engine created")
+			self.database_configured = True
+			if self.verbose: print(f" PTADatabase: Engine created (Auth: {'Trusted' if self.use_trusted else 'SQL'})")
 		else:
 			if self.verbose: print(" PTADatabase: Database config missing — SQL disabled")
 
