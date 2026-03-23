@@ -50,9 +50,11 @@ def SQLAlchemy_Connection_URL(server: str | None, database: str | None, username
 	params = f"driver={driver}&LoginTimeout=30&timeout=60&KeepAlive=30"
 	if username and password:
 		safe_password = urllib.parse.quote_plus(password)
-		return f"mssql+pyodbc://{username}:{safe_password}@{server}/{database}?{params}"
+		url =  f"mssql+pyodbc://{username}:{safe_password}@{server}/{database}?{params}&Encrypt=yes&TrustServerCertificate=yes"
+		print(url)
+		return url
 	if use_trusted:
-		return f"mssql+pyodbc://@{server}/{database}?{params}&trusted_connection=yes"
+		return f"mssql+pyodbc://@{server}/{database}?{params}&trusted_connection=yes&Encrypt=yes&TrustServerCertificate=yes"
 	return None
 
 def _filter_sql_numeric_overflow(df: pd.DataFrame, ticker: str,	cols: list[str]	) -> pd.DataFrame:
