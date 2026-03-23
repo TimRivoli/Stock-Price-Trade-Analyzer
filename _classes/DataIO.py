@@ -1,6 +1,6 @@
 import time, ssl, requests, pandas as pd
 import yfinance as yf
-import urllib.error, urllib.request as webRequest
+import urllib.error,urllib.parse, urllib.request as webRequest
 import pyodbc
 import functools
 from datetime import datetime, timedelta
@@ -49,7 +49,8 @@ def SQLAlchemy_Connection_URL(server: str | None, database: str | None, username
 	driver = "ODBC+Driver+18+for+SQL+Server"
 	params = f"driver={driver}&LoginTimeout=30&timeout=60&KeepAlive=30"
 	if username and password:
-		return f"mssql+pyodbc://{username}:{password}@{server}/{database}?{params}"
+		safe_password = urllib.parse.quote_plus(password)
+		return f"mssql+pyodbc://{username}:{safe_password}@{server}/{database}?{params}"
 	if use_trusted:
 		return f"mssql+pyodbc://@{server}/{database}?{params}&trusted_connection=yes"
 	return None
