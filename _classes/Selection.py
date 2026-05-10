@@ -543,6 +543,10 @@ class StockPicker():
 			raise ValueError("filterOptions must be a list of tuples like [(filter_id, stock_count)]")
 		candidates = {}
 		currentDate = ToTimestamp(currentDate)
+		if currentDate is None:
+			for filter_option, _ in filterOptions:
+				candidates[filter_option] = CASH_RESULT.copy()
+			return candidates
 		max_allowed_date = (pd.Timestamp.now().normalize() - pd.offsets.BusinessDay(1)).to_pydatetime()
 		if currentDate > max_allowed_date:
 			currentDate = max_allowed_date

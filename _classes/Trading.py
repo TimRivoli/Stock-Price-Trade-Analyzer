@@ -70,7 +70,7 @@ class TradeModelParams(SQLFriendlyMixin):
 		'pickHistoryWindow', 'shopBuyPercent', 'shopSellPercent', 'trimProfitsPercent', 'allocateByPointValue', 'filterOption', 'useDatabase','filterByFundamentals', 'rateLimitTransactions','marketCapMin', 'marketCapMax', 'processing_minutes', 'batchName'
 	]		
 	def __post_init__(self):		
-		self.startDate = pd.Timestamp(self.init_startDate) # Trigger the setters to convert types immediately on startup
+		self.startDate = pd.to_datetime(self.init_startDate)	 # Trigger the setters to convert types immediately on startup
 	@property
 	def startDate(self) -> pd.Timestamp:
 		return self._startDate
@@ -279,21 +279,26 @@ class Portfolio:
 	def _save_position_to_history(self, pos: Position, netChange: float = None):
 		if not self.trackHistory: return
 		idx = pos.position_id
+		row = {
+			'ticker': pos.ticker,
+			'dateBuyOrderPlaced': pos.dateBuyOrderPlaced,
+			'dateBuyOrderFilled': pos.dateBuyOrderFilled,
+			'buyOrderPrice': pos.buyOrderPrice,
+			'purchasePrice': pos.purchasePrice,
+			'units': pos.units,
+			'dateSellOrderPlaced': pos.dateSellOrderPlaced,
+			'dateSellOrderFilled': pos.dateSellOrderFilled,
+			'sellOrderPrice': pos.sellOrderPrice,
+			'sellPrice': pos.sellPrice,
+			'reasonForSale': pos.reasonForSale,
+			'netChange': netChange,
+		}
 		if idx not in self.tradeHistory.index:
-			self.tradeHistory.loc[idx] = None
-		self.tradeHistory.loc[idx, 'ticker'] = pos.ticker
-		self.tradeHistory.loc[idx, 'dateBuyOrderPlaced'] = pos.dateBuyOrderPlaced
-		self.tradeHistory.loc[idx, 'dateBuyOrderFilled'] = pos.dateBuyOrderFilled
-		self.tradeHistory.loc[idx, 'buyOrderPrice'] = pos.buyOrderPrice
-		self.tradeHistory.loc[idx, 'purchasePrice'] = pos.purchasePrice
-		self.tradeHistory.loc[idx, 'units'] = pos.units
-		self.tradeHistory.loc[idx, 'dateSellOrderPlaced'] = pos.dateSellOrderPlaced
-		self.tradeHistory.loc[idx, 'dateSellOrderFilled'] = pos.dateSellOrderFilled
-		self.tradeHistory.loc[idx, 'sellOrderPrice'] = pos.sellOrderPrice
-		self.tradeHistory.loc[idx, 'sellPrice'] = pos.sellPrice
-		self.tradeHistory.loc[idx, 'reasonForSale'] = pos.reasonForSale
-		if netChange is not None:
-			self.tradeHistory.loc[idx, 'netChange'] = netChange
+			new_row = pd.DataFrame([row], index=pd.Index([idx], name=self.tradeHistory.index.name))
+			self.tradeHistory = pd.concat([self.tradeHistory, new_row])
+		else:
+			for col, val in row.items():
+				self.tradeHistory.at[idx, col] = val
 		
 	def _check_orders(self, ticker: str, price: float, dateChecked: datetime):
 		#price = round(price, 4)
@@ -795,29 +800,34 @@ class TradingModel(Portfolio):
 		else: 
 			targetPositions = targetPositions.copy()
 			for ticker in targetPositions.index: self.AddTicker(ticker) #Should be handled by Buy but just in case
-		for position in self._positions: #add existing positions, if they were not in target then they need to be sold
-			if position.ticker not in targetPositions.index:
-				targetPositions.loc[position.ticker, "TargetHoldings"] = 0.0
+		# Pandas 3.x raises TypeError when adding new rows via df.loc[new_label, col] = scalar
+		# into a typed float64 block.  Collect missing tickers first, then concat once.
+		missing_tickers = [p.ticker for p in self._positions if p.ticker not in targetPositions.index]
+		if missing_tickers:
+			targetPositions = pd.concat([
+				targetPositions,
+				pd.DataFrame({'TargetHoldings': 0.0}, index=missing_tickers)
+			])
 		for order in list(self._pendingBuys):
 			if order.ticker not in targetPositions.index:
 				self._cancel_order(order)
-		
+
 		TotalTargets = targetPositions['TargetHoldings'].sum()
-		if TotalTargets > 0: 
+		if TotalTargets > 0:
 			targetPositions['Weight'] = targetPositions['TargetHoldings'] / TotalTargets
 			targetPositions['TargetValue'] = targetPositions['Weight'] * totalValue
 		else:
-			targetPositions['TargetValue'] = targetPositions['TargetHoldings'] 
-			
+			targetPositions['TargetValue'] = targetPositions['TargetHoldings']
+
 		current_value_map = {}
 		for p in self._positions:
 			current_value_map[p.ticker] = current_value_map.get(p.ticker, 0) + (p.units * p.latestPrice)
 		for o in self._pendingBuys:
 			current_value_map[o.ticker] = current_value_map.get(o.ticker, 0) + (o.units * o.orderPrice)
 
-		targetPositions['CurrentValue'] = 0.0
-		for ticker in targetPositions.index:
-			targetPositions.loc[ticker, 'CurrentValue'] = current_value_map.get(ticker, 0.0)
+		targetPositions['CurrentValue'] = targetPositions.index.map(
+			lambda t: current_value_map.get(t, 0.0)
+		)
 		targetPositions['DeltaValue'] = targetPositions['TargetValue'] - targetPositions['CurrentValue']
 
 		sells = targetPositions[targetPositions['DeltaValue'] < 0].copy()
