@@ -91,6 +91,96 @@ class PlotHelper:
 		df_filtered = df[(df.index >= startDate) & (df.index <= endDate)]
 		self.PlotDataFrame(df=df_filtered, title=title, xlabel=xlabel, ylabel=ylabel, adjustScale=True, fileName=fileName, dpi=dpi, show=show, legend=legend, figsize=figsize)
 
+	def PlotTickerAcrossTimePeriods(self,df: pd.DataFrame,periods: list,price_col: str = 'Average',normalize: bool = True,title: str = '',ylabel: str = '',fileName: str = '',dpi: int = 600,show: bool = True):
+		"""Overlay 2-3 time windows of a single ticker aligned to trading-day 0.
+		periods: list of (start_date, end_date, label) tuples.
+		normalize=True indexes each period to 100 at its first trading day so
+		shapes are comparable regardless of absolute price level.
+		"""
+		if df is None or df.empty:
+			print(" Graphing received empty source data")
+			return
+		PlotSetDefaults()
+		combined = {}
+		for start, end, label in periods:
+			slc = df.loc[pd.Timestamp(start):pd.Timestamp(end), price_col].dropna()
+			if slc.empty:
+				continue
+			if normalize:
+				base = slc.iloc[0]
+				if base > 0:
+					slc = slc / base * 100
+			combined[label] = slc.reset_index(drop=True)
+		if not combined:
+			print(" No data found for any period.")
+			return
+		result = pd.DataFrame(combined)
+		fig, ax = plt.subplots(figsize=(12, 6))
+		result.plot(ax=ax, linewidth=0.9)
+		if title:
+			ax.set_title(title, pad=8)
+		ax.set_xlabel('Trading Days from Period Start')
+		ax.set_ylabel(ylabel or ('Value (Base=100)' if normalize else price_col))
+		ax.legend(loc='best', framealpha=0.7)
+		plt.tight_layout(pad=1.2)
+		if fileName:
+			if not fileName.lower().endswith('.png'):
+				fileName += '.png'
+			plt.savefig(fileName, dpi=dpi)
+			print(f" Saved to {fileName}")
+		if show:
+			plt.show()
+		plt.close(fig)
+
+	def PlotTickersOverPeriod(self,frames: dict,start_date=None,end_date=None,price_col: str = 'Average',normalize: bool = True,title: str = '',ylabel: str = '',fileName: str = '',dpi: int = 600,show: bool = True):
+		"""Overlay 2-3 tickers over a shared calendar date range.
+		frames: dict of {label: DataFrame} where each DataFrame has a DatetimeIndex.
+		normalize=True indexes every series to 100 at start_date so relative
+		performance is directly comparable even when prices differ in magnitude.
+		"""
+		if not frames:
+			print(" No frames provided.")
+			return
+		PlotSetDefaults()
+		combined = {}
+		for label, df in frames.items():
+			if df is None or df.empty:
+				continue
+			series = df[price_col].dropna() if price_col in df.columns else df.iloc[:, 0].dropna()
+			if start_date is not None:
+				series = series[series.index >= pd.Timestamp(start_date)]
+			if end_date is not None:
+				series = series[series.index <= pd.Timestamp(end_date)]
+			if series.empty:
+				continue
+			if normalize:
+				base = series.iloc[0]
+				if base > 0:
+					series = series / base * 100
+			combined[label] = series
+		if not combined:
+			print(" No data found for any ticker.")
+			return
+		result = pd.DataFrame(combined).ffill()
+		fig, ax = plt.subplots(figsize=(12, 6))
+		result.plot(ax=ax, linewidth=0.9)
+		if title:
+			ax.set_title(title, pad=8)
+		ax.set_xlabel('Date')
+		ax.set_ylabel(ylabel or ('Value (Base=100)' if normalize else price_col))
+		ax.legend(loc='best', framealpha=0.7)
+		PlotScalerDateAdjust(result.index.min(), result.index.max(), ax)
+		fig.autofmt_xdate(rotation=45, ha='right')
+		plt.tight_layout(pad=1.2)
+		if fileName:
+			if not fileName.lower().endswith('.png'):
+				fileName += '.png'
+			plt.savefig(fileName, dpi=dpi)
+			print(f" Saved to {fileName}")
+		if show:
+			plt.show()
+		plt.close(fig)
+
 	@staticmethod
 	def PlotTimeSeries(df, fields: List[str], start_date: datetime, end_date: datetime, title: str, xlabel: str = "Date", ylabel: str = "Price", colors: Optional[List[str]] = None, linewidth: float = 0.9, rotate_xticks: int = 45, dpi: int = 600, save: bool = False, save_path: Optional[str] = None, show: bool = True):
 		if df.empty:
