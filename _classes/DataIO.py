@@ -597,46 +597,20 @@ class PTADatabase:
 		self.database = ReadConfigString("Database", "DatabaseName")
 		self.username = ReadConfigString("Database", "DatabaseUsername")
 		self.password = ReadConfigString("Database", "DatabasePassword")
-		url = ReadConfigString("Database", "ConnectionString")
-		
-		# Logic: If username is blank, use Trusted. If not, use SQL Auth.
+		url = ReadConfigString("Database", "ConnectionString")	
 		self.use_trusted = True if not self.username else False
-		
 		self.engine = None
 		self.Session = None
 		self.database_configured = False
-
 		if url == '':
-			# We pass use_trusted here so the URL generator knows which format to use
-			url = SQLAlchemy_Connection_URL(
-				server=self.server, 
-				database=self.database, 
-				username=self.username, 
-				password=self.password, 
-				use_trusted=self.use_trusted
-			)
-
+			url = SQLAlchemy_Connection_URL(server=self.server, database=self.database, username=self.username, password=self.password, use_trusted=self.use_trusted)
 		if url:
-			# Dynamic connection arguments based on Auth type
-			c_args = {
-				'Encrypt': 'yes',
-				'TrustServerCertificate': 'yes'
-			}
-			
+			c_args = {'Encrypt': 'yes','TrustServerCertificate': 'yes'}
 			if self.use_trusted:
 				c_args['trusted_connection'] = 'yes'
 			else:
-				# Explicitly disable SSPI/Kerberos when using a username
 				c_args['trusted_connection'] = 'no'
-
-			self.engine = create_engine(
-				url, 
-				connect_args=c_args, 
-				fast_executemany=True, 
-				pool_pre_ping=True, 
-				pool_recycle=1800, 
-				pool_timeout=60
-			)
+			self.engine = create_engine(url,connect_args=c_args, fast_executemany=True, pool_pre_ping=True, pool_recycle=1800, pool_timeout=60)
 			self.Session = sessionmaker(bind=self.engine)
 			self.database_configured = True
 			if self.verbose: print(f" PTADatabase: Engine created (Auth: {'Trusted' if self.use_trusted else 'SQL'})")

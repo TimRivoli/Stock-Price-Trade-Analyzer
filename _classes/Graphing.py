@@ -4,6 +4,7 @@ import matplotlib.dates as mdates
 from pandas.tseries.offsets import BDay
 from typing import List, Optional
 from datetime import datetime
+from _classes.MarketEvents import MarketEvent
 from _classes.Utility import *
 
 def PlotSetDefaults():
@@ -91,26 +92,34 @@ class PlotHelper:
 		df_filtered = df[(df.index >= startDate) & (df.index <= endDate)]
 		self.PlotDataFrame(df=df_filtered, title=title, xlabel=xlabel, ylabel=ylabel, adjustScale=True, fileName=fileName, dpi=dpi, show=show, legend=legend, figsize=figsize)
 
-	def PlotTickerAcrossTimePeriods(self,df: pd.DataFrame,periods: list,price_col: str = 'Average',normalize: bool = True,title: str = '',ylabel: str = '',fileName: str = '',dpi: int = 600,show: bool = True):
-		"""Overlay 2-3 time windows of a single ticker aligned to trading-day 0.
-		periods: list of (start_date, end_date, label) tuples.
-		normalize=True indexes each period to 100 at its first trading day so
-		shapes are comparable regardless of absolute price level.
+	def PlotTickerAcrossMarketEvents(self,df: pd.DataFrame,events: List[MarketEvent],price_col: str = 'Average',normalize: bool = True,title: str = '',ylabel: str = '',fileName: str = '',dpi: int = 600,show: bool = True,use_calendar_dates: bool = False):
+		"""Overlay market crash/recovery windows aligned to trading-day 0.
+		Each MarketEvent window runs from StartDate to RecoveryDate (or LowDate if
+		RecoveryDate is unknown).  normalize=True indexes each window to 100 at
+		StartDate so shapes are comparable regardless of absolute price level.
+		use_calendar_dates=True shifts every series so its start aligns with the
+		most recent event's StartDate, preserving real month/day labels on the x-axis.
 		"""
 		if df is None or df.empty:
 			print(" Graphing received empty source data")
 			return
 		PlotSetDefaults()
 		combined = {}
-		for start, end, label in periods:
-			slc = df.loc[pd.Timestamp(start):pd.Timestamp(end), price_col].dropna()
+		ref_dates = None
+		ref_len   = 0
+		for event in events:
+			end = event.RecoveryDate or event.LowDate
+			slc = df.loc[pd.Timestamp(event.StartDate):pd.Timestamp(end), price_col].dropna()
 			if slc.empty:
 				continue
 			if normalize:
 				base = slc.iloc[0]
 				if base > 0:
 					slc = slc / base * 100
-			combined[label] = slc.reset_index(drop=True)
+			if use_calendar_dates and len(slc) > ref_len:
+				ref_dates = slc.index
+				ref_len   = len(slc)
+			combined[event.Label] = slc.reset_index(drop=True)
 		if not combined:
 			print(" No data found for any period.")
 			return
@@ -119,7 +128,19 @@ class PlotHelper:
 		result.plot(ax=ax, linewidth=0.9)
 		if title:
 			ax.set_title(title, pad=8)
-		ax.set_xlabel('Trading Days from Period Start')
+		if use_calendar_dates and ref_dates is not None:
+			tick_pos, tick_lbl = [], []
+			prev_month = None
+			for i, dt in enumerate(ref_dates):
+				if dt.month != prev_month:
+					tick_pos.append(i)
+					tick_lbl.append(dt.strftime('%b %Y'))
+					prev_month = dt.month
+			ax.set_xticks(tick_pos)
+			ax.set_xticklabels(tick_lbl, rotation=45, ha='right')
+			ax.set_xlabel('Date')
+		else:
+			ax.set_xlabel('Trading Days from Period Start')
 		ax.set_ylabel(ylabel or ('Value (Base=100)' if normalize else price_col))
 		ax.legend(loc='best', framealpha=0.7)
 		plt.tight_layout(pad=1.2)
