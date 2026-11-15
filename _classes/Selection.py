@@ -490,15 +490,21 @@ class StockPicker():
 			else:
 				self._failedList.append(ticker)
 
-	def RemoveTicker(self, ticker:str):
-		i=len(self.priceData)-1
-		while i >= 0:
-			if ticker == self.priceData[i].ticker:
-				self.PrintWrapper(" Removing ticker " + ticker)
-				self.priceData.pop(i)
-				self._tickerList.remove(ticker)
-			i -=1
-		if ticker in self._tickerList: 
+	def RemoveTicker(self, ticker:str, index:int=None):
+		#Owns all removals: drops the ticker from priceData and from _tickerList so it can be re-added later.
+		#index is an optional hint (position in priceData); if it doesn't match the ticker the list is rescanned.
+		if index is not None and 0 <= index < len(self.priceData) and self.priceData[index].ticker == ticker:
+			self.priceData.pop(index)
+		else:
+			i=len(self.priceData)-1
+			while i >= 0:
+				if ticker == self.priceData[i].ticker:
+					self.priceData.pop(i)
+				i -=1
+		self.PrintWrapper(" Removing ticker " + ticker)
+		while ticker in self._tickerList:
+			self._tickerList.remove(ticker)
+		if ticker in self._tickerList or any(p.ticker == ticker for p in self.priceData):
 			print(" Error removing ticker " + ticker)
 			print(len(self.priceData))	
 			print(self._tickerList)	
@@ -512,10 +518,12 @@ class StockPicker():
 		while i >= 0:
 			ticker = self.priceData[i].ticker
 			if not ticker in newList:
-				self.PrintWrapper(" Removing ticker " + ticker)
-				self.priceData.pop(i)
+				self.RemoveTicker(ticker, index=i)	
 				removed_tickers +=1
 			i -=1
+		if len(self._tickerList) != len(self.priceData):	#the two lists must always describe the same tickers
+			print(f" AlignToList: _tickerList ({len(self._tickerList)}) and priceData ({len(self.priceData)}) are out of sync")
+			assert(False)
 		self.pbar = tqdm(total=len(newList), desc=" AlignToList adding tickers")
 		for t in newList:
 			if t in self._failedList:
