@@ -1,6 +1,7 @@
-import time, ssl, requests, pandas as pd
+import time, pandas as pd
+import numpy as np
 import yfinance as yf
-import urllib.error,urllib.parse, urllib.request as webRequest
+import urllib.parse
 import pyodbc
 import functools
 from datetime import datetime, timedelta
@@ -9,12 +10,15 @@ from contextlib import suppress
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import SQLAlchemyError, OperationalError, ProgrammingError
+from pandas.errors import DatabaseError as PandasDatabaseError
 from curl_cffi.requests.exceptions import HTTPError
 from _classes.Utility import ReadConfigString, ReadConfigBool, GetLatestBDay
+from _classes.PriceQuality import clean_price_history, QUALITY_DDL, MIN_ROWS
 
 #-------------------------------------------- SQL Setup and Helpers  -----------------------------------------------
 SQL_NUMERIC_MAX = 999_999_999_999.999999 #Safety check for garbage prices
 BASE_FIELD_LIST = ['Open','Close','High','Low','Volume']
+RAW_FIELD_LIST = ['CloseRaw','VolumeRaw']	#As-traded close and share volume, for point-in-time filters (price floors, dollar volume)
 
 def isfloat(num):
 	try:
@@ -23,31 +27,34 @@ def isfloat(num):
 	except ValueError:
 		return False
 
-def retry_sql_on_timeout(retries=3, delay=5):
+_NET_ERR_TERMS = ("08001", "08s01", "10060", "10054", "timeout", "link failure", "communication link")
+
+def retry_sql_on_timeout(retries=5, delay=3, backoff=2, max_delay=60):
+	#pandas.read_sql_query wraps SQLAlchemy errors in pandas.errors.DatabaseError, so that must be caught too
 	def decorator(func):
 		@functools.wraps(func)
-		def wrapper(*args, **kwargs):
-			last_ex = None
-			for i in range(retries):
+		def wrapper(self, *args, **kwargs):
+			wait = delay
+			for attempt in range(1, retries + 1):
 				try:
-					return func(*args, **kwargs)
-				except (OperationalError, RuntimeError, SQLAlchemyError) as e:
+					return func(self, *args, **kwargs)
+				except (SQLAlchemyError, PandasDatabaseError, pyodbc.Error, RuntimeError) as e:
 					err_msg = str(e).lower()
-					if any(term in err_msg for term in ["08001", "08s01", "timeout", "link failure"]):
-						print(f" PTADatabase: Wi-Fi/Network glitch detected ({i+1}/{retries}). Retrying in {delay}s...")
-						time.sleep(delay)
-						last_ex = e
-						continue
-					raise e
-			raise last_ex
+					if attempt == retries or not any(term in err_msg for term in _NET_ERR_TERMS):
+						raise
+					print(f" PTADatabase: Wi-Fi/Network glitch in {func.__name__} ({attempt}/{retries}). Retrying in {wait}s...")
+					if getattr(self, "engine", None) is not None:
+						self.engine.dispose()	#drop pooled connections that may share the dead socket
+					time.sleep(wait)
+					wait = min(wait * backoff, max_delay)
 		return wrapper
-	return decorator	
+	return decorator
 
 def SQLAlchemy_Connection_URL(server: str | None, database: str | None, username: str | None, password: str | None, use_trusted: bool = True):
 	if not server or not database:
 		return None
 	driver = "ODBC+Driver+18+for+SQL+Server"
-	params = f"driver={driver}&LoginTimeout=30&timeout=60&KeepAlive=30"
+	params = f"driver={driver}&LoginTimeout=30&timeout=120&KeepAlive=30"
 	if username and password:
 		safe_password = urllib.parse.quote_plus(password)
 		url =  f"mssql+pyodbc://{username}:{safe_password}@{server}/{database}?{params}&Encrypt=yes&TrustServerCertificate=yes"
@@ -66,286 +73,364 @@ def _filter_sql_numeric_overflow(df: pd.DataFrame, ticker: str,	cols: list[str]	
 		print(df[~mask])
 	return df.loc[mask]
 
+def _adjust_yahoo_history(df: pd.DataFrame) -> pd.DataFrame:
+	#Input: yfinance history(auto_adjust=False). Yahoo's Open/High/Low/Close are split-adjusted only, 'Adj Close' is also
+	#dividend-adjusted, and Volume is split-adjusted.
+	#Output: Open/High/Low/Close adjusted for splits AND dividends (identical to auto_adjust=True), Volume unchanged,
+	#plus CloseRaw/VolumeRaw = the price and share volume as actually traded that day.
+	df = df.copy()
+	cols = {c.lower().replace(' ', ''): c for c in df.columns}
+	close = pd.to_numeric(df[cols['close']], errors='coerce')
+	if 'stocksplits' in cols:
+		splits = pd.to_numeric(df[cols['stocksplits']], errors='coerce').fillna(0).replace(0, 1.0)
+	else:
+		splits = pd.Series(1.0, index=df.index)
+	f = splits[::-1].cumprod()[::-1].shift(-1).fillna(1.0)	#combined ratio of every split AFTER each date (a split day already trades on the new basis)
+	df['CloseRaw'] = close * f
+	df['VolumeRaw'] = (pd.to_numeric(df[cols['volume']], errors='coerce') / f).round()
+	if 'adjclose' in cols:
+		k = (pd.to_numeric(df[cols['adjclose']], errors='coerce') / close).where(close > 0)
+		k = k.replace([float('inf'), float('-inf')], float('nan'))	#NaN rows are dropped later, as auto_adjust=True would
+	else:
+		k = 1.0
+	for c in ('open', 'high', 'low', 'close'):
+		df[cols[c]] = pd.to_numeric(df[cols[c]], errors='coerce') * k
+	return df
+
+_START_OVERRIDES = None
+_MANUAL_SPLITS = {}
+def _get_start_override(ticker: str):
+	#Manual start dates from dbo.PriceStartOverride (ticker reuse the quality checks can't detect). Loaded once per run,
+	#which also creates the quality tables and columns if they are missing.
+	global _START_OVERRIDES, _MANUAL_SPLITS
+	if _START_OVERRIDES is None:
+		_START_OVERRIDES = {}
+		try:
+			db = PTADatabase()
+			if db.database_configured:
+				#Make sure PricesDaily has CloseRaw/VolumeRaw/Repaired before any save: _save_to_sql deletes
+				#before it inserts, so an insert failing on a missing column would lose that ticker's rows
+				with db.engine.begin() as conn:
+					for ddl in QUALITY_DDL:
+						conn.execute(text(ddl))
+				o = pd.read_sql_query(text("SELECT Ticker, StartDate FROM dbo.PriceStartOverride"), db.engine)
+				_START_OVERRIDES = {str(t).upper(): pd.Timestamp(d) for t, d in zip(o['Ticker'], o['StartDate'])}
+				m = pd.read_sql_query(text("SELECT Ticker, SplitDate, Ratio FROM dbo.PriceManualSplits"), db.engine)
+				for t, d, r in zip(m['Ticker'], m['SplitDate'], m['Ratio']):
+					_MANUAL_SPLITS.setdefault(str(t).upper(), []).append((pd.Timestamp(d), float(r)))
+		except Exception:
+			pass	#database unavailable: no overrides
+	return _START_OVERRIDES.get(ticker.upper())
+
+#-------------------------------------------- Yahoo Finance Ticker Info and Financials Helpers -----------------------------------------------
+FIN_SCALE = 1_000_000				#TickerFinancials dollar amounts and share counts are stored in millions (same units the old Google scraper used)
+MARKETCAP_SCALE = 1_000_000_000		#Tickers.MarketCap is stored in billions (same units the old Google scraper used)
+YAHOO_EXCHANGE_MAP = {
+	'NMS':'NASDAQ', 'NGM':'NASDAQ', 'NCM':'NASDAQ', 'NAS':'NASDAQ',
+	'NYQ':'NYSE', 'NYS':'NYSE', 'PCX':'NYSEARCA', 'ASE':'NYSEMKT', 'BTS':'BATS',
+	'PNK':'OTCMKTS', 'OQB':'OTCMKTS', 'OQX':'OTCMKTS', 'OEM':'OTCMKTS',
+	'SNP':'INDEXSP', 'DJI':'INDEXDJX', 'NIM':'INDEXNASDAQ', 'WCB':'INDEXCBOE',
+	'LSE':'LON', 'MEX':'BMV', 'TOR':'TSE',
+}
+
+try:
+	from yfinance.exceptions import YFRateLimitError
+except Exception:
+	class YFRateLimitError(Exception): pass
+
+def _yahoo_symbol(ticker: str) -> str:
+	#Converts a database ticker to the Yahoo symbol, same rules as DownloadPriceDataYahooFinance
+	ticker = ticker.upper().replace('.INX', '^SPX')
+	if ticker.startswith('.'): ticker = ticker.replace('.', '^')
+	return ticker.replace('.', '-')
+
+def _yahoo_call(fn, what: str, retries: int = 3, delay: float = 20):
+	#Calls a yfinance property/method, backing off on rate limits. Returns None on any other failure.
+	for i in range(retries):
+		try:
+			return fn()
+		except YFRateLimitError:
+			wait = delay * (i + 1)
+			print(f" DataDownload: Yahoo rate limit on {what}, waiting {wait}s ({i+1}/{retries})")
+			time.sleep(wait)
+		except Exception as e:
+			print(f" DataDownload: Yahoo request failed for {what}: {e}")
+			return None
+	return None
+
+def _num(v):
+	#Float or None. Handles None, NaN, inf, numpy types and strings like 'Infinity'.
+	if v is None: return None
+	try:
+		f = float(v)
+	except (TypeError, ValueError):
+		return None
+	return f if np.isfinite(f) else None
+
+def _stmt_frame(df):
+	#yfinance statements have line items as rows and period end dates as columns (newest first). Returns oldest->newest, or None.
+	if df is None or not isinstance(df, pd.DataFrame) or df.empty: return None
+	df = df.copy()
+	df.columns = pd.to_datetime(df.columns, errors='coerce')
+	df = df.loc[:, df.columns.notna()]
+	df = df.loc[:, ~df.columns.duplicated()]
+	if df.empty: return None
+	return df.sort_index(axis=1)
+
+def _stmt_value(df, labels: list, period):
+	#First non-empty value among the candidate line item labels for the period
+	if df is None or period not in df.columns: return None
+	for label in labels:
+		if label in df.index:
+			v = df.loc[label, period]
+			if isinstance(v, pd.Series): v = v.iloc[0]
+			v = _num(v)
+			if v is not None: return v
+	return None
+
+def _prior_value(s: pd.Series, minDays: int, maxDays: int) -> pd.Series:
+	#For each period, the most recent value from a period minDays..maxDays earlier (NaN if that quarter is missing)
+	out = pd.Series(np.nan, index=s.index, dtype=float)
+	valid = s.dropna()
+	for d in s.index:
+		m = valid[(valid.index <= d - pd.Timedelta(days=minDays)) & (valid.index >= d - pd.Timedelta(days=maxDays))]
+		if len(m): out[d] = m.iloc[-1]
+	return out
+
+def _pct_change(cur: pd.Series, prev: pd.Series) -> pd.Series:
+	#Percent change using abs(prev) so a move from a loss toward a profit reads as positive
+	prev = prev.where(prev != 0)
+	return (cur - prev) / prev.abs() * 100
+
+def _ttm(s: pd.Series) -> pd.Series:
+	#Trailing twelve months: sum of the last 4 quarters when all 4 are present, else the quarter annualized
+	r = s.rolling('350D', min_periods=1)
+	full = r.sum().where(r.count() == 4)
+	return full.fillna(s * 4)
+
+def _sql_value(v):
+	v = _num(v)
+	return None if v is None else round(v, 6)
+
 #-------------------------------------------- DataDownload Class  -----------------------------------------------
 class DataDownload:
-	def _DownLoadGoogleFinancePage(self, ticker:str, stockExchange:str ="NYSE"):
-		print("Downloading ticker info for " + ticker)
-		url = "https://www.google.com/finance/quote/" + ticker + ":" + stockExchange + "?window=5D"  #5 Day, (data1: 1M Daily, data2: 1D Minutely)
-		try:
-			openUrl = webRequest.urlopen(url, timeout=60) 
-			r = openUrl.read()
-			openUrl.close()
-			result = r.decode()
-		except:
-			print('Failed to open ' + url)
-			result=""
-		if result !="":
-			startCompanyNameDelimiter = 'class="zzDege">'
-			startIndex = result.find(startCompanyNameDelimiter,0)
-			if startIndex >= len(startCompanyNameDelimiter): 
-				result = result[startIndex-50:]
-			startDataSectionDelimiter = '[[[["' + ticker + '","' + stockExchange + '"]'
-			startIndex = result.find(startDataSectionDelimiter,0)
-			if startIndex < 0: result=""
-		return result
-			
-	def _CleanScrapedTextEntry(self, v:str):
-		x =  v.find("</td")
-		if x > 0: v = v[:x]
-		x =  v.find(" ")
-		if x > 0: v = v[:x]
-		x =  v.find("<")
-		if x > 0: v = v[:x]
-		v=v.replace(",","")
-		if len(v) > 1:
-			if v[0] =="$": v = v[1:]
-			if v[0] =="£": v = v[1:]
-		if len(v) > 1:
-			if v[-1:] =="%":
-				v = v[:-1]
-			elif v[-1:] =="M":
-				v = v[:-1]
-			elif v[-1:] =="B":
-				v = str(float(v[:-1]) * 1000)
-			elif v[-1:] =="T":
-				v = str(float(v[:-1]) * 1000 * 1000)
-			elif v[-1:] =="K":
-				v = str(float(v[:-1]) / 1000)
-		if v == "—" or v=="-" or v =="" or v=='∞': v=0
-		if isfloat(v):  v = float(v)
-		#print('v',v)
-		return v
+	def _GetYahooInfo(self, ticker: str, maxAgeSeconds: int = 600):
+		#Returns (yf.Ticker, info dict). Cached briefly so DownLoadTickerInfo + DownloadTickerFinancials on the same ticker hit Yahoo once.
+		ticker = ticker.upper()
+		cache = getattr(self, '_yahoo_cache', None)
+		if cache is None:
+			cache = self._yahoo_cache = {}
+		hit = cache.get(ticker)
+		if hit and time.time() - hit[0] < maxAgeSeconds:
+			return hit[1], hit[2]
+		symbol = _yahoo_symbol(ticker)
+		yt = yf.Ticker(symbol)
+		info = _yahoo_call(lambda: yt.info, f"{symbol} info")
+		if not isinstance(info, dict): info = {}
+		cache[ticker] = (time.time(), yt, info)
+		return yt, info
 
-	def _ScrapeGoogleFinanceTickerInfoAndFinancials(self, ticker:str, pageData:str):
-		#Parses GF page for financial data, updates database
-		print(" Parsing ticker infor for " + ticker)
-		result = False
-		currentDate = GetLatestBDay()
-		currentYear = currentDate.year
-		
+	def DownLoadTickerInfo(self, ticker: str, verbose: bool = True) -> bool:
+		#Updates Tickers with company name, sector, industry, about, market cap (billions), P/E and dividend yield (%) from Yahoo Finance.
+		#Exchange is only filled in when it is blank. Existing values are kept when Yahoo doesn't supply one.
+		if not ticker: return False
+		ticker = ticker.upper()
+		if verbose: print(" DownLoadTickerInfo: " + ticker)
+		yt, info = self._GetYahooInfo(ticker)
+		name = info.get('longName') or info.get('shortName')
+		quoteType = str(info.get('quoteType') or '').upper()
+		if not name and not quoteType:
+			print(f" DownLoadTickerInfo: No Yahoo info returned for {ticker}")
+			return False
+		sector = info.get('sector')
+		industry = info.get('industry')
+		if quoteType in ('ETF', 'MUTUALFUND'):
+			sector = sector or 'Fund'
+			industry = industry or info.get('category') or quoteType
+		elif quoteType == 'INDEX':
+			sector = sector or 'Index'
+			industry = industry or 'Index'
+		exchangeCode = str(info.get('exchange') or '').upper()
+		exchange = YAHOO_EXCHANGE_MAP.get(exchangeCode, exchangeCode)[:11]
+		price = _num(info.get('currentPrice')) or _num(info.get('regularMarketPrice')) or _num(info.get('previousClose'))
+		marketCap = _num(info.get('marketCap'))
+		pe = _num(info.get('trailingPE'))
+		divRate = _num(info.get('trailingAnnualDividendRate')) or _num(info.get('dividendRate'))
+		if divRate and price:
+			dividend = round(divRate / price * 100, 4)
+		elif quoteType in ('ETF', 'MUTUALFUND') and _num(info.get('yield')) is not None:
+			dividend = round(_num(info.get('yield')) * 100, 4)
+		elif quoteType == 'EQUITY':
+			dividend = 0.0
+		else:
+			dividend = None
+		about = info.get('longBusinessSummary') or info.get('description')
+		params = {
+			"Ticker": ticker,
+			"Exchange": exchange,
+			"CompanyName": name[:50] if name else None,
+			"Sector": sector[:25] if sector else None,
+			"Industry": industry[:100] if industry else None,
+			"MarketCap": round(marketCap / MARKETCAP_SCALE, 2) if marketCap else None,
+			"PE": round(pe, 4) if pe is not None else None,
+			"Dividend": dividend,
+			"About": about[:500] if about else None,
+		}
 		db = PTADatabase()
-		if db.Open():
-			startCompanyNameDelimiter = 'class="zzDege">'
-			endCompanyNameDelimiter = "</div>"
-			startIndex = pageData.find(startCompanyNameDelimiter,0)
-			if startIndex > 0:
-				startIndex+=len(startCompanyNameDelimiter)
-				endIndex = pageData.find(endCompanyNameDelimiter, startIndex +1)
-				if endIndex > 0: 
-					CompanyName = (pageData[startIndex:endIndex])
-					if len(CompanyName) > 50: CompanyName = CompanyName[:50]
-					#print("Company: " + CompanyName)
-					db.ExecSQL("IF NOT EXISTS (SELECT 1 FROM Tickers WHERE Ticker=:Ticker) INSERT INTO Tickers (Ticker) VALUES (:Ticker)", {"Ticker": ticker})
-					db.ExecSQL("UPDATE Tickers SET CompanyName=:CompanyName WHERE Ticker=:Ticker", {"CompanyName": CompanyName, "Ticker": ticker})
-			startRecordDelimiter = 'class="P6K39c">' 
-			endRecordDelimiter = "</div>"
-			startFinancialsDelimiter = 'class="QXDnM">' 
-			startAboutDelimiter = 'class="bLLb2d">'
-			values = []
-			startIndex = pageData.find(startRecordDelimiter,0)
-			if startIndex > 0:
-				#pageData = pageData[startIndex:]
-				#startIndex = 0
-				while startIndex >= 0:
-					startIndex += len(startRecordDelimiter)
-					endIndex = pageData.find(endRecordDelimiter, startIndex +1)
-					if endIndex > 0: 
-						values.append(pageData[startIndex:endIndex])
-					startIndex = pageData.find(startRecordDelimiter, startIndex+1)
-				if len(values) > 6:
-					#if not values[5].isnumeric():
-					#	assert(False)
-					#else:
-					values[3] = self._CleanScrapedTextEntry(values[3])/1000 #Market Cap
-					values[5] = self._CleanScrapedTextEntry(values[5]) #P/E Ratio
-					values[6] = self._CleanScrapedTextEntry(values[6]) #Dividend
-					if isinstance(values[5], (float, int)) and isinstance(values[6], (float, int)):
-						print('  Market Cap:', values[3]) #Market Cap
-						print('  P/E:', values[5]) #P/E Ratio
-						print('  Dividend:', values[6]) #Dividend
-						print('  Exchange:', values[7]) #Exchange
-						db.ExecSQL("UPDATE Tickers SET MarketCap=:MarketCap, PE_Ratio=:PERatio, Dividend=:Dividend WHERE Ticker=:Ticker", {"MarketCap": values[3], "PERatio": values[5], "Dividend": values[6], "Ticker": ticker})
-					else:
-						db.ExecSQL("UPDATE Tickers SET MarketCap=:MarketCap WHERE Ticker=:Ticker", {"MarketCap": values[3], "Ticker": ticker})
-			values = []
-			startIndex = pageData.find(startFinancialsDelimiter,0)
-			if startIndex > 0:
-				while startIndex >= 0:
-					startIndex +=  len(startFinancialsDelimiter)
-					endIndex = pageData.find(endRecordDelimiter, startIndex +1)
-					if endIndex > 0: 
-						values.append(pageData[startIndex:endIndex])
-					startIndex = pageData.find(startFinancialsDelimiter, startIndex+1)
-				#print('Financial value entry length:',len(values))
-				for i in range(len(values)):
-					#print(i, values[i][:30], "before")
-					values[i]=self._CleanScrapedTextEntry(values[i])
-					#print(i, values[i])
-				while len(values) < 24: values.append(0)
-				db.ExecSQL("DELETE FROM TickerFinancials WHERE Ticker=:Ticker AND Year=:Year", {"Ticker": ticker, "Year": currentDate.year})
-				db.ExecSQL("INSERT INTO TickerFinancials (Ticker, Year, Month, Revenue, OperatingExpense, NetIncome, NetProfitMargin, EarningsPerShare, EBITDA, EffectiveTaxRate) VALUES (:Ticker, :Year, :Month, :Revenue, :OperatingExpense, :NetIncome, :NetProfitMargin, :EPS, :EBITDA, :EffectiveTaxRate)", {"Ticker": ticker, "Year": currentDate.year, "Month": currentDate.month, "Revenue": values[0], "OperatingExpense": values[1], "NetIncome": values[2], "NetProfitMargin": values[3], "EPS": values[4], "EBITDA": values[5], "EffectiveTaxRate": values[6]})
-				db.ExecSQL("UPDATE TickerFinancials SET CashShortTermInvestments=:CashSTI, TotalAssets=:TotalAssets, TotalLiabilities=:TotalLiabilities, TotalEquity=:TotalEquity, SharesOutstanding=:Shares, PriceToBook=:PriceToBook, ReturnOnAssetts=:ROA, ReturnOnCapital=:ROC WHERE Ticker=:Ticker AND Year=:Year AND Month=:Month", {"CashSTI": values[7], "TotalAssets": values[8], "TotalLiabilities": values[9], "TotalEquity": values[10], "Shares": values[11], "PriceToBook": values[12], "ROA": values[13], "ROC": values[14], "Ticker": ticker, "Year": currentDate.year, "Month": currentDate.month})
-				db.ExecSQL("UPDATE TickerFinancials SET CashFromOperations=:CFO, CashFromInvesting=:CFI, CashFromFinancing=:CFF, NetChangeInCash=:NetCash, FreeCashFlow=:FCF WHERE Ticker=:Ticker AND Year=:Year AND Month=:Month", {"CFO": values[16], "CFI": values[17], "CFF": values[18], "NetCash": values[19], "FCF": values[20], "Ticker": ticker, "Year": currentDate.year, "Month": currentDate.month})
-				SQL = "UPDATE TickerFinancials SET CashFromOperations=?, CashFromInvesting=?, CashFromFinancing=?, NetChangeInCash=?, FreeCashFlow=? WHERE Ticker=? AND Year=? AND MONTH=?"
-			startIndex = pageData.find(startAboutDelimiter,0)
-			if startIndex > 0:
-				startIndex += len(startAboutDelimiter)
-				endIndex = pageData.find(endRecordDelimiter, startIndex+1)
-				if endIndex > 0: 
-					AboutComment = pageData[startIndex:endIndex]
-					result=True
-				#print(AboutComment, len(AboutComment))
-				db.ExecSQL("UPDATE Tickers SET About=:About WHERE Ticker=:Ticker AND About IS NULL", {"About": AboutComment[:500], "Ticker": ticker})
+		if not db.Open(): return False
+		try:
+			db.ExecSQL("IF NOT EXISTS (SELECT 1 FROM Tickers WHERE Ticker=:Ticker) INSERT INTO Tickers (Ticker, Exchange) VALUES (:Ticker, :Exchange)", {"Ticker": ticker, "Exchange": exchange})
+			db.ExecSQL("""UPDATE Tickers SET CompanyName=COALESCE(:CompanyName, CompanyName), Sector=COALESCE(:Sector, Sector), Industry=COALESCE(:Industry, Industry),
+				MarketCap=COALESCE(:MarketCap, MarketCap), PE_Ratio=:PE, Dividend=COALESCE(:Dividend, Dividend), About=COALESCE(About, :About),
+				Exchange=CASE WHEN Exchange IS NULL OR LTRIM(RTRIM(Exchange))='' THEN :Exchange ELSE Exchange END
+				WHERE Ticker=:Ticker""", params)
+		finally:
+			db.Close()
+		if verbose: print(f"  {params['CompanyName']} | {params['Sector']} | {params['Industry']} | MktCap(B): {params['MarketCap']} | P/E: {params['PE']} | Div%: {params['Dividend']}")
+		return True
+
+	def DownloadTickerFinancials(self, ticker: str, verbose: bool = True) -> bool:
+		#Downloads Yahoo quarterly income statement, balance sheet and cash flow and writes one TickerFinancials row per fiscal
+		#quarter (Year/Month = quarter end). Dollar amounts and shares in millions, margins/rates/returns in percent.
+		#MPC = change vs prior quarter, YPC = change vs same quarter a year earlier. Price and valuation ratios come from the
+		#current quote, so they're only written on the most recent quarter's row. Sets Tickers.FinancialsLastUpdated even when
+		#Yahoo has no statements (funds, indexes, delisted) so DownloadAllFinancials doesn't retry them every run.
+		if not ticker: return False
+		ticker = ticker.upper()
+		if verbose: print(" DownloadTickerFinancials: " + ticker)
+		db = PTADatabase()
+		if not db.Open(): return False
+		try:
+			yt, info = self._GetYahooInfo(ticker)
+			quoteType = str(info.get('quoteType') or '').upper()
+			if ticker.startswith(('.', '^')) or quoteType in ('ETF', 'MUTUALFUND', 'INDEX', 'CURRENCY', 'CRYPTOCURRENCY', 'FUTURE'):
+				if verbose: print(f"  No financial statements for {ticker} ({quoteType or 'index'})")
+				db.ExecSQL("UPDATE Tickers SET FinancialsLastUpdated=GETDATE() WHERE Ticker=:Ticker", {"Ticker": ticker})
+				return False
+			symbol = _yahoo_symbol(ticker)
+			inc = _stmt_frame(_yahoo_call(lambda: yt.quarterly_income_stmt, f"{symbol} income statement"))
+			bal = _stmt_frame(_yahoo_call(lambda: yt.quarterly_balance_sheet, f"{symbol} balance sheet"))
+			cf = _stmt_frame(_yahoo_call(lambda: yt.quarterly_cashflow, f"{symbol} cash flow"))
+			periods = sorted(set().union(*[set(d.columns) for d in (inc, bal, cf) if d is not None]))
+			if not periods:
+				print(f" DownloadTickerFinancials: No Yahoo financial statements for {ticker}")
+				db.ExecSQL("UPDATE Tickers SET FinancialsLastUpdated=GETDATE() WHERE Ticker=:Ticker", {"Ticker": ticker})
+				return False
+
+			fields = {	#column: (statement, candidate Yahoo line items)
+				'Revenue': (inc, ['Total Revenue', 'Operating Revenue']),
+				'OperatingExpense': (inc, ['Operating Expense', 'Total Expenses']),
+				'NetIncome': (inc, ['Net Income', 'Net Income Common Stockholders', 'Net Income Including Noncontrolling Interests']),
+				'EarningsPerShare': (inc, ['Diluted EPS', 'Basic EPS']),
+				'EBITDA': (inc, ['EBITDA', 'Normalized EBITDA']),
+				'EBIT': (inc, ['EBIT', 'Operating Income']),
+				'TaxProvision': (inc, ['Tax Provision']),
+				'PretaxIncome': (inc, ['Pretax Income']),
+				'TaxRateForCalcs': (inc, ['Tax Rate For Calcs']),
+				'CashShortTermInvestments': (bal, ['Cash Cash Equivalents And Short Term Investments', 'Cash And Cash Equivalents']),
+				'TotalAssets': (bal, ['Total Assets']),
+				'TotalLiabilities': (bal, ['Total Liabilities Net Minority Interest', 'Total Liabilities']),
+				'TotalEquity': (bal, ['Stockholders Equity', 'Common Stock Equity', 'Total Equity Gross Minority Interest']),
+				'SharesOutstanding': (bal, ['Ordinary Shares Number', 'Share Issued']),
+				'InvestedCapital': (bal, ['Invested Capital']),
+				'TotalDebt': (bal, ['Total Debt']),
+				'CashFromOperations': (cf, ['Operating Cash Flow', 'Cash Flow From Continuing Operating Activities']),
+				'CashFromInvesting': (cf, ['Investing Cash Flow', 'Cash Flow From Continuing Investing Activities']),
+				'CashFromFinancing': (cf, ['Financing Cash Flow', 'Cash Flow From Continuing Financing Activities']),
+				'NetChangeInCash': (cf, ['Changes In Cash']),
+				'FreeCashFlow': (cf, ['Free Cash Flow']),
+				'CapitalExpenditure': (cf, ['Capital Expenditure']),
+			}
+			q = pd.DataFrame({col: [_stmt_value(src, labels, p) for p in periods] for col, (src, labels) in fields.items()}, index=pd.DatetimeIndex(periods), dtype=float)
+			q['FreeCashFlow'] = q['FreeCashFlow'].fillna(q['CashFromOperations'] + q['CapitalExpenditure'])
+			q['InvestedCapital'] = q['InvestedCapital'].fillna(q['TotalDebt'] + q['TotalEquity'])
+
+			#Ratios and changes, computed in dollars before scaling
+			q['NetProfitMargin'] = q['NetIncome'] / q['Revenue'].where(q['Revenue'] != 0) * 100
+			pretax = q['PretaxIncome'].where(q['PretaxIncome'] > 0)
+			q['EffectiveTaxRate'] = (q['TaxProvision'] / pretax * 100).fillna(q['TaxRateForCalcs'] * 100)
+			taxFrac = (q['EffectiveTaxRate'] / 100).clip(0, 0.5).fillna(0.21)
+			q['ReturnOnAssetts'] = _ttm(q['NetIncome']) / q['TotalAssets'].where(q['TotalAssets'] > 0) * 100
+			q['ReturnOnCapital'] = _ttm(q['EBIT']) * (1 - taxFrac) / q['InvestedCapital'].where(q['InvestedCapital'] > 0) * 100
+			for col in ('Revenue', 'NetIncome', 'TotalLiabilities'):
+				q[col + 'MPC'] = _pct_change(q[col], _prior_value(q[col], 60, 120))
+				q[col + 'YPC'] = _pct_change(q[col], _prior_value(q[col], 330, 400))
+
+			#Current quote valuation, latest quarter only
+			for col in ('Price', 'MarketCapitalization', 'PriceToEarnings', 'PriceToBook', 'PriceToCashFlow', 'PriceToSales'):
+				q[col] = np.nan
+			latest = q.index[-1]
+			price = _num(info.get('currentPrice')) or _num(info.get('regularMarketPrice')) or _num(info.get('previousClose'))
+			marketCap = _num(info.get('marketCap'))
+			shares = _num(info.get('sharesOutstanding'))
+			if price is not None: q.loc[latest, 'Price'] = round(price)	#TickerFinancials.Price is an int column
+			if shares: q.loc[latest, 'SharesOutstanding'] = shares
+			if marketCap:
+				q.loc[latest, 'MarketCapitalization'] = marketCap
+				revTTM = _ttm(q['Revenue']).iloc[-1]
+				cfoTTM = _ttm(q['CashFromOperations']).iloc[-1]
+				ps = _num(info.get('priceToSalesTrailing12Months'))
+				q.loc[latest, 'PriceToSales'] = ps if ps is not None else (marketCap / revTTM if revTTM and revTTM > 0 else np.nan)
+				q.loc[latest, 'PriceToCashFlow'] = marketCap / cfoTTM if cfoTTM and cfoTTM > 0 else np.nan
+			q.loc[latest, 'PriceToEarnings'] = _num(info.get('trailingPE'))
+			q.loc[latest, 'PriceToBook'] = _num(info.get('priceToBook'))
+
+			moneyCols = ['Revenue', 'OperatingExpense', 'NetIncome', 'EBITDA', 'CashShortTermInvestments', 'TotalAssets', 'TotalLiabilities', 'TotalEquity',
+				'SharesOutstanding', 'MarketCapitalization', 'CashFromOperations', 'CashFromInvesting', 'CashFromFinancing', 'NetChangeInCash', 'FreeCashFlow']
+			netIncomeTTM = _ttm(q['NetIncome']).iloc[-1]
+			revenueTTM = _ttm(q['Revenue']).iloc[-1]
+			q[moneyCols] = q[moneyCols] / FIN_SCALE
+
+			dbCols = ['Price', 'Revenue', 'RevenueMPC', 'RevenueYPC', 'OperatingExpense', 'NetIncome', 'NetIncomeMPC', 'NetIncomeYPC', 'NetProfitMargin',
+				'EarningsPerShare', 'EBITDA', 'EffectiveTaxRate', 'CashShortTermInvestments', 'TotalAssets', 'TotalLiabilities', 'TotalLiabilitiesMPC',
+				'TotalLiabilitiesYPC', 'TotalEquity', 'SharesOutstanding', 'MarketCapitalization', 'PriceToEarnings', 'PriceToBook', 'PriceToCashFlow',
+				'PriceToSales', 'ReturnOnAssetts', 'ReturnOnCapital', 'CashFromOperations', 'CashFromInvesting', 'CashFromFinancing', 'NetChangeInCash', 'FreeCashFlow']
+			records = {}
+			for p, r in q.iterrows():
+				if r[['Revenue', 'NetIncome', 'TotalAssets', 'CashFromOperations']].isna().all(): continue	#nothing useful for this quarter
+				rec = {"Ticker": ticker, "Year": int(p.year), "Month": int(p.month)}
+				for c in dbCols: rec[c] = _sql_value(r[c])
+				if rec['Price'] is not None: rec['Price'] = int(rec['Price'])
+				records[(rec['Year'], rec['Month'])] = rec	#one row per Year/Month, latest period wins
+			records = list(records.values())
+			if not records:
+				print(f" DownloadTickerFinancials: No usable quarters for {ticker}")
+				db.ExecSQL("UPDATE Tickers SET FinancialsLastUpdated=GETDATE() WHERE Ticker=:Ticker", {"Ticker": ticker})
+				return False
+
+			insertSQL = "INSERT INTO TickerFinancials (Ticker, Year, Month, " + ", ".join(dbCols) + ", TimeStamp) VALUES (:Ticker, :Year, :Month, " + ", ".join(':' + c for c in dbCols) + ", GETDATE())"
+			last = records[-1]
+			tickerParams = {
+				"Ticker": ticker,
+				"NetIncome": _sql_value(netIncomeTTM / FIN_SCALE) if _num(netIncomeTTM) is not None else None,
+				"NetProfitMargin": _sql_value(netIncomeTTM / revenueTTM * 100) if _num(netIncomeTTM) is not None and _num(revenueTTM) else None,
+				"ReturnOnCapital": last['ReturnOnCapital'],
+			}
+			with db.engine.begin() as conn:	#one transaction: a failed insert rolls back the delete
+				conn.execute(text("DELETE FROM TickerFinancials WHERE Ticker=:Ticker AND Year=:Year AND Month=:Month"), [{"Ticker": r["Ticker"], "Year": r["Year"], "Month": r["Month"]} for r in records])
+				conn.execute(text(insertSQL), records)
+				conn.execute(text("""UPDATE Tickers SET FinancialsLastUpdated=GETDATE(), NetIncome=COALESCE(:NetIncome, NetIncome),
+					NetProfitMargin=COALESCE(:NetProfitMargin, NetProfitMargin), ReturnOnCapital=COALESCE(:ReturnOnCapital, ReturnOnCapital) WHERE Ticker=:Ticker"""), tickerParams)
+			if verbose:
+				print(f"  Saved {len(records)} quarters ({records[0]['Year']}-{records[0]['Month']:02d} to {last['Year']}-{last['Month']:02d}) | Revenue(M): {last['Revenue']} | NetIncome(M): {last['NetIncome']} | EPS: {last['EarningsPerShare']}")
+			return True
+		except Exception as e:
+			print(f" DownloadTickerFinancials: Failed for {ticker}: {e}")
+			return False
+		finally:
 			db.Close()
 
-	def _ParseAndUpdatePriceHistory(self, ticker:str, stockExchange:str, pageData:str, IntraDayValues:bool=False, verbose:bool=False):
-		#Parses GF page for price data, updates database
-		result = False
-		startDate = ""
-		endDate = ""
-		yearCurrent = datetime.now().year
-		yearPrior = yearCurrent-1
-		startDataSectionDelimiter = '[[[["' + ticker + '","' + stockExchange + '"]'
-		startDataSectionDelimiter2 = '[[[' 
-		endDataSectionDelimiter = 'sideChannel:' 	
-		startRecordDelimiter = '[['
-		endDatePartDelimiter = '[-14400]],['
-		endDatePartDelimiter2 = '[-18000]],['
-		startIndex = pageData.find(startDataSectionDelimiter,0)
-		startIndex += len(startRecordDelimiter) 
-		if IntraDayValues: startIndex = pageData.find(startDataSectionDelimiter,startIndex+5) #first data should be monthly, second daily, not always
-		if startIndex > 0: 
-			startIndex = pageData.find(startDataSectionDelimiter2, startIndex+5)
-			if startIndex > 0: 
-				startIndex += len(startDataSectionDelimiter2) + 1
-				endIndex = pageData.find(endDataSectionDelimiter, startIndex)
-				theMeat = pageData[startIndex:endIndex]
-				startIndex = theMeat.find(startRecordDelimiter,0)
-				db = PTADatabase()
-				if db.Open():
-					currentTimeStamp = datetime.now() + timedelta(minutes=-5) #Local time might be different than SQL and script takes miliseconds so..
-					IntraDayValues = False #not consistent with data sets so set this when minute>0
-					valideRecords=0
-					errors=0
-					while startIndex >= 0:
-						startIndex += len(startRecordDelimiter) 
-						endIndex = theMeat.find(startRecordDelimiter,startIndex+1) 
-						dataRecord = theMeat[startIndex:endIndex]
-						theMeat=theMeat[endIndex:]
-						startIndex = dataRecord.find(endDatePartDelimiter,0)
-						x = dataRecord.find(endDatePartDelimiter2,0)
-						if x > 10 and (x < startIndex or startIndex < 10): startIndex = x
-						datePart = dataRecord[:startIndex]
-						if datePart[:10].find("[") == 0: datePart = datePart[1:]
-						pricePart = dataRecord[startIndex + len(endDatePartDelimiter):]
-						dateParts = datePart.split(",")
-						validRecord = dateParts[0].isnumeric() and dateParts[1].isnumeric() and len(dateParts[0]) <=4
-						if validRecord: validRecord=(int(dateParts[0])==yearCurrent or int(dateParts[0])==yearPrior)
-						if not '"' in datePart: #Skip the section of dates wrapped in quotes, different format and not needed
-							if not validRecord: 
-								print('Invalid date record: ', datePart)
-								print('Price:', pricePart)
-								errors +=1
-							else:
-								priceParts = pricePart.split(",")
-								validRecord = priceParts[0].replace(".","").isnumeric()
-								if not validRecord:
-									print('Invalid price record: ', pricePart)
-									errors +=1
-								else:
-									year = int(dateParts[0])
-									month = int(dateParts[1])
-									day = int(dateParts[2])
-									hour = int(dateParts[3])
-									minute = 0
-									if dateParts[4] !='null': 
-										minute = int(dateParts[4])
-									if minute > 0: IntraDayValues=True	
-									theDate = datetime(year, month, day, hour, minute)
-									valideRecords +=1
-									price = priceParts[0]
-									price = float(price)
-									if len(priceParts) > 5: volume = priceParts[6].replace(']','')
-									if not volume.isnumeric():volume = 0
-									if volume =="": volume = 0
-									if startDate =="": startDate = theDate
-									endDate=theDate
-									#print(theDate.strftime("%m/%d/%Y, %H:%M:%S"), '$' + price, 'volume: ' + str(volume))
-									if price > 0: 
-										db.ExecSQL("INSERT INTO PricesIntraday (Ticker, Year, Month, Day, Hour, Minute, DateTime, Price, Volume) VALUES (:Ticker, :Year, :Month, :Day, :Hour, :Minute, :DateTime, :Price, :Volume)", {"Ticker": ticker, "Year": year, "Month": month, "Day": day, "Hour": hour, "Minute": minute, "DateTime": theDate, "Price": price, "Volume": volume})
-						startIndex = theMeat.find(startRecordDelimiter,0)
-					print(' Valid records: ' + str(valideRecords), " Errors: " + str(errors))
-					result = errors < 10 and valideRecords > 10
-					if not result and ticker[0] != '.' and False: 
-						print('Failed to load price data for ' + ticker)
-						assert(False)
-					if result:
-						if IntraDayValues: #Updating daily values, date range should be today
-							db.ExecSQL("DELETE FROM PricesIntraday WHERE Ticker=:Ticker AND TimeStamp < :TimeStamp AND [DateTime] BETWEEN :StartDate AND :EndDate", {"Ticker": ticker, "TimeStamp": currentTimeStamp, "StartDate": startDate, "EndDate": endDate})
-						else:
-							#Only delete the daily (hour=16, minute=0) 
-							db.ExecSQL("DELETE FROM PricesIntraday WHERE Ticker=:Ticker AND [Hour]=16 AND [Minute]=0 AND TimeStamp < :TimeStamp AND [DateTime] BETWEEN :StartDate AND :EndDate", {"Ticker": ticker, "TimeStamp": currentTimeStamp, "StartDate": startDate, "EndDate": endDate})
-					db.Close()
-		if result:
-			print(" Parse price data successful for ticker: " + ticker, stockExchange, startDate, endDate)
-		else:
-			print(" Parse price data failed for ticker: " + ticker, stockExchange)
-			#assert(False)
-
-	def _IdentifyAndRegisterExchange(self, ticker: str) -> tuple[str, str]:
-		Exchanges = ['NYSE', 'NASDAQ', 'INDEXNASDAQ', 'INDEXSP', 'INDEXDJX', 'NYSEARCA', 'BMV', 'LON']
-		found_exchange = ""
-		page_data = ""
-
-		# Search for the valid exchange
-		for e in Exchanges:
-			print(f"Testing exchange: {e}")
-			data = self._DownLoadGoogleFinancePage(ticker, e)
-			if data != "":
-				found_exchange = e
-				page_data = data
-				break 
-		
-		# If found, update the database
-		if found_exchange:
-			db = PTADatabase()
-			if db.Open():
-				db.ExecSQL("IF NOT EXISTS (SELECT 1 FROM Tickers WHERE Ticker=:Ticker) INSERT INTO Tickers (Ticker, Exchange) VALUES (:Ticker, :Exchange)", {"Ticker": ticker, "Exchange": found_exchange})
-				db.ExecSQL("UPDATE Tickers SET Exchange=:Exchange WHERE Ticker=:Ticker", {"Exchange": found_exchange, "Ticker": ticker})
-		return found_exchange, page_data
-
-	def DownloadIntradayPriceGoogleFinance(self, ticker: str, Exchange: str = None):
-		# Downloads past 30 days intraday price and financial data, saves to database
-		Result = False	
-		if not Exchange:
-			Exchange, pageData = self._IdentifyAndRegisterExchange(ticker)
-		else:
-			pageData = self._DownLoadGoogleFinancePage(ticker, Exchange)
-
-		if pageData != "":
-			self._ParseAndUpdatePriceHistory(ticker, Exchange, pageData, True)
-			self._ParseAndUpdatePriceHistory(ticker, Exchange, pageData, False)
-			self._ScrapeGoogleFinanceTickerInfoAndFinancials(ticker, pageData)
-			Result = True
-			
-		return Result
-
-	def DownloadTickerGoogleFinance(self, ticker:str, Exchange:str=None):
-		#Updates missing About and other info, updates database tables
-		if not Exchange:
-			Exchange, pageData = self._IdentifyAndRegisterExchange(ticker)
-		else:
-			pageData = self._DownLoadGoogleFinancePage(ticker, Exchange)
-		if pageData != '': self._ScrapeGoogleFinanceTickerInfoAndFinancials(ticker, pageData)
-
 	def DownloadPriceDataYahooFinance(self, ticker: str):
+		#Returns Open/High/Low/Close adjusted for splits and dividends, split-adjusted Volume (same as before),
+		#plus CloseRaw/VolumeRaw (as traded). See _adjust_yahoo_history.
 		if not ticker: return None
+		stored_ticker = ticker.upper()	#symbol as stored in PricesDaily, for quality checks and overrides
 		ticker = ticker.upper().replace('.INX', '^SPX')
 		if ticker.startswith('.'): ticker = ticker.replace('.', '^')
 		ticker = ticker.replace('.', '-')
 		print(ticker)
 		try:
-			df = yf.Ticker(ticker).history(start="1980-01-01", auto_adjust=True, repair=True)
+			df = yf.Ticker(ticker).history(start="1980-01-01", auto_adjust=False, repair=True)
 		except HTTPError as e:
 			print(f"WARNING: yfinance history() failed for {ticker}: {e}")
 			df = None
@@ -362,14 +447,26 @@ class DataDownload:
 		missing = [c for c in BASE_FIELD_LIST if c not in df.columns]
 		if missing:
 			raise KeyError(f"Yahoo data missing columns for {ticker}: {list(df.columns)}")
-		df = df[BASE_FIELD_LIST]
+		df = _adjust_yahoo_history(df)
+		df = df[BASE_FIELD_LIST + RAW_FIELD_LIST]
 		df = df.apply(pd.to_numeric, errors="coerce")
 		df.dropna(inplace=True)
-		df = _filter_sql_numeric_overflow(df, ticker=ticker, cols=BASE_FIELD_LIST)
+		df = _filter_sql_numeric_overflow(df, ticker=ticker, cols=BASE_FIELD_LIST + RAW_FIELD_LIST)
 		if isinstance(df.index, pd.DatetimeIndex) and df.index.tz is not None:
 			df.index = df.index.tz_convert(None)
 		df.index.name = "Date"
-		return df
+		res = clean_price_history(df, ticker=stored_ticker, start_override=_get_start_override(stored_ticker),
+								  manual_splits=_MANUAL_SPLITS.get(stored_ticker))
+		if res.rejected:
+			if len(res.df) < MIN_ROWS:	#e.g. Yahoo's single leftover quote for a delisted symbol: never save it
+				print(f"WARNING: {stored_ticker} has too little data, not returned ({res.summary()})")
+				return None
+			#a ticker you refresh is kept up to date even if it looks like junk: repaired data is returned
+			print(f"REVIEW: {stored_ticker} failed the junk checks; repaired data returned ({res.summary()})")
+			return res.df
+		if res.changed:
+			print(f"{stored_ticker}: price quality fixes applied ({res.summary()})")
+		return res.df
 
 	def get_current_options(ticker):
 		from math import log
@@ -678,4 +775,72 @@ class PTADatabase:
 			df.to_sql(tableName, con=self.engine, schema="dbo", if_exists="append", index=False)
 		except (ProgrammingError, OperationalError, SQLAlchemyError) as e:
 			raise e
-			
+
+	@retry_sql_on_timeout()
+	def ReplacePricesDaily(self, ticker: str, df: pd.DataFrame) -> int:
+		#Replaces this ticker's rows from the first date in df onward with df, in ONE transaction: if the insert
+		#fails, the delete is rolled back and nothing is lost. Dates are normalized to midnight and duplicate
+		#dates dropped (last row wins), so the unique index on (Ticker, Date) can't be violated by the data.
+		#df: Date as index or column, plus the PricesDaily columns. Returns rows written.
+		if df is None or df.empty: return 0
+		out = df.reset_index() if 'Date' not in df.columns else df.copy()
+		d = pd.to_datetime(out['Date'])
+		if getattr(d.dt, 'tz', None) is not None:
+			d = d.dt.tz_convert(None)
+		out['Date'] = d.dt.normalize()
+		dups = out['Date'].duplicated(keep='last')
+		if dups.any():
+			days = out.loc[dups, 'Date']
+			print(f" ReplacePricesDaily: {ticker} had {int(dups.sum())} duplicate dates ({days.min():%Y-%m-%d} to {days.max():%Y-%m-%d}); kept the last row of each")
+			out = out[~dups]
+		out['Ticker'] = ticker
+		with self.engine.begin() as conn:
+			conn.execute(text("DELETE FROM dbo.PricesDaily WHERE Ticker = :Ticker AND [Date] >= :StartDate"),
+						 {"Ticker": ticker, "StartDate": out['Date'].min().to_pydatetime()})
+			out.to_sql('PricesDaily', con=conn, schema="dbo", if_exists="append", index=False)
+		return len(out)
+
+	@retry_sql_on_timeout()
+	def UpdatePricesDailyRaw(self, ticker: str, df: pd.DataFrame) -> int:
+		#Fills CloseRaw/VolumeRaw on rows already in PricesDaily for this ticker. Only empty values are filled:
+		#as-traded prices never change, and rows loaded from EODHD already have them.
+		#ticker is the symbol as stored in PricesDaily (not the Yahoo form). Returns the number of rows updated.
+		if df is None or df.empty or not set(RAW_FIELD_LIST).issubset(df.columns): return 0
+		recs = [{"Ticker": ticker, "Date": pd.Timestamp(d).normalize().to_pydatetime(), "CloseRaw": float(c), "VolumeRaw": int(v)}
+				for d, c, v in zip(df.index, df['CloseRaw'], df['VolumeRaw'])
+				if np.isfinite(c) and np.isfinite(v) and 0 < c <= SQL_NUMERIC_MAX and 0 <= v < 9.2e18]
+		if not recs: return 0
+		with self.engine.begin() as conn:
+			conn.execute(text("IF OBJECT_ID('tempdb..#RawStage') IS NOT NULL DROP TABLE #RawStage"))
+			#CloseRaw is staged as float and converted in SQL: fast_executemany can send Python floats as text,
+			#which SQL Server refuses to convert straight to numeric (error 8114) but converts to float fine
+			conn.execute(text("CREATE TABLE #RawStage (Ticker varchar(20) NOT NULL, [Date] smalldatetime NOT NULL, CloseRaw float NULL, VolumeRaw bigint NULL)"))
+			conn.execute(text("INSERT INTO #RawStage (Ticker, [Date], CloseRaw, VolumeRaw) VALUES (:Ticker, :Date, :CloseRaw, :VolumeRaw)"), recs)
+			result = conn.execute(text("""UPDATE p SET CloseRaw = CAST(ROUND(r.CloseRaw, 6) AS numeric(18,6)), VolumeRaw = r.VolumeRaw
+				FROM dbo.PricesDaily p JOIN #RawStage r ON p.Ticker = r.Ticker AND p.[Date] = r.[Date]
+				WHERE p.CloseRaw IS NULL"""))
+			updated = result.rowcount
+			conn.execute(text("DROP TABLE #RawStage"))
+		return updated
+
+#-------------------------------------------- One-time backfill  -----------------------------------------------
+def BackfillRawPriceColumns(tickers: list[str] | None = None, pause: float = 0.5):
+	#Fills CloseRaw/VolumeRaw for existing PricesDaily rows from Yahoo. Default: every ticker that still has empty
+	#raw values, except .DL tickers (delisted, loaded from EODHD with raw values). Safe to stop and re-run.
+	db = PTADatabase()
+	if tickers is None:
+		tickers = db.ScalarListFromSQL("SELECT DISTINCT Ticker FROM dbo.PricesDaily WHERE CloseRaw IS NULL AND Ticker NOT LIKE '%.DL%' ORDER BY Ticker")
+	print(f"BackfillRawPriceColumns: {len(tickers)} tickers")
+	dd = DataDownload()
+	for i, t in enumerate(tickers, 1):
+		df = dd.DownloadPriceDataYahooFinance(t)
+		if df is None or df.empty:
+			print(f" [{i}/{len(tickers)}] {t}: no Yahoo data, skipped")
+			continue
+		try:
+			n = db.UpdatePricesDailyRaw(t, df)
+		except Exception as e:	#log and keep going; the ticker is retried on the next run
+			print(f" [{i}/{len(tickers)}] {t}: FAILED ({str(e).splitlines()[0][:200]})")
+			continue
+		print(f" [{i}/{len(tickers)}] {t}: {n} rows filled")
+		time.sleep(pause)

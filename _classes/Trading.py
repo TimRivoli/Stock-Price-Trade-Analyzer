@@ -398,7 +398,9 @@ class Portfolio:
 			if pos.ticker == ticker:
 				pos.latestPrice = close
 
+
 	def _update_daily_value(self):
+		def fmt(ticker, pct): return f'{ticker}:{pct:.4f}'[:12]
 		self._calculate_asset_value()
 		if self.trackHistory:
 			total_value = self._total_cash + self._asset_value
@@ -414,8 +416,9 @@ class Portfolio:
 			else:
 				positions = pd.DataFrame(columns=['Value', 'Percentage'])
 				positions.index.name = 'Ticker'
-			x = (positions.index.astype(str) + ':' + positions['Percentage'].astype(str))
-			x = x.str[:12].tolist()
+			x = [fmt(t, p) for t, p in zip(positions.index.astype(str), positions['Percentage'])]
+			#x = (positions.index.astype(str) + ':' + positions['Percentage'].astype(str))
+			#x = x.str[:12].tolist()
 			padding_needed = max(0, 11 - len(x))
 			x += [''] * padding_needed
 			new_row = [self._total_cash, self._asset_value, total_value] + x[:11]
@@ -1146,6 +1149,7 @@ class ExtensiveTesting:
 				QueueID     INT IDENTITY(1,1) PRIMARY KEY,
 				Processing  BIT NOT NULL DEFAULT 0,
 				EnqueuedAt  DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+				StartedProcessingAt  DATETIME2 NULL,
 				ParamsJson  NVARCHAR(MAX) NOT NULL,
 				WorkerName  NVARCHAR(MAX) NULL
 			)
@@ -1180,13 +1184,13 @@ class ExtensiveTesting:
 		if self._verbose: print(f"ExtensiveTesting: Enqueued {params.modelName}")
 
 	def claim_from_queue(self) -> tuple[int, TradeModelParams | None]:
-		claim_sql = f"WITH NextJob AS (SELECT TOP (1) Processing, WorkerName, QueueID, ParamsJson FROM {self.QUEUE_TABLE} WITH (UPDLOCK, ROWLOCK, READPAST) WHERE Processing = 0 ORDER BY QueueID ASC) UPDATE NextJob SET Processing = 1, WorkerName = :worker OUTPUT INSERTED.QueueID, INSERTED.ParamsJson; "	
-		rows = self.db.ExecSQL(claim_sql, {"worker": self.worker_name})	
+		claim_sql = f"WITH NextJob AS (SELECT TOP (1) Processing, WorkerName, StartedProcessingAt, QueueID, ParamsJson FROM {self.QUEUE_TABLE} WITH (UPDLOCK, ROWLOCK, READPAST) WHERE Processing = 0 ORDER BY QueueID ASC) UPDATE NextJob SET Processing = 1, StartedProcessingAt = GETDATE(), WorkerName = :worker OUTPUT INSERTED.QueueID, INSERTED.ParamsJson;"
+		rows = self.db.ExecSQL(claim_sql, {"worker": self.worker_name})
 		if not rows: return 0, None
 		queue_id, params_json = rows[0][0], rows[0][1]
-		if self._verbose: print(f"Worker {self.worker_name}: Successfully claimed job {queue_id}")			
+		if self._verbose: print(f"Worker {self.worker_name}: Successfully claimed job {queue_id}")
 		return queue_id, self._deserialize(params_json)
-
+		
 	def complete_job(self, queue_id: int):
 		sql = f"DELETE FROM {self.QUEUE_TABLE} WHERE QueueID = :id"
 		self.db.ExecSQL(sql, {"id": queue_id})		

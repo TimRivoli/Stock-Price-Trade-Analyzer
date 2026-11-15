@@ -28,6 +28,17 @@ def _standardize_datetime_index(df: pd.DataFrame) -> pd.DataFrame | None:
 		return None
 	return df
 
+def _get_latest_non_us_holiday_bday(start_date=None):
+	if start_date is None:
+		start_date = pd.Timestamp.now().normalize()
+	else:
+		start_date = pd.to_datetime(start_date).normalize()			
+	bday_range = pd.date_range(end=start_date, periods=5, freq=BDay())	
+	cal = USFederalHolidayCalendar()
+	us_holidays = cal.holidays(start=bday_range.min(), end=bday_range.max())	
+	non_us_h_bdays = bday_range[~bday_range.isin(us_holidays)]	
+	return non_us_h_bdays.max()
+
 #-------------------------------------------- Classes PriceSnapshot and PricingData -----------------------------------------------
 class PriceSnapshot:
 	def __init__(self, **kwargs): self.__dict__.update(kwargs)
@@ -759,8 +770,7 @@ class PricingData:
 		#Note: specifying an requestedEndDate will automatically force a data update if required.  Keep that in mind for backtesting
 		if requestedEndDate:
 			requestedEndDate = ToTimestamp(requestedEndDate)
-			latestBusinessDay = (pd.Timestamp.now().normalize() - pd.offsets.BusinessDay(1))
-			requestedEndDate -= pd.offsets.BDay(0)
+			latestBusinessDay = _get_latest_non_us_holiday_bday(requestedEndDate)
 			requestedEndDate = min(requestedEndDate, latestBusinessDay)
 		if requestedStartDate: 
 			requestedStartDate = ToTimestamp(requestedStartDate)

@@ -88,7 +88,7 @@ class TickerLists:
 		for listName in TickerLists.theList:
 			if TickerLists.theList[listName] == whatYouLookingFor: r=listName
 		return r	
-	def GetTickerListSQL(year:int=None, month:int=1, SP500Only:bool=False, filterByFundamentals:bool=False, annualReturnMin:float=0, marketCapMin:int=0, marketCapMax:int=0):
+	def GetTickerListSQL(year:int=None, month:int=1, TopN: int=250, SP500Only:bool=False, filterByFundamentals:bool=False, annualReturnMin:float=0, marketCapMin:int=0, marketCapMax:int=0):
 		from _classes.DataIO import PTADatabase
 		if year==None: year = datetime.now().year
 		if marketCapMin > 0: marketCapMin = ScaleMarketCap(year, marketCapMin)
@@ -96,7 +96,7 @@ class TickerLists:
 		result = []
 		db = PTADatabase()
 		if db.Open():
-			df = db.DataFrameFromSQL("EXEC sp_GetTickerList :Year, :Month, :SP500Only, :FilterByFundamentals, :AnnualReturnMin, :MarketCapMin, :MarketCapMax", {"Year": year,"Month": month,"SP500Only": int(SP500Only), "FilterByFundamentals": int(filterByFundamentals), "AnnualReturnMin": annualReturnMin, "MarketCapMin": marketCapMin, "MarketCapMax": marketCapMax})
+			df = db.DataFrameFromSQL("EXEC sp_GetTickerList :Year, :Month, :TopN, :SP500Only, :FilterByFundamentals, :AnnualReturnMin, :MarketCapMin, :MarketCapMax", {"Year": year, "Month": month, "TopN": int(TopN), "SP500Only": int(SP500Only), "FilterByFundamentals": int(filterByFundamentals), "AnnualReturnMin": annualReturnMin, "MarketCapMin": marketCapMin, "MarketCapMax": marketCapMax})
 			tickers = df["Ticker"].tolist()
 			for ticker in tickers:
 				result.append(ticker)
