@@ -5,11 +5,11 @@ from datetime import datetime, timedelta
 from _classes.DataIO import PTADatabase, DataDownload
 from _classes.Prices import PricingData
 from _classes.Trading import TradingModel, TradeModelParams, ExtensiveTesting, UpdateTradeModelComparisonsFromDailyValue
-from _classes.Selection import StockPicker, Generate_PicksBlendedSQL_DateRange
+from _classes.Selection import StockPicker, Generate_Picks_For_SQL_DateRange
 from _classes.TickerLists import TickerLists
 from _classes.Utility import *
 
-FORCE_INCLUDE_TICKERS = ['ADMA','AMR','ANF','ASC','AVGO','CEG','CF','CORT','CRK','DVN','HWM','NVDA','PLTR','RCL','ADBE','AAPL','UAL','IAU','GLD']
+FORCE_INCLUDE_TICKERS = ['GOOGL','TER','JNJ','TECK','ASML','LRCX','CF','FANG','GLW','DLTR','NEM','PWR','THC','DDOG','SII','WPM','AAPL','RCL','HWM','VTR','TEAM','VRT','NVDA','SNOW','MN','GOOGL','CORT','DYN','TPR','MSFT','AVGO','PLTR','CRK','CEG','STX','MRK','PR','WDC','VIAV']
 
 def PopulateDatabaseTickers():
 	csvFile = 'database/tickerlist.csv'
@@ -25,51 +25,56 @@ def PopulateDatabaseTickers():
 	dd = DataDownload()
 	for ticker in TickerLists.SP500_2022():
 		TickerFullRefresh(ticker)
-		dd.DownloadTickerGoogleFinance(ticker)
+		dd.DownLoadTickerInfo(ticker)
+		dd.DownloadTickerFinancials(ticker)
 	for ticker in TickerLists.BigList2021():
 		TickerFullRefresh(ticker)
-		dd.DownloadTickerGoogleFinance(ticker)
+		dd.DownLoadTickerInfo(ticker)
+		dd.DownloadTickerFinancials(ticker)
 
 def DownloadAllTickerInfo():
 	# For all Tickers, updates missing About and financial info
 	db = PTADatabase()
 	dd = DataDownload()
 	if db.Open():
-		df = db.DataFrameFromSQL("SELECT Ticker, Exchange FROM Tickers WHERE Exchange <> 'Delisted' AND (CompanyName IS NULL OR FinancialsLastUpdated IS NULL)")
+		df = db.DataFrameFromSQL("SELECT Ticker, Exchange FROM Tickers WHERE Delisted <> 1 AND (CompanyName IS NULL OR FinancialsLastUpdated IS NULL or Industry is null)")
 		for _, row in df.iterrows():
-			dd.DownloadTickerGoogleFinance(row.Ticker, row.Exchange)
+			dd.DownLoadTickerInfo(row.Ticker)
+			dd.DownloadTickerFinancials(row.Ticker)
 		db.Close()
-	
-def DownloadIntraday(tickerList: list):
-	# Download current day prices; also fills in any missing from past 30 days
-	print(' DownloadIntraday: Downloading intraday prices for ' + str(len(tickerList)) + ' tickers')
-	tickersUpdated = []
+		
+def DownloadAllFinancials():
 	db = PTADatabase()
 	dd = DataDownload()
 	if db.Open():
-		for ticker in tickerList:
-			df = db.DataFrameFromSQL("SELECT Exchange, CompanyName FROM Tickers WHERE Ticker=:Ticker", {"Ticker": ticker})
-			if not df.empty:
-				Exchange = df.iloc[0].Exchange
-				if dd.DownloadIntradayPriceGoogleFinance(ticker, Exchange):
-					tickersUpdated.append(ticker)
-		db.ExecSQL("EXEC sp_UpdateDailyFromIntraday")  # requires NOCOUNT ON
+		df = db.DataFrameFromSQL("SELECT Ticker, Exchange FROM Tickers WHERE Delisted <> 1 AND (FinancialsLastUpdated IS NULL or DateDiff(d, FinancialsLastUpdated, GetDate()) > 90)")
+		for _, row in df.iterrows():
+			dd.DownLoadTickerInfo(row.Ticker)
+			dd.DownloadTickerFinancials(row.Ticker)
 		db.Close()
-	print(" DownloadIntraday: Requested: " + str(len(tickerList)) + " Completed: " + str(len(tickersUpdated)))
 		
+def DownloadDaily(tickerList: list):
+	# Download daily prices for each ticker using yesterday's date
+	print(' DownloadDaily: Downloading daily prices for ' + str(len(tickerList)) + ' tickers')
+	yesterday = GetLatestBDay()
+	tickersUpdated = []
+	for ticker in tickerList:
+		p = PricingData(ticker)
+		if p.LoadHistory(requestedEndDate=yesterday):
+			tickersUpdated.append(ticker)
+	print(" DownloadDaily: Requested: " + str(len(tickerList)) + " Completed: " + str(len(tickersUpdated)))
+
 def TickerDataRefresh(Daily: bool = True):
 	# Update price history for missing data in the past 30 days
 	tickerList = []
 	db = PTADatabase()
 	if db.Open():
-		db.ExecSQL("EXEC sp_UpdateDailyFromIntraday")  # requires NOCOUNT ON
 		sql = "SELECT Ticker, Exchange FROM rpt_TickerRefreshMonthly"
-		if Daily:
-			sql = "SELECT Ticker, Exchange FROM rpt_TickerRefreshIntraday"
+		if Daily: sql = "SELECT Ticker, Exchange FROM rpt_TickerRefreshDaily"
 		df = db.DataFrameFromSQL(sql)
 		tickerList = df["Ticker"].tolist()
 		db.Close()
-		DownloadIntraday(tickerList)
+		DownloadDaily(tickerList)
 
 def TickerFullRefresh(ticker:str):
 	p = PricingData(ticker)
@@ -80,7 +85,7 @@ def TickerFullRefresh(ticker:str):
 			print(' TickerFullRefresh: Prices updated for ' + ticker)
 
 def TickersFullRefresh():
-	print(" TickeFullRefresh ...")
+	print(" TickeFullRefresh refreshing price data from all in rpt_TickerRefreshFullNeeded...")
 	tickerCount = 0
 	failureCount = 0
 	maxStockCount = 150  # 499
@@ -90,7 +95,6 @@ def TickersFullRefresh():
 	recentDate = current_date - pd.offsets.BDay(5)
 	startDate = current_date - pd.DateOffset(years=3)
 	if db.Open():
-		db.ExecSQL("EXEC sp_UpdateDailyFromIntraday")  # requires NOCOUNT ON
 		df = db.DataFrameFromSQL(f"SELECT TOP {maxStockCount} Ticker, Exchange FROM rpt_TickerRefreshFullNeeded")
 		for _, row in df.iterrows():
 			if failureCount >= maxFailures:
@@ -231,21 +235,17 @@ def RefreshPricesWorkingSet():
 	#refreshes PricesWorkingSet stocks with stats
 	current_date = GetLatestBDay()
 	start_date = current_date - timedelta(days=30)
-	tickers = list(FORCE_INCLUDE_TICKERS)
+	tickers = TickerLists.GetTickerListSQL(year=current_date.year, month=current_date.month, TopN=CONSTANTS.MARKET_STATE_TOPN_TICKER_COUNT, SP500Only=False, filterByFundamentals=True, annualReturnMin=0) 
 	picker = StockPicker(startDate=start_date)
+	current_date = picker._endDate
 	picker.AlignToList(tickers)
-	forced_included = picker.GetHighestPriceMomentum(currentDate=current_date, stocksToReturn=30, filterOption=0, returnRawResults=True)
-	tickers += TickerLists.GetTickerListSQL(year=current_date.year, month=current_date.month, SP500Only=False, filterByFundamentals=False, annualReturnMin=0.1) 
-	picker.AlignToList(tickers)
-	additions = picker.GetHighestPriceMomentum(currentDate=current_date, stocksToReturn=300, filterOption=0, returnRawResults=True)
-	watchlist = pd.concat([forced_included, additions],	axis=0,	sort=True)
-	watchlist = watchlist[~watchlist.index.duplicated()]
-	watchlist.sort_index(inplace=True)
-	watchlist.index.name = 'Ticker'
+	picker.GeneratePicksForSQL(replaceExisting=True, adaptiveModel=True, verbose=True) #This will regenerate the past 30 days of blended picks and update the PicksBlended table
+	picker.GeneratePicksForSQL(replaceExisting=True, adaptiveModel=False, verbose=True) #This will regenerate the past 30 days of blended picks and update the PicksBlended table
+	for ticker in FORCE_INCLUDE_TICKERS:
+		picker.AddTicker(ticker)
+	watchlist = picker.GetHighestPriceMomentum(currentDate=current_date, stocksToReturn=(CONSTANTS.MARKET_STATE_TOPN_TICKER_COUNT + len(FORCE_INCLUDE_TICKERS)) , filterOption=0, returnRawResults=True)
 	print(" RefreshPricesWorkingSet results")
 	print(watchlist)
-	picker.GeneratePicksBlendedSQL(replaceExisting=True, verbose=True) #This will regenerate the past 30 days of blended picks and update the PicksBlended table
-
 	db = PTADatabase()
 	if db.Open():
 		if 'latestEntry' in watchlist.columns:
@@ -254,11 +254,36 @@ def RefreshPricesWorkingSet():
 		watchlist[float_cols] = watchlist[float_cols].round(4)
 		watchlist = watchlist.replace({np.nan: None})
 		db.ExecSQL("sp_updateeverything")
-		db.DataFrameToSQL(watchlist, tableName='PricesWorkingSet', indexAsColumn=True, clearExistingData=True)
+		if len(watchlist) > 0: 	db.DataFrameToSQL(watchlist, tableName='PricesWorkingSet', indexAsColumn=True, clearExistingData=True)
 		db.Close()
 		print(" PricesWorkingSet is updated with " + str(len(watchlist)) + ' stocks')
 	
-PopulateDatabaseTickers()
-DownloadAllTickerInfo()
-RefreshPricesWorkingSet() 
-		
+if __name__ == '__main__':
+	switch = 0
+	if len(sys.argv[1:]) > 0: switch = sys.argv[1:][0]
+	if switch == '1':
+		print('Running option 1: PopulateDatabaseTickers')
+		PopulateDatabaseTickers()
+	elif switch == '2':
+		print('Running option 2: RefreshPricesWorkingSet')
+		RefreshPricesWorkingSet() 
+	elif switch == '3':
+		print('Running option 3: DownloadAllTickerInfo')
+		#TickerFullRefresh('AAPL')
+		# tickers = ['TEAM','FROG','SNOW']
+		# for ticker in tickers: 
+			# TickerFullRefresh(ticker)
+		DownloadAllTickerInfo()
+	elif switch == '4':
+		print('Running option 4: Generate_Picks_For_SQL_DateRange')
+		CONSTANTS.BLOCK_REFRESHING_FOR_BACKTESTING = True
+		Generate_Picks_For_SQL_DateRange(startYear=1980, years=46, TopN=CONSTANTS.MARKET_STATE_TOPN_TICKER_COUNT, replaceExisting=True, adaptiveModel=True, verbose=False)
+		#Update_TradeModel_Trade_Analysis()
+	else:
+		print('Running default option to update daily prices and create working set')
+		#DownloadAllTickerInfo()
+		#DownloadDaily(TickerLists.Indexes()) #Update indexes
+		TickerDataRefresh(Daily=True)	#Update priority
+		TickerDataRefresh(Daily=False)	#Fill in monthly data
+		RefreshPricesWorkingSet() #Update PricesWorkingSet table
+		DownloadAllFinancials()
