@@ -122,6 +122,8 @@ def _get_start_override(ticker: str):
 			pass	#database unavailable: no overrides
 	return _START_OVERRIDES.get(ticker.upper())
 
+NEW_LISTING_DAYS = 120				#a series under MIN_ROWS that starts within this many days and is current is a new listing: returned, not rejected
+
 #-------------------------------------------- Yahoo Finance Ticker Info and Financials Helpers -----------------------------------------------
 FIN_SCALE = 1_000_000				#TickerFinancials dollar amounts and share counts are stored in millions (same units the old Google scraper used)
 MARKETCAP_SCALE = 1_000_000_000		#Tickers.MarketCap is stored in billions (same units the old Google scraper used)
@@ -453,12 +455,15 @@ class DataDownload:
 		df.dropna(inplace=True)
 		df = _filter_sql_numeric_overflow(df, ticker=ticker, cols=BASE_FIELD_LIST + RAW_FIELD_LIST)
 		if isinstance(df.index, pd.DatetimeIndex) and df.index.tz is not None:
-			df.index = df.index.tz_convert(None)
+			df.index = df.index.tz_localize(None).normalize()	#exchange-local trading date (tz_convert(None) gave 04:00/05:00 UTC times)
 		df.index.name = "Date"
 		res = clean_price_history(df, ticker=stored_ticker, start_override=_get_start_override(stored_ticker),
 								  manual_splits=_MANUAL_SPLITS.get(stored_ticker))
 		if res.rejected:
 			if len(res.df) < MIN_ROWS:	#e.g. Yahoo's single leftover quote for a delisted symbol: never save it
+				if len(res.df) > 0 and res.df.index.min() >= pd.Timestamp.now() - pd.Timedelta(days=NEW_LISTING_DAYS) and res.df.index.max() >= pd.Timestamp.now() - pd.Timedelta(days=10):
+					print(f"{stored_ticker}: new listing, only {len(res.df)} rows since {res.df.index.min().date()}; returned ({res.summary()})")
+					return res.df	#brand-new ticker (IPO / new symbol): short but current, keep it
 				print(f"WARNING: {stored_ticker} has too little data, not returned ({res.summary()})")
 				return None
 			#a ticker you refresh is kept up to date even if it looks like junk: repaired data is returned
@@ -795,10 +800,31 @@ class PTADatabase:
 			out = out[~dups]
 		out['Ticker'] = ticker
 		with self.engine.begin() as conn:
-			conn.execute(text("DELETE FROM dbo.PricesDaily WHERE Ticker = :Ticker AND [Date] >= :StartDate"),
+			conn.execute(text("DELETE FROM dbo.PricesDaily WHERE Ticker = CAST(:Ticker AS varchar(20)) AND [Date] >= :StartDate"),
 						 {"Ticker": ticker, "StartDate": out['Date'].min().to_pydatetime()})
 			out.to_sql('PricesDaily', con=conn, schema="dbo", if_exists="append", index=False)
 		return len(out)
+
+	@retry_sql_on_timeout()
+	def LoadMultiTickerPriceHistory(self, tickers: list, startDate=None, endDate=None) -> pd.DataFrame | None:
+		#One round trip for many tickers at once (flat frame, Ticker as a column) instead of a query per ticker.
+		#Caller (PricingData.BatchLoadHistory) splits the result and normalizes per ticker.
+		if not tickers: return None
+		params = {f"t{i}": tk for i, tk in enumerate(tickers)}
+		#CAST: pyodbc sends str as nvarchar; against the varchar Ticker column (SQL collation) that converts every row and scans the table instead of seeking
+		placeholders = ", ".join(f"CAST(:{k} AS varchar(20))" for k in params)
+		sql = f"SELECT [Ticker],[Date],[Open],[High],[Low],[Close],[Volume] FROM dbo.PricesDaily WHERE Ticker IN ({placeholders})"
+		if startDate is not None:
+			sql += " AND [Date] >= :start_date"
+			params["start_date"] = startDate
+		if endDate is not None:
+			sql += " AND [Date] <= :end_date"
+			params["end_date"] = endDate
+		sql += " ORDER BY [Ticker], [Date]"
+		if not self.Open(): return None
+		df = self.DataFrameFromSQL(sql=sql, params=params)
+		self.Close()
+		return df
 
 	@retry_sql_on_timeout()
 	def UpdatePricesDailyRaw(self, ticker: str, df: pd.DataFrame) -> int:

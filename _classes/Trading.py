@@ -35,31 +35,51 @@ class SQLFriendlyMixin:
 class TradeModelParams(SQLFriendlyMixin):
 	_startDate: pd.Timestamp = field(init=False, repr=False)
 	modelName: str = ''
-	init_startDate: str = '1/1/1980'
-	durationInYears: int = 12
+	#11/19/26: the defaults are the standard test settings (1995 + 27 years, FF, point-in-time lists, 9 stocks, re-pick every
+	#5 days, 28-day pick window, no point-value allocation; AdaptiveConvex FS2 on 4.8 states). Callers set only what differs.
+	#Production() gives the stored-picks / live settings; the Run*/Rebuild* methods below hold the per-model rules.
+	init_startDate: str = '1/1/1995'
+	durationInYears: int = 27
 	portfolioSize: int = 100000
-	reEvaluationInterval: int = 20
+	reEvaluationInterval: int = 5
 	longHistory: int = 365
 	shortHistory: int = 90
 	
 	# Filters & Constraints
 	stockCount: int = 9
-	filterOption: int = 3
-	filterByFundamentals: bool = False
+	filterOption: int = 5
+	filterByFundamentals: bool = True
 	minPercentGain: float = 0.05
 	SP500Only: bool = False
 	marketCapMin: int = 0
 	marketCapMax: int = 0
-	
+	riskFilter: bool = True		#sp_GetTickerList risk pre-filter (with filterByFundamentals). Model name gets _NoRF when off
+	pointInTimeUniverse: bool = True	#Selection 6.0: sp_GetTickerList @PointInTime - month M's list from month M-1 figures only (month-end momentum, prior month's volume/price), no look-ahead. Model name _PIT. 6.2: the default and the canonical universe
+	damageFilter: bool = False	#sp_GetTickerList @DamageFilter: drop stocks failing base_filter's damage scores at the prior month end (with filterByFundamentals). Model name gets _DMG
+	adaptiveFilterSet: int = 2		#Selection 5.4, AdaptiveConvex only: execution filter lists (1 = 4.6, 2 = FS2: F10 when a mania breaks, F6/9v in convex expansion/contraction). Model name _FS2
+	riskOffExposure: float = 1.0	#Selection 5.6, blended/adaptive: share invested while .INX is below its 200-day average (2% band); 1.0 = off. Model name _RO<pct>
+	riskOffSignal: str = 'index'	#Selection 5.9, with riskOffExposure: 'index' = .INX 200-day switch; 'leaders' = momentum-leader index (LeaderIndexDaily) below its 100-day average. Model name _RO<pct>L
+	volTarget: float = 0.0			#Selection 6.8, blended/adaptive: annualized volatility target - on each re-pick the stocks are scaled to min(1, volTarget / realized volatility of the fully invested portfolio over volLookback trading days), rounded to 10%, rest in cash; on top of riskOffExposure. 0 = off. Model name _VT<pct>
+	volLookback: int = 21			#Selection 6.8, with volTarget: trading days of daily returns the realized volatility is measured over. Model name _VT<pct>L<n> when not 21
+	postManiaDays: int = 0			#Selection 5.9, AdaptiveConvex only: trading days after the last mania day treated as POST_MANIA (stock floor); 0 = the state's own (126). Model name _PMD<n>
+	adaptiveStockCount: int = 0		#Selection 5.6, AdaptiveConvex only: fixed stock count instead of the conviction count; 0 = off. Model name _S<n>
+	marketStateVersion: float = 4.8	#Selection 5.6, AdaptiveConvex only: MarketStates version read (4.7 = two-phase build, _MS47; 6.1: 4.8 = on the point-in-time lists, _MS48, the default from 6.2). filterOption 97 jobs build its raw rows
+	dmaWeight: bool = False			#Selection 5.5, blended/adaptive: the vote blend's 200DMA weighting really applied (it never was). Model name _DMA
+	blendFilters: str = ''			#Selection 5.3, PM_Blended only: custom blend "10:3,9v:3,4:2,6:1" (Selection.ParseBlend); '' = DEFAULT_BLEND
+	volAdjustedRank: bool = False	#Selection 5.1: momentum filters rank on PC_x / Volatility_1Year instead of raw PC_x. Model name gets _VA
+	selectionVersion: str = ''		#set by the worker from Selection.SELECTION_VERSION when the run starts (not taken from the queued job); stored in TradeModelComparisons.SelectionVersion
+	rebuildBlendedPicks: bool = False	#PM_Blended only: write each day's raw blended picks to PicksBlendedDaily while running (needs useStoredPicks off, pickHistoryWindow > 0, default blend, canonical universe). Overwrites the stored picks
+	rebuildMarketStates: bool = False	#AdaptiveConvex only: regenerate the MarketStates rows for every date the run covers (only with the canonical universe: FF + risk filter, no SP500Only/market cap limits)
+
 	# System & Execution
-	pickHistoryWindow: int = 44 #Two trading months
+	pickHistoryWindow: int = 28	#28 days is optimal (3/16/26 testing); AdaptiveConvex uses -1 (its own window)
 	shopBuyPercent: float = 0.0
 	shopSellPercent: float = 0.0
 	trimProfitsPercent: float = 0.0
-	allocateByPointValue: bool = True
+	allocateByPointValue: bool = False
 	rateLimitTransactions: bool = False
 	saveTradeHistory: bool = True
-	useDatabase: bool = True
+	useStoredPicks: bool = True	#PM_Blended only: read stored picks from PicksBlendedDaily (_DB, queue --db). Was useDatabase (renamed 11/18/26; column TradeModelComparisons.useStoredPicks)
 	saveResults: bool = False
 	verbose: bool = False
 	
@@ -67,8 +87,12 @@ class TradeModelParams(SQLFriendlyMixin):
 	processing_minutes: int = 0	
 	export_fields = [
 		'modelName', 'startDate', 'endDate', 'durationInYears', 'stockCount', 'reEvaluationInterval', 'SP500Only', 	'longHistory', 'shortHistory', 'minPercentGain', 'startValue', 'endValue',
-		'pickHistoryWindow', 'shopBuyPercent', 'shopSellPercent', 'trimProfitsPercent', 'allocateByPointValue', 'filterOption', 'useDatabase','filterByFundamentals', 'rateLimitTransactions','marketCapMin', 'marketCapMax', 'processing_minutes', 'batchName'
+		'pickHistoryWindow', 'shopBuyPercent', 'shopSellPercent', 'trimProfitsPercent', 'allocateByPointValue', 'filterOption', 'useStoredPicks','filterByFundamentals', 'rateLimitTransactions','marketCapMin', 'marketCapMax', 'processing_minutes', 'batchName', 'selectionVersion'
 	]		
+	_NAME_BASE_FILTER_SET = 1		#model names mark settings that differ from the original runs (_FS2, _MS47), not from the defaults
+	_NAME_BASE_STATE_VERSION = 4.6
+	PIT_STATE_VERSION = 4.8			#Selection 6.1: MarketStates built on the point-in-time lists (Selection.MARKET_STATE_VERSION_PIT)
+
 	def __post_init__(self):		
 		self.startDate = pd.to_datetime(self.init_startDate)	 # Trigger the setters to convert types immediately on startup
 	@property
@@ -86,11 +110,22 @@ class TradeModelParams(SQLFriendlyMixin):
 			if self.filterOption == 99: mn = f"PM_Blended"
 			elif self.filterOption == 98: mn = f"AdaptiveConvex"
 			else: mn = f"PM_filter{self.filterOption}"
-		if self.filterOption == 99 and self.useDatabase: mn += "_DB" 
+		if self.filterOption == 99 and self.useStoredPicks: mn += "_DB" 
 		if self.filterByFundamentals and not "_FF" in mn: mn += "_FF"
 		if not "_HW" in mn:
 			if self.pickHistoryWindow > 0: mn += f"_HW{self.pickHistoryWindow}"
 			if self.pickHistoryWindow < 0: mn += f"_HWAdaptive"
+		if self.filterByFundamentals and not self.riskFilter and not "_NoRF" in mn: mn += "_NoRF"
+		if self.filterByFundamentals and self.damageFilter and not "_DMG" in mn: mn += "_DMG"
+		if self.pointInTimeUniverse and not "_PIT" in mn: mn += "_PIT"
+		if self.volAdjustedRank and not "_VA" in mn: mn += "_VA"
+		if self.filterOption == 98 and self.adaptiveFilterSet != self._NAME_BASE_FILTER_SET and not "_FS" in mn: mn += f"_FS{self.adaptiveFilterSet}"
+		if self.dmaWeight and not "_DMA" in mn: mn += "_DMA"
+		if self.filterOption == 98 and self.adaptiveStockCount > 0 and not "_S" + str(self.adaptiveStockCount) in mn: mn += f"_S{self.adaptiveStockCount}"
+		if self.filterOption == 98 and self.marketStateVersion != self._NAME_BASE_STATE_VERSION and not "_MS" in mn: mn += "_MS" + str(self.marketStateVersion).replace(".", "")
+		if self.filterOption == 98 and self.postManiaDays > 0 and not "_PMD" in mn: mn += f"_PMD{self.postManiaDays}"
+		if self.riskOffExposure < 1.0 and not "_RO" in mn: mn += f"_RO{int(round(self.riskOffExposure * 100))}" + ("L" if self.riskOffSignal == 'leaders' else "")
+		if self.volTarget > 0 and not "_VT" in mn: mn += f"_VT{int(round(self.volTarget * 100))}" + (f"L{self.volLookback}" if self.volLookback != 21 else "")
 		if self.SP500Only and not "_SP500" in mn: mn += "_SP500"
 		if self.allocateByPointValue and not "_PVA" in mn: mn += "_PVA"
 		if self.rateLimitTransactions and not "_RL" in mn:  mn += "_RL"
@@ -98,6 +133,65 @@ class TradeModelParams(SQLFriendlyMixin):
 		if self.shopBuyPercent > 0 and not "_SB" in mn:  mn += f"_SB{self.shopBuyPercent}"
 		if self.shopSellPercent > 0 and not "_SS" in mn:  mn += f"_SS{self.shopSellPercent}"
 		self.modelName = mn
+
+	@classmethod
+	def Production(cls, model: str) -> 'TradeModelParams':
+		"""The live settings: what PicksAdaptiveDaily / PicksBlendedDaily are built with (StockPicker.UpdateStoredPicks)
+		and ModelPastFewYears runs. adaptive = FS2 on 4.8 states, conviction stock count, 50% invested while .INX is below
+		its 200-day average (best Sharpe, 11/18/26 tests); blended = DEFAULT_BLEND (1.3.9.9.6), 28-day window. Both on the
+		point-in-time lists (6.2)."""
+		p = cls()
+		if model == 'adaptive':
+			p.filterOption, p.riskOffExposure = 98, 0.5
+		elif model == 'blended':
+			p.filterOption = 99
+		else:
+			raise ValueError(f"TradeModelParams.Production: unknown model {model!r} (adaptive / blended)")
+		p.useStoredPicks = False
+		return p
+
+	def IsCanonicalUniverse(self) -> bool:
+		"""The universe stored states and picks are built on (top 250 by sp_GetTickerList with filter by fundamentals and
+		the risk filter, point-in-time lists, nothing narrower). Only runs on it may write PicksBlendedDaily or PicksAdaptiveDaily
+		(MarketStates: IsStateUniverse)."""
+		return self.filterByFundamentals and self.riskFilter and not self.damageFilter and self.pointInTimeUniverse and not self.SP500Only and self.marketCapMin == 0 and self.marketCapMax == 0	#6.2: _PIT adopted
+
+	def IsStateUniverse(self) -> bool:
+		"""6.1: the universe the states of marketStateVersion are built on: the canonical list, point-in-time for 4.8+.
+		Only runs on it may save or rebuild those MarketStates rows."""
+		pit = self.marketStateVersion >= self.PIT_STATE_VERSION
+		return self.filterByFundamentals and self.riskFilter and not self.damageFilter and self.pointInTimeUniverse == pit and not self.SP500Only and self.marketCapMin == 0 and self.marketCapMax == 0
+
+	def RebuildMarketStatesProblem(self) -> str:
+		"""Why rebuildMarketStates can't be honoured ('' = it can)."""
+		if not self.IsStateUniverse(): return "only a run with filter by fundamentals + risk filter on, no damage filter/SP500Only/market cap limits, and _PIT exactly when the state version is 4.8+ may rebuild the states"
+		return ''
+
+	def RebuildBlendedPicksProblem(self, customBlend: bool = False) -> str:
+		"""Why rebuildBlendedPicks can't be honoured ('' = it can): PicksBlendedDaily holds the default blend on the
+		canonical universe, computed every trading day (rolling window), and can't be rebuilt while being read."""
+		if not self.IsCanonicalUniverse() or self.volAdjustedRank: return "needs filter by fundamentals + risk filter on, no damage filter/_VA/SP500Only/market cap limits"
+		if self.useStoredPicks: return "can't rebuild the stored picks while reading them (useStoredPicks)"
+		if self.pickHistoryWindow <= 0: return "needs pickHistoryWindow > 0 (daily picks)"
+		if customBlend: return "needs the default blend"
+		return ''
+
+	def PrepareAdaptiveRun(self):
+		"""Fixed AdaptiveConvex settings (filterOption 98, its own pick window, no point-value allocation) and its name."""
+		self.filterOption, self.allocateByPointValue, self.pickHistoryWindow = 98, False, -1
+		self.modelName = "AdaptiveConvex_v4.6_BF"
+		self.AddModelNameModifiers()
+
+	def PrepareBlendedRun(self, blendName: str):
+		"""Fixed PM_Blended settings and its name; the blend is only named when picks are computed (stored picks carry
+		whatever blend they were built with)."""
+		self.filterOption, self.allocateByPointValue = 99, False
+		self.modelName = "PM_Blended" + ("" if self.useStoredPicks else f"_({blendName})")
+		self.AddModelNameModifiers()
+
+	def PreparePriceMomentumRun(self):
+		self.modelName = ''
+		self.AddModelNameModifiers()
 
 @dataclass
 class TradeModelPerformanceMetrics(SQLFriendlyMixin):
@@ -249,6 +343,7 @@ class Portfolio:
 		self._cash_committed_to_orders = 0
 		self._pendingBuys: list[BuyOrder] = []
 		self._positions: list[Position] = []
+		self.rolloverPending = False	#set by TradingModel.AlignPositions when a realignment is cut short and must continue the next day
 		self._verbose = verbose
 		if useDatabase:
 			db = PTADatabase()
@@ -623,7 +718,8 @@ class TradingModel(Portfolio):
 		self.end_processing = None
 		self.modelReady = False
 		self.modelName = modelName
-		self.batchName = modelName[:30] + '_' + self.start_processing.strftime('%Y%m%d-%H%M%S')
+		#3 random base-36 chars: two workers starting in the same second got the same batchName and mixed their results (11/18/26). Max 50 chars.
+		self.batchName = modelName[:30] + '_' + self.start_processing.strftime('%Y%m%d-%H%M%S') + '-' + ''.join(np.random.default_rng().choice(list('0123456789abcdefghijklmnopqrstuvwxyz'), 3))
 		self.modelStartDate  = None	
 		self.modelEndDate = None
 		self.currentDate = None
@@ -773,7 +869,8 @@ class TradingModel(Portfolio):
 			if marketOrder or price ==0: 
 				sn = self.GetPriceSnapshot(position.ticker)
 				price = sn.Average
-		super(TradingModel, self).SellPosition(position=position, price=price, datePlaced=self.currentDate, marketOrder=marketOrder, expireAfterDays=expireAfterDays, reasonForSale=reasonForSale)
+		#11/18/26: must return the result - the base PlaceSell counts the units sold with it; returning None made a partial sell liquidate every lot smaller than the request
+		return super(TradingModel, self).SellPosition(position=position, price=price, datePlaced=self.currentDate, marketOrder=marketOrder, expireAfterDays=expireAfterDays, reasonForSale=reasonForSale)
 
 	def PlaceSell(self, ticker:str, units: int, price:float, marketOrder:bool=False, expireAfterDays:int=10, reasonForSale: str = ''): 
 		if not ticker in self._tickerList: self.AddTicker(ticker)	
@@ -824,6 +921,7 @@ class TradingModel(Portfolio):
 
 		current_value_map = {}
 		for p in self._positions:
+			if p.is_sell_pending(): continue	#already being sold: not part of what we hold going forward (else it is sold twice)
 			current_value_map[p.ticker] = current_value_map.get(p.ticker, 0) + (p.units * p.latestPrice)
 		for o in self._pendingBuys:
 			current_value_map[o.ticker] = current_value_map.get(o.ticker, 0) + (o.units * o.orderPrice)
@@ -839,6 +937,9 @@ class TradingModel(Portfolio):
 		buys.sort_values(by=['DeltaValue'], ascending=False, inplace=True)
 
 		# ---------------- RATE LIMITING ----------------
+		#rolloverPending: the rate limit cut this realignment short, so the run loops call AlignPositions again the next
+		#day, whatever the reEvaluationInterval, until the rollover completes
+		self.rolloverPending = False
 		if rateLimitTransactions:
 			daily_budget = totalValue * CONSTANTS.RATE_LIMITING_MAX_TURNOVER_PCT
 			sell_budget = daily_budget
@@ -847,11 +948,13 @@ class TradingModel(Portfolio):
 			if sell_needed > 0:
 				sell_scale = min(1.0, sell_budget / sell_needed)
 				sells.loc[:, 'DeltaValue'] *= sell_scale
+				if sell_scale < 1.0: self.rolloverPending = True
 
 			buy_needed = buys['DeltaValue'].sum()
 			if buy_needed > 0:
 				buy_scale = min(1.0, buy_budget / buy_needed)
 				buys.loc[:, 'DeltaValue'] *= buy_scale
+				if buy_scale < 1.0: self.rolloverPending = True
 			self._print(f" AlignPositions: Rate limiting enabled. Total budget ${daily_budget:,.0f}")
 
 		# ---------------- CASH LIMIT ON BUYS ----------------
@@ -859,7 +962,7 @@ class TradingModel(Portfolio):
 		buy_needed = buys['DeltaValue'].sum()
 		if buy_needed > availableFunds and buy_needed > 0:
 			cash_scale = availableFunds / buy_needed
-			buys.loc[:, 'DeltaValue'] *= cash_scale
+			buys.loc[:, 'DeltaValue'] *= cash_scale	#buys waiting for today's sell proceeds go out the next day through the run loops' idle-cash check
 			self._print(f" AlignPositions: Buy scaling due to cash. Scale={cash_scale:.3f} available: {availableFunds} needed: {buy_needed}")
 
 		# ---------------- EXECUTE SELLS ----------------
@@ -1133,13 +1236,15 @@ class ForcastModel():	#used to forecast the effect of a series of trade actions,
 
 class ExtensiveTesting:
 	QUEUE_TABLE = "dbo.TradeModelQueue"
-	def __init__(self, verbose: bool = False):
+	HOLD_WORKER = "HOLD"	#a row with Processing = 1 and WorkerName 'HOLD' is parked: no worker (old or new code) claims it until released
+	def __init__(self, verbose: bool = False, codeVersion: str = ''):
 		self.db = PTADatabase()
 		if not self.db.Open():
 			print(" ExtensiveTesting: database initialization failed.")
 			assert False
 		self.worker_name = socket.gethostname()
 		self._verbose = verbose
+		self.codeVersion = codeVersion	#the worker's Selection.SELECTION_VERSION: it only claims jobs whose MinVersion <= this
 
 	def ensure_queue_table(self):
 		sql = f"""
@@ -1151,9 +1256,11 @@ class ExtensiveTesting:
 				EnqueuedAt  DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
 				StartedProcessingAt  DATETIME2 NULL,
 				ParamsJson  NVARCHAR(MAX) NOT NULL,
-				WorkerName  NVARCHAR(MAX) NULL
+				WorkerName  NVARCHAR(MAX) NULL,
+				MinVersion  VARCHAR(20) NULL
 			)
 		END
+		IF COL_LENGTH('{self.QUEUE_TABLE}', 'MinVersion') IS NULL ALTER TABLE {self.QUEUE_TABLE} ADD MinVersion VARCHAR(20) NULL
 		"""
 		self.db.ExecSQL(sql)
 		if self._verbose: print("ExtensiveTesting: Queue table verified")
@@ -1168,24 +1275,60 @@ class ExtensiveTesting:
 				value = value.isoformat()
 			data[f.name] = value
 			data["startDate"] = params.startDate.isoformat()
+		if data.get("riskFilter", True): data.pop("riskFilter", None)	#only sent when off, so workers on older code can still read default jobs
+		if not data.get("rebuildMarketStates", False): data.pop("rebuildMarketStates", None)	#only sent when on
+		if not data.get("rebuildBlendedPicks", False): data.pop("rebuildBlendedPicks", None)	#only sent when on
+		if not data.get("damageFilter", False): data.pop("damageFilter", None)	#only sent when on
+		if not data.get("volAdjustedRank", False): data.pop("volAdjustedRank", None)	#only sent when on
+		if not data.get("blendFilters", ""): data.pop("blendFilters", None)	#only sent when set
+		if data.get("adaptiveFilterSet", 1) == 1: data.pop("adaptiveFilterSet", None)	#only sent when not the default
+		if not data.get("dmaWeight", False): data.pop("dmaWeight", None)	#only sent when on
+		if data.get("riskOffExposure", 1.0) >= 1.0: data.pop("riskOffExposure", None)	#5.6 fields: only sent when not the default
+		if not data.get("adaptiveStockCount", 0): data.pop("adaptiveStockCount", None)
+		#marketStateVersion: always sent (6.2: the default is 4.8, so a dropped 4.6/4.7 would read as 4.8)
+		if data.get("riskOffSignal", "index") == "index": data.pop("riskOffSignal", None)	#5.9 fields: only sent when not the default
+		if not data.get("postManiaDays", 0): data.pop("postManiaDays", None)
+		if not data.get("volTarget", 0): data.pop("volTarget", None)	#6.8 fields: only sent when on
+		if data.get("volLookback", 21) == 21: data.pop("volLookback", None)
+		#pointInTimeUniverse: always sent (6.2: the default is True, so a dropped False would read as True)
+		data.pop("selectionVersion", None)	#the worker sets its own version; never queued
 		return json.dumps(data)
 	@staticmethod
 	def _deserialize(json_str: str) -> TradeModelParams:
 		data = json.loads(json_str)
 		start_date = data.pop("startDate", None)
+		if "useDatabase" in data: data.setdefault("useStoredPicks", data.pop("useDatabase"))	#renamed 11/18/26; jobs queued by older code
+		known = {f.name for f in fields(TradeModelParams) if f.init}
+		unknown = [k for k in data if k not in known]
+		if unknown:
+			print(f" ExtensiveTesting: ignoring unknown queued parameters {unknown} (job queued by newer code?)")
+			for k in unknown: data.pop(k)
 		params = TradeModelParams(**data)
 		if start_date is not None:
 			params.startDate = start_date  # uses setter → pd.Timestamp
 		return params
 
-	def add_to_queue(self, params: TradeModelParams):
-		sql = f"INSERT INTO {self.QUEUE_TABLE} (ParamsJson) VALUES (:params)"
-		self.db.ExecSQL(sql, {"params": self._serialize(params)})
+	@staticmethod
+	def version_number(v) -> int:
+		#'5.3' -> 5003, same as the claim SQL's PARSENAME arithmetic (versions are major.minor)
+		try:
+			parts = [int(x) for x in str(v).strip().split('.')] + [0]
+			return parts[0] * 1000 + parts[1]
+		except ValueError: return 0
+	def add_to_queue(self, params: TradeModelParams, minVersion: str = None, hold: bool = False):
+		#minVersion: only workers whose code is at least this version claim the job. hold: park it (see HOLD_WORKER)
+		if hold:
+			sql = f"INSERT INTO {self.QUEUE_TABLE} (ParamsJson, MinVersion, Processing, WorkerName) VALUES (:params, :mv, 1, '{self.HOLD_WORKER}')"
+		else:
+			sql = f"INSERT INTO {self.QUEUE_TABLE} (ParamsJson, MinVersion) VALUES (:params, :mv)"
+		self.db.ExecSQL(sql, {"params": self._serialize(params), "mv": minVersion})
 		if self._verbose: print(f"ExtensiveTesting: Enqueued {params.modelName}")
 
 	def claim_from_queue(self) -> tuple[int, TradeModelParams | None]:
-		claim_sql = f"WITH NextJob AS (SELECT TOP (1) Processing, WorkerName, StartedProcessingAt, QueueID, ParamsJson FROM {self.QUEUE_TABLE} WITH (UPDLOCK, ROWLOCK, READPAST) WHERE Processing = 0 ORDER BY QueueID ASC) UPDATE NextJob SET Processing = 1, StartedProcessingAt = GETDATE(), WorkerName = :worker OUTPUT INSERTED.QueueID, INSERTED.ParamsJson;"
-		rows = self.db.ExecSQL(claim_sql, {"worker": self.worker_name})
+		#Skips jobs needing newer code than this worker's (MinVersion), so a worker that wasn't restarted can't run them wrongly
+		version_ok = "(MinVersion IS NULL OR ISNULL(TRY_CAST(PARSENAME(MinVersion, 2) AS int), 0) * 1000 + ISNULL(TRY_CAST(PARSENAME(MinVersion, 1) AS int), 0) <= :myversion)"
+		claim_sql = f"WITH NextJob AS (SELECT TOP (1) Processing, WorkerName, StartedProcessingAt, QueueID, ParamsJson FROM {self.QUEUE_TABLE} WITH (UPDLOCK, ROWLOCK, READPAST) WHERE Processing = 0 AND {version_ok} ORDER BY QueueID ASC) UPDATE NextJob SET Processing = 1, StartedProcessingAt = GETDATE(), WorkerName = :worker OUTPUT INSERTED.QueueID, INSERTED.ParamsJson;"
+		rows = self.db.ExecSQL(claim_sql, {"worker": self.worker_name, "myversion": self.version_number(self.codeVersion)})
 		if not rows: return 0, None
 		queue_id, params_json = rows[0][0], rows[0][1]
 		if self._verbose: print(f"Worker {self.worker_name}: Successfully claimed job {queue_id}")

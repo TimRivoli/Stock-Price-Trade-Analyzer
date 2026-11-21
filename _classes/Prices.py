@@ -22,9 +22,18 @@ def _standardize_datetime_index(df: pd.DataFrame) -> pd.DataFrame | None:
 	df = df.sort_index() # Sort and remove duplicates
 	df = df[~df.index.duplicated(keep="last")]
 	df.ffill(inplace=True)
-	df.bfill(inplace=True)
-	if not isinstance(df.index, pd.DatetimeIndex):
-		logging.warning(f"{self.ticker} CSV index is not DatetimeIndex")
+	#11/20/26: no bfill (it copied later prices over leading gaps: look-ahead). Rows before the first Close are dropped;
+	#a leading gap in Open/High/Low takes that row's Close, in Volume 0. PricesDaily has no leading NULLs (checked), so SQL loads are unchanged.
+	if 'Close' in df.columns:
+		first = df['Close'].first_valid_index()
+		if first is None:
+			return None
+		df = df.loc[first:].copy()
+		for c in ('Open', 'High', 'Low'):
+			if c in df.columns: df[c] = df[c].fillna(df['Close'])
+		if 'Volume' in df.columns: df['Volume'] = df['Volume'].fillna(0)
+	if df.empty or not isinstance(df.index, pd.DatetimeIndex):
+		logging.warning("price history index is not a DatetimeIndex (or no rows with a Close)")
 		return None
 	return df
 
@@ -56,7 +65,7 @@ class PricingData:
 	_failed_tickers = set() #Global class variable for tracking lookup failures to prevent spamming download requests
 	
 	#Historical prices for a given stock, along with statistics, and future estimated prices
-	def __init__(self, ticker:str, dataFolderRoot:str='', useDatabase:bool=True):
+	def __init__(self, ticker:str, dataFolderRoot:str='', useDatabase:bool=True, database:PTADatabase=None):
 		self.ticker = ticker
 		self.historicalPrices = None	#dataframe with price history indexed on date
 		self.pricePredictions = None #dataframe with price predictions indexed on date
@@ -84,7 +93,7 @@ class PricingData:
 		CreateFolder(self._dataFolderCharts)
 		CreateFolder(self._dataFolderDailyPicks)
 		if useDatabase:
-			db = PTADatabase(verbose=False)
+			db = database if database is not None else PTADatabase(verbose=False)	#share one engine/pool across tickers when provided, instead of each opening its own
 			if db.database_configured:
 				self.database = db
 			else:
@@ -216,7 +225,8 @@ class PricingData:
 		df['LossStd_1Year']  = neg_returns.rolling(ty, min_periods=1).std().fillna(0)
 		df['LossSkew_1Year'] = neg_only.rolling(ty, min_periods=1).skew().fillna(0)
 		df['MaxLoss_1Year']  = gain_monthly.rolling(ty, min_periods=1).min()
-		df['LogDrawdown'] = np.log(df['Average'] / df['Average'].cummax())
+		df['Volatility_1Year'] = returns.rolling(ty, min_periods=60).std() * np.sqrt(ty)	#11/17/26: annualized std of daily log returns of Average, for the volatility-adjusted ranking (Selection 5.1)
+		df['LogDrawdown'] = np.log(df['Average'] / df['Average'].rolling(ty*5, min_periods=1).max())	#11/17/26: 5-year high (was all-time cummax, which failed old stocks forever on a decades-old peak)
 		df['JumpRatio'] = (rolling_max / (rolling_std + 1e-9)).clip(upper=25)
 		df['PathologyScore'] = abs(df['LogDrawdown']) * df['JumpRatio']
 		df['DamageScore'] = abs(drawdown_5y) * np.sqrt(np.clip(days_since_peak,0,None) / ty)
@@ -262,11 +272,11 @@ class PricingData:
 		df['Gain_10Day'] = ((a2 / a2.shift(10)) - 1).fillna(0)
 		df['Target'] = (a2 * (1 + df['Gain_10Day'] / 9)).round(2)
 
+		df["MA200"] = df["Close"].rolling(200).mean()	#11/18/26: always (was fullStats only) - Selection 5.5 dmaWeight reads Distance200DMA
+		df["Distance200DMA"] = df["Close"] / df["MA200"] - 1
 		if fullStats:
 			df["Vol20"] = df["Return"].ewm(span=20, adjust=False).std() * (ty ** 0.5) # Annualized standard deviation
 			df["Vol60"] = df["Return"].ewm(span=60, adjust=False).std() * (ty ** 0.5)
-			df["MA200"] = df["Close"].rolling(200).mean()
-			df["Distance200DMA"] = df["Close"] / df["MA200"] - 1
 			df['EMA_12Day'] = avg.ewm(span=12, adjust=False).mean()
 			df['EMA_1Month'] = avg.ewm(span=tm).mean()
 			df['EMA_3Month'] = avg.ewm(span=tm*3).mean()
@@ -310,7 +320,7 @@ class PricingData:
 			temp['DX'] = 100 * abs(temp['DI+'] - temp['DI-']) / (temp['DI+'] + temp['DI-'])
 			df['ADX'] = temp['DX'].rolling(adx_period).mean()
 		df = df.loc[df.index >= self.historyStartDate].copy() # Trim back to visible window
-		self.historicalPrices = df.ffill().bfill()
+		self.historicalPrices = df.ffill()	#6.5: no bfill - it copied each stat's first value back over the days before it existed (a stock's first year of PC_1Year was its return a year later; all of 1980). Too-short history stays NaN and fails the filters
 		self._assert_lookback_validity()
 		self.statsLoaded = True
 		return True
@@ -648,9 +658,10 @@ class PricingData:
 		if not self.database.Open():
 			return
 		out = df.reset_index()
-		out['Ticker'] = self.ticker    
+		out['Ticker'] = self.ticker
+		out['Date'] = pd.to_datetime(out['Date']).dt.normalize()	#11/19/26: UTC-converted downloads were saved at 04:00/05:00 (HBI, IPG, K, SDS)
 		startDate = out['Date'].min() # Delete overlapping dates only
-		self.database.ExecSQL("DELETE FROM PricesDaily WHERE Ticker=:Ticker AND [Date]>=:StartDate", {"Ticker": self.ticker, "StartDate": startDate})
+		self.database.ExecSQL("DELETE FROM PricesDaily WHERE Ticker=CAST(:Ticker AS varchar(20)) AND [Date]>=:StartDate", {"Ticker": self.ticker, "StartDate": startDate})
 		self.database.DataFrameToSQL(df=out, tableName='PricesDaily', indexAsColumn=False, clearExistingData=False)
 		self.database.Close()
 
@@ -659,7 +670,8 @@ class PricingData:
 			return None
 		if not self.database.Open():
 			return None
-		sql = "SELECT [Date], [Open], [High], [Low], [Close], [Volume] FROM PricesDaily WHERE Ticker = :ticker"
+		#CAST: a nvarchar parameter against the varchar Ticker column scans the whole table instead of seeking
+		sql = "SELECT [Date], [Open], [High], [Low], [Close], [Volume] FROM PricesDaily WHERE Ticker = CAST(:ticker AS varchar(20))"
 		params = {"ticker": self.ticker}
 		if loadStartDate is not None:
 			sql += " AND [Date] >= :start_date"
@@ -675,6 +687,27 @@ class PricingData:
 		if df is None or df.empty or len(df) < 2:
 			return None
 		return _standardize_datetime_index(df)
+
+	@staticmethod
+	def BatchLoadHistory(tickers: list, loadStartDate: pd.Timestamp | None, loadEndDate: pd.Timestamp | None, database, verbose: bool = False) -> dict:
+		#One SQL round trip for many tickers (via PTADatabase.LoadMultiTickerPriceHistory) instead of one per ticker.
+		#Returns {ticker: DataFrame} in the same shape _load_history_sql returns for a single ticker; a ticker
+		#missing from the result (no rows, or fewer than 2) simply isn't a key here, so callers fall back to
+		#their normal per-ticker path for it.
+		if not tickers or database is None:
+			return {}
+		startParam = loadStartDate.to_pydatetime() if loadStartDate is not None else None
+		endParam = loadEndDate.to_pydatetime() if loadEndDate is not None else None
+		if verbose: print(f"Batch loading {len(tickers)} tickers from SQL dates [{FormatDate(loadStartDate)}, {FormatDate(loadEndDate)}]")
+		df = database.LoadMultiTickerPriceHistory(tickers, startParam, endParam)
+		if df is None or df.empty:
+			return {}
+		result = {}
+		for ticker, group in df.groupby('Ticker'):
+			g = _standardize_datetime_index(group.drop(columns=['Ticker']).set_index('Date'))
+			if g is not None and len(g) >= 2:
+				result[ticker] = g
+		return result
 
 	def _load_history_csv(self, verbose: bool = False) -> pd.DataFrame | None:
 		if verbose: print(f"{self.ticker}: loading from CSV")
@@ -766,13 +799,14 @@ class PricingData:
 		return df
 	#-------------------------------------------- IO Funcitons -----------------------------------------------
 
-	def LoadHistory(self, requestedStartDate:datetime=None, requestedEndDate:datetime=None, verbose:bool=False)-> bool:
+	def LoadHistory(self, requestedStartDate:datetime=None, requestedEndDate:datetime=None, verbose:bool=False, preloadedDf:pd.DataFrame=None)-> bool:
 		#Note: specifying an requestedEndDate will automatically force a data update if required.  Keep that in mind for backtesting
+		#preloadedDf: already-fetched SQL rows for this ticker (from a batch query) in the same shape _load_history_sql returns; skips the per-ticker SQL round trip when provided.
 		if requestedEndDate:
 			requestedEndDate = ToTimestamp(requestedEndDate)
 			latestBusinessDay = _get_latest_non_us_holiday_bday(requestedEndDate)
 			requestedEndDate = min(requestedEndDate, latestBusinessDay)
-		if requestedStartDate: 
+		if requestedStartDate:
 			requestedStartDate = ToTimestamp(requestedStartDate)
 			requestedStartDate -= pd.offsets.BDay(0)
 		self.historicalPrices = None
@@ -783,10 +817,12 @@ class PricingData:
 		if requestedStartDate and requestedEndDate and requestedStartDate > requestedEndDate:
 			if verbose: print(f" LoadHistory: invalid date range start date {FormatDate(requestedStartDate)} > end date {FormatDate(requestedEndDate)}")
 			return False
-		if self.ticker == CONSTANTS.CASH_TICKER:
+		if preloadedDf is not None:
+			df = preloadedDf
+		elif self.ticker == CONSTANTS.CASH_TICKER:
 			df = self._generate_cash_history(requestedStartDate, requestedEndDate)
 		elif self.useDatabase:
-			loadStartDate = None 
+			loadStartDate = None
 			loadEndDate = requestedEndDate
 			if requestedStartDate is not None:
 				loadStartDate = requestedStartDate - timedelta(days=CONSTANTS.REQUIRED_LOOKBACK)
@@ -813,6 +849,10 @@ class PricingData:
 			else:
 				self._save_history(df_yahoo, verbose)
 				df = df_yahoo
+				if self.useDatabase:	#5.7: use the rows as stored, so this run computes what a later load (backtests, the next refresh) reads
+					reStart = requestedStartDate - timedelta(days=CONSTANTS.REQUIRED_LOOKBACK) if requestedStartDate is not None else None
+					df_sql = self._load_history_sql(reStart, requestedEndDate, verbose)
+					if df_sql is not None and not df_sql.empty: df = df_sql
 		if df is None:
 			return False
 		df = df.copy()
@@ -857,7 +897,7 @@ class PricingData:
 		df_sql = None
 		if self.database is not None and self.database.Open():
 			try:
-				sql = "SELECT [Date], [Open], [High], [Low], [Close] FROM PricesDaily WHERE Ticker = :ticker ORDER BY [Date]"
+				sql = "SELECT [Date], [Open], [High], [Low], [Close] FROM PricesDaily WHERE Ticker = CAST(:ticker AS varchar(20)) ORDER BY [Date]"
 				df_sql = self.database.DataFrameFromSQL(sql, params=[self.ticker], indexName="Date")
 			finally:
 				self.database.Close()
