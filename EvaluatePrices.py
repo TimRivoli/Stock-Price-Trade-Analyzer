@@ -1,9 +1,8 @@
-from datetime import datetime, date
+from datetime import datetime
 from dateutil.relativedelta import relativedelta
 import pandas as pd
 import matplotlib.pyplot as plt
 from _classes.Graphing import PlotHelper
-from _classes.MarketEvents import MarketEvent, MarketCrashes
 from _classes.Prices import PricingData, PriceSnapshot
 from _classes.Selection import StockPicker
 from _classes.TickerLists import TickerLists
@@ -42,7 +41,13 @@ def GraphTimePeriod(ticker:str, endDate:str, days:int):
 
 def GraphHistoricalDrops():
 	ticker = '.INX'
-	crash_troughs = [datetime(e.LowDate.year, e.LowDate.month, e.LowDate.day) for e in MarketCrashes.GetAll()]
+	crash_milestones = [
+		(datetime(1987, 8, 25), datetime(1987, 12, 4)),   # Black Monday
+		(datetime(2000, 3, 24), datetime(2002, 10, 9)),   # Dot-Com Bust
+		(datetime(2007, 10, 9), datetime(2009, 3, 9)),    # Financial Crisis
+		(datetime(2020, 2, 19), datetime(2020, 3, 23))    # COVID-19
+	]
+	crash_troughs = [m[1] for m in crash_milestones]
 	print(f"Trough Dates (The bottom): {crash_troughs}")
 	prices = PricingData(ticker)
 	if prices.LoadHistory():
@@ -67,7 +72,7 @@ def PriceCheck(startDate: str, Ticker:str):
 	print(ticker, startPrice, endPrice, (endPrice/startPrice-1)*100)
 
 def ShowPicks(tickerList: list):
-	forDate = GetLatestBDay()
+	forDate = pd.Timestamp(GetLatestBDay())
 	picker = StockPicker()
 	picker.AlignToList(tickerList)
 	for option in [2,3,4,5]:
@@ -87,18 +92,24 @@ def ShowPicks(tickerList: list):
 
 def CrashRecoverySpeed(ticker: str = '.INX'):
 	"""For each major crash, print how many trading days it took to fully recover."""
+	crash_milestones = [
+		('Black Monday 1987',     datetime(1987, 8, 25), datetime(1987, 12, 4)),
+		('Dot-Com Bust 2000',     datetime(2000, 3, 24), datetime(2002, 10, 9)),
+		('Financial Crisis 2008', datetime(2007, 10, 9), datetime(2009, 3, 9)),
+		('COVID-19 2020',         datetime(2020, 2, 19), datetime(2020, 3, 23)),
+	]
 	prices = PricingData(ticker)
 	if not prices.LoadHistory():
 		return
 	hist = prices.GetPriceHistory(['Average'])
 	print(f'\nCrash Recovery Speed for {ticker}')
-	print(f"{'Crash':<32} {'Drop':>7}  {'Trough Date':<13} {'Recovery Days':>14} {'Recovery Date'}")
-	print('-' * 90)
-	for crash in MarketCrashes.GetAll():
-		peak_label   = hist.index.asof(pd.Timestamp(crash.StartDate))
-		trough_label = hist.index.asof(pd.Timestamp(crash.LowDate))
+	print(f"{'Crash':<28} {'Drop':>7}  {'Trough Date':<13} {'Recovery Days':>14} {'Recovery Date'}")
+	print('-' * 85)
+	for label, peak_date, trough_date in crash_milestones:
+		peak_label  = hist.index.asof(pd.Timestamp(peak_date))
+		trough_label = hist.index.asof(pd.Timestamp(trough_date))
 		if pd.isnull(peak_label) or pd.isnull(trough_label):
-			print(f"{crash.Label:<32}  -- insufficient data --")
+			print(f"{label:<28}  -- insufficient data --")
 			continue
 		peak_price   = hist.loc[peak_label,  'Average']
 		trough_price = hist.loc[trough_label, 'Average']
@@ -108,9 +119,9 @@ def CrashRecoverySpeed(ticker: str = '.INX'):
 		if not recovered.empty:
 			recovery_date = recovered.index[0]
 			trading_days  = len(hist.loc[trough_label:recovery_date]) - 1
-			print(f"{crash.Label:<32} {drop_pct:>6.1f}%  {str(trough_label.date()):<13} {trading_days:>14}  {str(recovery_date.date())}")
+			print(f"{label:<28} {drop_pct:>6.1f}%  {str(trough_label.date()):<13} {trading_days:>14}  {str(recovery_date.date())}")
 		else:
-			print(f"{crash.Label:<32} {drop_pct:>6.1f}%  {str(trough_label.date()):<13}  still recovering")
+			print(f"{label:<28} {drop_pct:>6.1f}%  {str(trough_label.date()):<13}  still recovering")
 
 
 def NormalizedComparison(tickers: list, startDate: str = '1/1/2010', title: str = 'Normalized Price Comparison (Base=100)'):
@@ -235,8 +246,8 @@ def RollingDrawdown(ticker: str = '.INX'):
 def AdaptiveRegimeSnapshot(tickerList: list = None):
 	"""Print the current adaptive market regime state and resulting stock picks."""
 	if tickerList is None:
-		tickerList = TickerLists.StarterList()
-	forDate = GetLatestBDay()
+		tickerList = TickerLists.SP500_2026()
+	forDate = pd.Timestamp(GetLatestBDay())
 	print(f'\nAdaptive Regime Snapshot — {forDate}')
 	picker = StockPicker()
 	picker.AlignToList(tickerList)
@@ -274,127 +285,21 @@ def AdaptiveRegimeSnapshot(tickerList: list = None):
 		plot.PlotDataFrame(metrics, title='Recent Regime Metrics History', adjustScale=False)
 
 
-def CompareTickerAcrossMarketEvents(ticker: str = '.INX', events: list = None):
-	"""Graph a single ticker across market crash/recovery windows aligned to trading-day 0.
-	Useful for comparing how a stock behaved during distinct crash episodes.
-	"""
-	if events is None: return
-	prices = PricingData(ticker)
-	if not prices.LoadHistory():
-		return
-	hist = prices.GetPriceHistory(['Average'])
-	plot = PlotHelper()
-	safe = ticker.replace('.', '_')
-	plot.PlotTickerAcrossMarketEvents(
-		hist, events,
-		normalize=True,
-		title=f'{ticker} — Crash Episode Comparison (Normalized to 100)',
-		fileName=f'data/charts/TimePeriodCompare_{safe}.png',
-	)
-
-
-def PastYearComparison(ticker: str = '.INX', use_eoy: bool = True):
-	"""Compare ticker across the past 3 calendar years plus the current year.
-	Each series is normalized to 100 at Jan 1 so year-over-year progress is
-	directly comparable on a shared Jan-Dec x-axis.
-	use_eoy=False (default): past years end at the same day-of-year as today,
-	showing apples-to-apples progress at the same point in the calendar.
-	use_eoy=True: past years run Jan 1 - Dec 31 (full year); current year is YTD.
-	"""
-	from pandas.tseries.offsets import BDay
-
-	def _first_bday(d: date) -> date:
-		return pd.bdate_range(start=pd.Timestamp(d), periods=1)[0].date()
-
-	def _last_bday(d: date) -> date:
-		ts = pd.Timestamp(d)
-		if ts.weekday() >= 5:
-			ts -= BDay(1)
-		return ts.date()
-
-	today    = date.today()
-	anchor   = _last_bday(today)
-	cur_year = today.year
-	events   = []
-	for yr in range(cur_year - 3, cur_year + 1):
-		yr_start = _first_bday(date(yr, 1, 1))
-		if yr == cur_year:
-			yr_end = anchor
-			label  = f'{yr} YTD'
-		elif use_eoy:
-			yr_end = _last_bday(date(yr, 12, 31))
-			label  = str(yr)
-		else:
-			try:
-				same_day = anchor.replace(year=yr)
-			except ValueError:
-				same_day = anchor.replace(year=yr, day=28)
-			yr_end = _last_bday(same_day)
-			label  = str(yr)
-		events.append(MarketEvent(label, yr_start, yr_start, yr_end))
-
-	prices = PricingData(ticker)
-	if not prices.LoadHistory():
-		return
-	hist = prices.GetPriceHistory(['Average'])
-	safe = ticker.replace('.', '_')
-	plot = PlotHelper()
-	plot.PlotTickerAcrossMarketEvents(
-		hist, events,
-		normalize=True,
-		use_calendar_dates=True,
-		title=f'{ticker} — Year-over-Year Comparison (Normalized to 100 at Jan 1)',
-		fileName=f'data/charts/PastYearComparison_{safe}.png',
-	)
-
-
-def CompareTickersOverPeriod(tickers: list = None, startDate: str = '1/1/2020', endDate: str = None):
-	"""Graph 2-3 tickers on the same date axis, each normalized to 100 at startDate.
-	Useful for side-by-side relative performance of different names.
-	"""
-	if tickers is None: return
-	if endDate is None:	endDate = str(GetLatestBDay())
-	frames = {}
-	for ticker in tickers:
-		p = PricingData(ticker)
-		if p.LoadHistory(requestedStartDate=ToDate(startDate)):
-			frames[ticker] = p.GetPriceHistory(['Average'])
-		else:
-			print(f"  Could not load {ticker}, skipping.")
-	if not frames:
-		print("No data loaded.")
-		return
-	plot = PlotHelper()
-	safe_names = '_'.join(t.replace('.', '_') for t in tickers)
-	plot.PlotTickersOverPeriod(
-		frames,
-		start_date=startDate,
-		end_date=endDate,
-		normalize=True,
-		title=f'Ticker Comparison {startDate} – {endDate} (Normalized to 100)',
-		fileName=f'data/charts/TickerComparison_{safe_names}.png',
-	)
-
-
 if __name__ == '__main__':
 	tickerList = TickerLists.StarterList()
 	GraphHistoricalDrops()
 	SeasonalMonthlyReturns('.INX')
 	MarketStressDashboard(tickerList)
 	RollingDrawdown('.INX')
-	AdaptiveRegimeSnapshot(tickerList)
+	AdaptiveRegimeSnapshot(TickerLists.SP500_2026())	#Adaptive needs 170+ stocks
 	print(f"Loading {len(tickerList)} stocks..")
 	DownloadAndSaveStocks(tickerList)
 	print(f"Saving stats to _dataFolderhistoricalPrices")
 	DownloadAndSaveStocksWithStats(tickerList)
 	PlotAnnualPerformance('TSLA')
 	PlotAnnualPerformance('VIGRX')
-	ShowPicks(tickerList)
+	ShowPicks(TickerLists.SP500_2026())
 	GraphHistoricalDrops()
-	NormalizedComparison(['NVDA', 'WDC', 'STX', 'MU'], startDate='1/1/2010')
-	for year in range(1980,2020,2022): GraphTimePeriod(ticker = '.INX', endDate = '1/3/' + str(year), days=120)
-	for year in range(2019,2025,2026): GraphTimePeriod(ticker = '.INX', endDate = '5/15/' + str(year), days=120)
 	CrashRecoverySpeed('.INX')
-	CompareTickerAcrossMarketEvents(ticker='.INX', events=MarketCrashes.GetAll())
-	CompareTickersOverPeriod(tickers=['NVDA', 'WDC', 'SNDK', 'STX'], startDate='1/1/2020', endDate=None)
-	PastYearComparison('.INX')
+	NormalizedComparison(['NVDA', 'WDC', 'STX', 'MU'], startDate='1/1/2010')
+	for year in range(1980,2020,2): GraphTimePeriod(ticker = '.INX', endDate = '1/3/' + str(year), days=120)

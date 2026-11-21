@@ -1,23 +1,24 @@
-# Data Manipulation
-pandas
-numpy
+# Core data
+pandas>=3.0
+numpy>=2.0
 
-# Finance Data
+# Visualisation
+matplotlib
+
+# Finance data
 yfinance
-
-# Machine Learning & AI
-tensorflow
-keras
-
-# Database & SQL
-pyodbc
-sqlalchemy
-
-# Networking & Web Requests
-requests
 curl_cffi
 
-# Optional: Specialized Database Drivers
-# install this if you are using specific DBs like PostgreSQL or MySQL
-# psycopg2-binary
-# pymysql
+# Database (sqlalchemy is imported by DataIO even when you only use the .csv files;
+# pyodbc is only needed for the optional SQL Server database)
+sqlalchemy>=2.0
+pyodbc
+
+# Utilities
+tqdm
+python-dateutil
+
+# Optional: machine learning price prediction (SeriesPrediction.py, TrainPrices.py only).
+# Not needed for the trading models. tensorflow may not yet support the newest Python release.
+# tensorflow
+# keras
