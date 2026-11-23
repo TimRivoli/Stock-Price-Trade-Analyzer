@@ -104,6 +104,43 @@
 #        last volLookback trading days (daily return / prior day's invested share) and holds min(1, target / volatility) of the
 #        picks, rounded to 10%, the rest in cash; applied after the risk switch. Barroso and Santa-Clara (2015), Moreira and
 #        Muir (2017). Runs without it are unchanged.
+#   6.9  11/21/26: profitability screen (TradeModelParams.profitScreen, _GP<pct>, blended/adaptive, off by default). Each
+#        month ProfitabilityScreen drops that share of the month's universe: the non-financial stocks with the lowest gross
+#        profit / assets in EdgarFundamentalsMonthly (filed before the month starts). Financials (SIC 6000-6999) and stocks
+#        without figures (before ~2010, foreign filers) stay. Novy-Marx (2013). Runs without it are unchanged.
+#   6.10 11/21/26: strict data testing (TradeModelParams.strictData, _SD(<codes>), queue --strict-data). The universe
+#        is cut to the stocks that have every listed data set (STRICT_DATA_CODES), with or without the filter that uses
+#        it, so a filter is tested against a baseline on the same stocks; the production missing-data rule of each
+#        filter is chosen from those results. 'gp': non-financials with gross profit / assets (~58% of the 2012+
+#        universe). Unknown codes stop the run (StrictDataCodes). Runs without it are unchanged.
+#   6.11 11/21/26: volatility target off in chosen market states (TradeModelParams.volTargetOff, _VT<pct>X(<labels>),
+#        queue --vol-target-off). Each trading day the stored MarketStates labels of the prior day (StoredStateLabels,
+#        blowoff and geometry labels, canonical universe, Blended and Adaptive alike) decide whether volTarget applies;
+#        a change re-picks that day. Spliced 1980-2024 runs: targeting cost most in POST_MANIA (rebounds, base +100%/yr).
+#        Runs without it are unchanged.
+#   6.18 11/22/26: deterministic backtests - TradingModel.ProcessDay fills each day's orders in sorted ticker order (was a
+#        set's order, which changes with Python's hash seed). Every run's result shifts slightly; compare 6.18 runs with 6.18 runs.
+#   6.19 11/22/26: pullback buy options (trading engine, docs/experiment/swing_tuning_grid2.py): pullEntrySigma (_PB..E<x>) = limit
+#        buy k x vol below the prior close, live 2 days, funded once filled; pullFundStretched (_PB..S) = fund from the highest-z
+#        holdings first. Off: results identical to 6.18.
+#   6.17 11/22/26: swing trading tuned (docs/experiment/swing_tuning_grid.py): trim trigger levels and risk-off-only as
+#        parameters (swingTriggerZ/Spike, swingRiskOffOnly: _SW..Z/J/R); pullback buys (pullFraction/Days/Sigma/TriggerZ/
+#        TriggerDrop/SkipRiskOff, _PB<pct>, queue --pull): after a drop buy more at the open, funded from the other holdings,
+#        sell the extra lot higher. Trading engine only; runs without them are unchanged.
+#   6.16 11/22/26: fix for 6.15 swing runs crashing in AlignPositions when a ticker has several rows in the targets
+#        (TypeError: float() of a Series). No result changes; 6.15 workers must not run _SW jobs.
+#   6.15 11/22/26: trade around the core position (TradeModelParams.swingFraction/swingDays/swingSigma, _SW<pct>, queue --swing):
+#        after a spike in a held stock (40-day channel z > 1.5 or 5-day rise > 1.5 sigma) sell part at the open and buy it
+#        back with a limit 1 sigma x sqrt(days) lower, at market after `days`. Trading engine only; runs without it are unchanged.
+#   6.14 11/22/26: production Adaptive uses the 10-day smoothed risk-off switch (TradeModelParams.Production('adaptive')
+#        riskOffSmooth 10, _RO50S10). UpdateStoredPicks recomputes the smoothed cash share every day (5% steps);
+#        PicksAdaptiveDaily rebuilt. Backtest code unchanged.
+#   6.13 11/21/26: rate-limit size as a parameter (TradeModelParams.rateLimitPct, default 0.20 = the old constant;
+#        _RL<pct> when not 20%, queue --rl-pct). Trading engine only; runs at 20% are unchanged.
+#   6.12 11/21/26: smoothed risk-off switch (TradeModelParams.riskOffSmooth, _RO<pct>S<n>, queue --risk-off-smooth).
+#        The invested share is 1 - (1 - riskOffExposure) x the share of the last n trading days the switch was risk-off
+#        (IndexRiskSwitch.SmoothedExposure, rounded to 5%), applied at each re-pick; no re-pick on a flip. One-day signals
+#        barely move the picks; a lasting one reaches the full cash share after n days. Runs without it are unchanged.
 # =============================================================================================
 # CHANGE LOG (market state / adaptive convex picks). Each change has an on/off flag below so it
 # can be backed out individually for comparison runs.
@@ -137,7 +174,7 @@ from typing import Optional, Dict
 from tqdm import tqdm
 from _classes.Utility import *
 from _classes.Prices import PriceSnapshot, PricingData
-from _classes.Trading import TradeModelParams
+from _classes.Params import TradeModelParams, SwingFeatures, SwingFlag, SwingLimitPcts	#11/21/26: no longer imports the trading engine
 from _classes.DataIO import PTADatabase
 from _classes.TickerLists import TickerLists
 
@@ -152,7 +189,7 @@ MODE_CONVEX_LATE   = "CONVEX_LATE"
 MODE_BLENDED       = "BLENDED"
 MODE_DEFENSIVE     = "DEFENSIVE"
 MODE_TRANSITION = "TRANSITION"
-SELECTION_VERSION = "6.8"		# see the version list at the top; stored with every backtest result
+SELECTION_VERSION = "6.19"	# see the version list at the top; stored with every backtest result
 VOL_RANK_FLOOR = 0.10			# volAdjustedRank: volatility below this counts as this (stops near-flat series ranking first)
 MARKET_STATE_VERSION_2PHASE = 4.7	# 5.6: two-phase build (BuildMarketStatesRaw + DeriveMarketStates); runs read it with marketStateVersion 4.7
 MARKET_STATE_VERSION_PIT = TradeModelParams.PIT_STATE_VERSION	# 6.1: 4.8 = two-phase build on the point-in-time lists
@@ -1086,11 +1123,11 @@ class StockPicker():
 		rows = []
 		for d, picks, total_stocks in self._blended_rebuild_buffer:
 			if picks is None or len(picks) == 0: continue
-			picks = picks[["TargetHoldings", "Point_Value"]].copy()
+			picks = picks[["TargetHoldings"]].copy()	#11/22/26: no Point_Value in the stored picks tables
 			picks["Date"] = d
 			picks["TotalStocks"] = total_stocks
 			picks.index.name = "Ticker"
-			rows.append(picks[["Date", "TargetHoldings", "Point_Value", "TotalStocks"]])
+			rows.append(picks[["Date", "TargetHoldings", "TotalStocks"]])
 		self._blended_rebuild_buffer = []
 		if not rows: return
 		df = pd.concat(rows)
@@ -1146,7 +1183,7 @@ class StockPicker():
 			else:
 				result['Date'] = current_date 
 				result['TotalStocks'] = len(self._tickerList) 
-				result = result[['Date', 'TargetHoldings', 'Point_Value', 'TotalStocks']]
+				result = result[['Date', 'TargetHoldings', 'TotalStocks']]	#11/22/26: no Point_Value
 				result.index.name='Ticker'
 				if verbose: print(result)
 				db.ExecSQL(f"DELETE FROM {tableName} WHERE Date='" + str(current_date) + "'")
@@ -1178,6 +1215,8 @@ class StockPicker():
 			self.adaptiveFilterSet, self.marketStateVersion, self.adaptiveStockCount = cfg.adaptiveFilterSet, cfg.marketStateVersion, cfg.adaptiveStockCount
 			self._pick_history, self._adaptive_history_df, self._last_market_state, self.convex_duration = None, None, None, 0
 		risk = IndexRiskSwitch(warmStart, endDate) if do_a and cfg.riskOffExposure < 1.0 else None
+		flag_cfg = TradeModelParams.SwingFlags()	#11/22/26 trade flags
+		flag_risk = risk if risk is not None else IndexRiskSwitch(warmStart, endDate)
 		cal = PricingData(CONSTANTS.CASH_TICKER)
 		cal.LoadHistory(requestedStartDate=warmStart, requestedEndDate=endDate)
 		dates = cal.historicalPrices.sort_index().index.unique()
@@ -1194,11 +1233,13 @@ class StockPicker():
 		out, written, stopped = {m: [] for m in starts}, {m: 0 for m in starts}, False
 		def add_row(rows, picks, d):
 			if picks is None or len(picks) == 0: return
-			r = picks[['TargetHoldings', 'Point_Value']].copy()
+			r = picks[['TargetHoldings']].copy()	#11/22/26: no Point_Value in the stored picks tables
 			r['Date'] = d
 			r['TotalStocks'] = len(self._tickerList)
 			r.index.name = 'Ticker'
-			rows.append(r[['Date', 'TargetHoldings', 'Point_Value', 'TotalStocks']])
+			flags = [_swing_flag_row(price_map.get(t), d, flag_risk.IsRiskOff(d), flag_cfg) if t != CONSTANTS.CASH_TICKER else _NO_FLAGS for t in r.index]	#11/22/26
+			r = pd.concat([r, pd.DataFrame(flags, index=r.index, columns=SWING_FLAG_COLUMNS)], axis=1)
+			rows.append(r[['Date', 'TargetHoldings', 'TotalStocks'] + SWING_FLAG_COLUMNS])
 		db = PTADatabase()
 		for (y, mth), month_dates in dates.to_series().groupby([dates.year, dates.month]):
 			tickers = TickerLists.GetTickerListSQL(year=int(y), month=int(mth), TopN=CONSTANTS.MARKET_STATE_TOPN_TICKER_COUNT, filterByFundamentals=True, pointInTime=cfg.pointInTimeUniverse)	#6.2: point-in-time lists
@@ -1208,6 +1249,7 @@ class StockPicker():
 				print(f" UpdateStoredPicks: STOPPED - no universe for {int(y)}-{int(mth):02d} (run sp_UpdateEverything first)")
 				break
 			self.AlignToList(tickers, currentDate=month_dates.iloc[0])
+			price_map = {p.ticker: p for p in self.priceData}	#11/22/26 trade flags
 			rows = {m: [] for m in starts}
 			for d in month_dates:
 				if d >= recent and d >= first_write:	#recent days: the universe's prices must be in, or the state and picks are wrong
@@ -1218,7 +1260,9 @@ class StockPicker():
 						break
 				if do_a and a_ok[d]:
 					picks = self.GetAdaptiveConvexPicks(currentDate=d)
-					if risk is not None and picks is not None and len(picks) and risk.IsRiskOff(d): picks = ApplyRiskOffExposure(picks, cfg.riskOffExposure)
+					if risk is not None and picks is not None and len(picks):
+						e = risk.SmoothedExposure(d, cfg.riskOffExposure, cfg.riskOffSmooth) if cfg.riskOffSmooth > 0 else (cfg.riskOffExposure if risk.IsRiskOff(d) else 1.0)	#6.14: smoothed, recomputed every day
+						if e < 1.0: picks = ApplyRiskOffExposure(picks, e)
 					if d >= starts['adaptive']: add_row(rows['adaptive'], picks, d)
 				elif do_a and a_cash[d] and d >= starts['adaptive']:
 					add_row(rows['adaptive'], CASH_RESULT, d)
@@ -1747,6 +1791,66 @@ def Generate_Picks_For_SQL_DateRange(startYear:int=None, years: int=0, TopN=CONS
 	db.Close()
 
 #-------------------------------------------- 5.7: stored picks tables (PicksBlendedDaily, PicksAdaptiveDaily) -----------------------------------------------
+#11/22/26 trade flags: each stored pick row carries the swing features on the closes before its date and the flag under
+#TradeModelParams.SwingFlags() - Signal TRIM (sell part at the open, buy back TrimBuyBackPct below the sale) or PULL (buy
+#more at the open, sell the extra PullSellPct above the fill); RiskOff = the .INX 200-day switch on the prior close.
+SWING_FLAG_COLUMNS = ['ChannelZ', 'Move5', 'Vol20', 'RiskOff', 'Signal', 'TrimBuyBackPct', 'PullSellPct']
+_NO_FLAGS = (None,) * len(SWING_FLAG_COLUMNS)
+def _swing_flags(closes, riskOff: bool, cfg: TradeModelParams) -> tuple:
+	f = SwingFeatures(closes)
+	if f is None: return (None, None, None, bool(riskOff), None, None, None)
+	vol, z, move5 = f
+	trim_pct, pull_pct = SwingLimitPcts(vol, cfg)
+	return (round(z, 4), round(move5, 4), round(vol, 6), bool(riskOff), SwingFlag(vol, z, move5, riskOff, cfg), round(trim_pct, 5), round(pull_pct, 5))
+def _swing_flag_row(ph, d, riskOff: bool, cfg: TradeModelParams) -> tuple:
+	if ph is None or ph.historicalPrices is None or 'Close' not in ph.historicalPrices.columns: return _NO_FLAGS
+	hp = ph.historicalPrices
+	i = hp.index.searchsorted(d, side='left')	#closes before the pick date
+	return _swing_flags(hp['Close'].to_numpy(dtype=float)[max(0, i - 41):i], riskOff, cfg)
+
+def BackfillSwingFlags(replace: bool = False, verbose: bool = True) -> dict:
+	"""Fills the trade-flag columns of PicksAdaptiveDaily and PicksBlendedDaily from PricesDaily for rows that don't have
+	them (replace=True: every row, e.g. after changing TradeModelParams.SwingFlags). Same calculation as UpdateStoredPicks."""
+	cfg = TradeModelParams.SwingFlags()
+	db = PTADatabase()
+	if not db.Open(): return {}
+	done = {}
+	try:
+		for table in _STORED_TABLES.values():
+			where = "" if replace else " AND ChannelZ IS NULL AND Signal IS NULL AND RiskOff IS NULL"
+			rows = db.DataFrameFromSQL(f"SELECT Date, Ticker FROM {table} WHERE Ticker <> '{CONSTANTS.CASH_TICKER}'{where}")
+			if rows is None or rows.empty:
+				done[table] = 0
+				continue
+			rows['Date'] = pd.to_datetime(rows.Date)
+			risk = IndexRiskSwitch(rows.Date.min() - pd.Timedelta(days=10), rows.Date.max())
+			out = []
+			tickers = sorted(rows.Ticker.unique())
+			for i in range(0, len(tickers), 150):
+				chunk = tickers[i:i + 150]
+				inlist = ",".join("'" + t.replace("'", "''") + "'" for t in chunk)
+				lo = (rows[rows.Ticker.isin(chunk)].Date.min() - pd.Timedelta(days=120)).strftime('%Y-%m-%d')
+				px = db.DataFrameFromSQL(f"SELECT Ticker, Date, [Close] c FROM PricesDaily WHERE Ticker IN ({inlist}) AND Date >= '{lo}' AND [Close] > 0")
+				px['Date'] = pd.to_datetime(px.Date)
+				want = rows[rows.Ticker.isin(chunk)].groupby('Ticker').Date.apply(list)
+				for t, g in px.sort_values('Date').groupby('Ticker'):
+					dates, closes = g.Date.to_numpy(), g.c.to_numpy(dtype=float)
+					for d in want.get(t, []):
+						k = dates.searchsorted(np.datetime64(d), side='left')
+						out.append((d, t) + _swing_flags(closes[max(0, k - 41):k], risk.IsRiskOff(d), cfg))
+			df = pd.DataFrame(out, columns=['Date', 'Ticker'] + SWING_FLAG_COLUMNS)
+			db.ExecSQL("IF OBJECT_ID('dbo.SwingFlagsStaging') IS NOT NULL DROP TABLE dbo.SwingFlagsStaging")
+			db.DataFrameToSQL(df, tableName='SwingFlagsStaging')
+			db.ExecSQL(f"""UPDATE p SET ChannelZ = s.ChannelZ, Move5 = s.Move5, Vol20 = s.Vol20, RiskOff = s.RiskOff, Signal = s.Signal,
+				TrimBuyBackPct = s.TrimBuyBackPct, PullSellPct = s.PullSellPct
+				FROM {table} p INNER JOIN dbo.SwingFlagsStaging s ON s.Ticker = p.Ticker AND s.Date = p.Date""")
+			db.ExecSQL("DROP TABLE dbo.SwingFlagsStaging")
+			done[table] = len(df)
+			if verbose: print(f" BackfillSwingFlags {table}: {len(df):,} rows, signals {df.Signal.value_counts().to_dict()}")
+	finally:
+		db.Close()
+	return done
+
 _STORED_TABLES = {'blended': 'PicksBlendedDaily', 'adaptive': 'PicksAdaptiveDaily'}
 
 def StoredPicksPlan(models=('blended', 'adaptive'), startDate=None, endDate=None, redoDays: int = 3, regenerateStates: bool = False, dryRun: bool = False):
@@ -1946,6 +2050,16 @@ class IndexRiskSwitch:
 	def IsRiskOff(self, date) -> bool:
 		prior = self.state[self.state.index < ToTimestamp(date)]
 		return bool(prior.iloc[-1]) if len(prior) else False
+	def SmoothedExposure(self, date, exposure: float, days: int) -> float:
+		"""6.12 riskOffSmooth: share to keep invested = 1 - (1 - exposure) x the share of the last days trading days (before
+		date) that were risk-off, rounded to RISK_OFF_SMOOTH_STEP. A one-day signal moves the picks by (1 - exposure) / days;
+		a lasting one reaches exposure after days trading days, and leaves the same way."""
+		prior = self.state[self.state.index < ToTimestamp(date)].iloc[-days:]
+		if not len(prior): return 1.0
+		e = 1.0 - (1.0 - exposure) * float(prior.mean())
+		return float(min(1.0, round(e / RISK_OFF_SMOOTH_STEP) * RISK_OFF_SMOOTH_STEP))
+
+RISK_OFF_SMOOTH_STEP = 0.05	#6.12: smoothed exposure rounded to 5%, so the cash share changes in steps, not every day by 2.5%
 
 #-------------------------------------------- 5.9: momentum-leader risk-off switch -----------------------------------------------
 LEADER_INDEX_TABLE = "LeaderIndexDaily"
@@ -2046,6 +2160,38 @@ def ApplyRiskOffExposure(picks: pd.DataFrame, exposure: float) -> pd.DataFrame:
 		picks.index.name = 'Ticker'
 	return picks
 
+STRICT_DATA_CODES = {	#6.10 TradeModelParams.strictData codes: the data a strict test requires of every stock in the universe
+	'gp': 'non-financial with GrossProfitToAssets in EdgarFundamentalsMonthly (filed before the month; ProfitabilityScreen)',
+}
+def StrictDataCodes(strictData: str) -> set:
+	"""6.10: the codes in TradeModelParams.strictData. An unknown code raises, so a worker on code that can't apply it
+	stops instead of running a non-strict test under a strict name."""
+	codes = {c.strip().lower() for c in (strictData or '').split(',') if c.strip()}
+	unknown = codes - set(STRICT_DATA_CODES)
+	if unknown: raise ValueError(f"strictData: unknown code(s) {sorted(unknown)}; known: {sorted(STRICT_DATA_CODES)}")
+	return codes
+
+_profit_cache = {}
+def ProfitabilityScreen(tickers: list, year: int, month: int, fraction: float, dataOnly: bool = False) -> list:
+	"""6.9: tickers minus the fraction of the screened ones (non-financials with GrossProfitToAssets in EdgarFundamentalsMonthly
+	for year/month: figures filed before the 1st) with the lowest gross profit / assets. Financials and tickers without
+	figures are kept, unless dataOnly (6.10): then only the screened ones are kept, so a dataOnly run with fraction 0 is the
+	baseline for a dataOnly run with the screen. Order of tickers is kept."""
+	if (fraction <= 0 and not dataOnly) or not tickers: return tickers
+	key = (year, month)
+	if key not in _profit_cache:
+		db = PTADatabase()
+		gp = {}
+		if db.Open():
+			df = db.DataFrameFromSQL(f"SELECT Ticker, GrossProfitToAssets FROM EdgarFundamentalsMonthly WHERE [Year] = {int(year)} AND [Month] = {int(month)} AND IsFinancial = 0 AND GrossProfitToAssets IS NOT NULL")
+			db.Close()
+			gp = dict(zip(df.Ticker, df.GrossProfitToAssets))
+		_profit_cache[key] = gp
+	gp = _profit_cache[key]
+	scored = sorted((gp[t], t) for t in tickers if t in gp)
+	drop = {t for _, t in scored[:int(round(len(scored) * max(fraction, 0)))]}
+	return [t for t in tickers if t not in drop and (t in gp or not dataOnly)]
+
 VOL_TARGET_STEP = 0.1		#6.8: exposure rounded to this step, so small volatility changes don't trade
 VOL_TARGET_MIN_INVESTED = 0.2	#days invested less than this are skipped (their return says little about the stocks' volatility)
 
@@ -2064,3 +2210,30 @@ def VolTargetExposure(dailyValue: pd.DataFrame, target: float, lookback: int = 2
 	vol = float(u.std()) * np.sqrt(252)
 	if not vol > 0: return 1.0
 	return float(min(1.0, round(target / vol / VOL_TARGET_STEP) * VOL_TARGET_STEP))
+
+#6.11 TradeModelParams.volTargetOff: market state labels in which the volatility target is not applied. Only blowoff and
+#geometry labels: they are unique across the state columns (STABLE is both an expansion and a leadership label).
+VOL_TARGET_OFF_LABELS = {'NONE', 'QUIET_MELTUP', 'MANIA_RUNNING', 'MANIA_BREAKING', 'POST_MANIA', 'LINEAR', 'MIXED', 'CONVEX'}
+def VolTargetOffLabels(volTargetOff: str) -> set:
+	"""6.11: the labels in TradeModelParams.volTargetOff. An unknown label raises, so a typo can't run as plain targeting."""
+	labels = {c.strip().upper() for c in (volTargetOff or '').split(',') if c.strip()}
+	unknown = labels - VOL_TARGET_OFF_LABELS
+	if unknown: raise ValueError(f"volTargetOff: unknown label(s) {sorted(unknown)}; known: {sorted(VOL_TARGET_OFF_LABELS)}")
+	return labels
+
+class StoredStateLabels:
+	"""6.11: blowoff and geometry labels of the stored MarketStates (one version, the canonical universe's), read once.
+	Before(date) = the labels of the last stored day before date (known at that day's open), empty before the first row.
+	Blended and Adaptive runs read the same table, so the rule is the same for both."""
+	def __init__(self, stateVersion: float):
+		self.dates, self.labels = np.array([], dtype='datetime64[ns]'), []
+		db = PTADatabase()
+		if db.Open():
+			df = db.DataFrameFromSQL(f"SELECT asOfDate, blowoff_state, geometry_state FROM {CONSTANTS.ADAPTIVE_CONVEX_STATE_TABLE} WHERE state_version = :v ORDER BY asOfDate", params={"v": float(stateVersion)})
+			db.Close()
+			self.dates = pd.to_datetime(df.asOfDate).values.astype('datetime64[ns]')
+			self.labels = [{str(b).upper(), str(g).upper()} - {'NONE_', 'NAN'} for b, g in zip(df.blowoff_state, df.geometry_state)]
+		if not len(self.dates): print(f" StoredStateLabels: no MarketStates rows for version {stateVersion}: volTargetOff never applies")
+	def Before(self, forDate) -> set:
+		i = int(np.searchsorted(self.dates, np.datetime64(pd.Timestamp(forDate), 'ns'), side='left')) - 1
+		return self.labels[i] if i >= 0 else set()

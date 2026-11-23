@@ -1,4 +1,4 @@
-import time, json, socket
+import time, json, socket, re
 import numpy as np, pandas as pd
 import _classes.Constants as CONSTANTS
 from tqdm import tqdm
@@ -10,244 +10,7 @@ from _classes.DataIO import PTADatabase
 from _classes.Prices import PriceSnapshot, PricingData
 from _classes.Utility import *
 
-class SQLFriendlyMixin:
-	def to_sql_dict(self):
-		"""Converts dataclass to a flat dict with SQL-compatible types."""
-		fields = getattr(self, 'export_fields', [k for k in self.__dict__ if not k.startswith('_')])       
-		final_data = {}
-		for field_name in fields:
-			val = getattr(self, field_name, None)           
-			if isinstance(val, (dict, list)):
-				continue
-			if isinstance(val, (pd.Timestamp, datetime)):
-				final_data[field_name] = val.to_pydatetime() if hasattr(val, 'to_pydatetime') else val
-			elif isinstance(val, (np.float64, np.float32)):
-				final_data[field_name] = float(val)
-			elif isinstance(val, (np.int64, np.int32)):
-				final_data[field_name] = int(val)
-			elif isinstance(val, bool):
-				final_data[field_name] = 1 if val else 0
-			else:
-				final_data[field_name] = val                
-		return final_data
-		
-@dataclass
-class TradeModelParams(SQLFriendlyMixin):
-	_startDate: pd.Timestamp = field(init=False, repr=False)
-	modelName: str = ''
-	#11/19/26: the defaults are the standard test settings (1995 + 27 years, FF, point-in-time lists, 9 stocks, re-pick every
-	#5 days, 28-day pick window, no point-value allocation; AdaptiveConvex FS2 on 4.8 states). Callers set only what differs.
-	#Production() gives the stored-picks / live settings; the Run*/Rebuild* methods below hold the per-model rules.
-	init_startDate: str = '1/1/1995'
-	durationInYears: int = 27
-	portfolioSize: int = 100000
-	reEvaluationInterval: int = 5
-	longHistory: int = 365
-	shortHistory: int = 90
-	
-	# Filters & Constraints
-	stockCount: int = 9
-	filterOption: int = 5
-	filterByFundamentals: bool = True
-	minPercentGain: float = 0.05
-	SP500Only: bool = False
-	marketCapMin: int = 0
-	marketCapMax: int = 0
-	riskFilter: bool = True		#sp_GetTickerList risk pre-filter (with filterByFundamentals). Model name gets _NoRF when off
-	pointInTimeUniverse: bool = True	#Selection 6.0: sp_GetTickerList @PointInTime - month M's list from month M-1 figures only (month-end momentum, prior month's volume/price), no look-ahead. Model name _PIT. 6.2: the default and the canonical universe
-	damageFilter: bool = False	#sp_GetTickerList @DamageFilter: drop stocks failing base_filter's damage scores at the prior month end (with filterByFundamentals). Model name gets _DMG
-	adaptiveFilterSet: int = 2		#Selection 5.4, AdaptiveConvex only: execution filter lists (1 = 4.6, 2 = FS2: F10 when a mania breaks, F6/9v in convex expansion/contraction). Model name _FS2
-	riskOffExposure: float = 1.0	#Selection 5.6, blended/adaptive: share invested while .INX is below its 200-day average (2% band); 1.0 = off. Model name _RO<pct>
-	riskOffSignal: str = 'index'	#Selection 5.9, with riskOffExposure: 'index' = .INX 200-day switch; 'leaders' = momentum-leader index (LeaderIndexDaily) below its 100-day average. Model name _RO<pct>L
-	volTarget: float = 0.0			#Selection 6.8, blended/adaptive: annualized volatility target - on each re-pick the stocks are scaled to min(1, volTarget / realized volatility of the fully invested portfolio over volLookback trading days), rounded to 10%, rest in cash; on top of riskOffExposure. 0 = off. Model name _VT<pct>
-	volLookback: int = 21			#Selection 6.8, with volTarget: trading days of daily returns the realized volatility is measured over. Model name _VT<pct>L<n> when not 21
-	postManiaDays: int = 0			#Selection 5.9, AdaptiveConvex only: trading days after the last mania day treated as POST_MANIA (stock floor); 0 = the state's own (126). Model name _PMD<n>
-	adaptiveStockCount: int = 0		#Selection 5.6, AdaptiveConvex only: fixed stock count instead of the conviction count; 0 = off. Model name _S<n>
-	marketStateVersion: float = 4.8	#Selection 5.6, AdaptiveConvex only: MarketStates version read (4.7 = two-phase build, _MS47; 6.1: 4.8 = on the point-in-time lists, _MS48, the default from 6.2). filterOption 97 jobs build its raw rows
-	dmaWeight: bool = False			#Selection 5.5, blended/adaptive: the vote blend's 200DMA weighting really applied (it never was). Model name _DMA
-	blendFilters: str = ''			#Selection 5.3, PM_Blended only: custom blend "10:3,9v:3,4:2,6:1" (Selection.ParseBlend); '' = DEFAULT_BLEND
-	volAdjustedRank: bool = False	#Selection 5.1: momentum filters rank on PC_x / Volatility_1Year instead of raw PC_x. Model name gets _VA
-	selectionVersion: str = ''		#set by the worker from Selection.SELECTION_VERSION when the run starts (not taken from the queued job); stored in TradeModelComparisons.SelectionVersion
-	rebuildBlendedPicks: bool = False	#PM_Blended only: write each day's raw blended picks to PicksBlendedDaily while running (needs useStoredPicks off, pickHistoryWindow > 0, default blend, canonical universe). Overwrites the stored picks
-	rebuildMarketStates: bool = False	#AdaptiveConvex only: regenerate the MarketStates rows for every date the run covers (only with the canonical universe: FF + risk filter, no SP500Only/market cap limits)
-
-	# System & Execution
-	pickHistoryWindow: int = 28	#28 days is optimal (3/16/26 testing); AdaptiveConvex uses -1 (its own window)
-	shopBuyPercent: float = 0.0
-	shopSellPercent: float = 0.0
-	trimProfitsPercent: float = 0.0
-	allocateByPointValue: bool = False
-	rateLimitTransactions: bool = False
-	saveTradeHistory: bool = True
-	useStoredPicks: bool = True	#PM_Blended only: read stored picks from PicksBlendedDaily (_DB, queue --db). Was useDatabase (renamed 11/18/26; column TradeModelComparisons.useStoredPicks)
-	saveResults: bool = False
-	verbose: bool = False
-	
-	batchName: str = ''
-	processing_minutes: int = 0	
-	export_fields = [
-		'modelName', 'startDate', 'endDate', 'durationInYears', 'stockCount', 'reEvaluationInterval', 'SP500Only', 	'longHistory', 'shortHistory', 'minPercentGain', 'startValue', 'endValue',
-		'pickHistoryWindow', 'shopBuyPercent', 'shopSellPercent', 'trimProfitsPercent', 'allocateByPointValue', 'filterOption', 'useStoredPicks','filterByFundamentals', 'rateLimitTransactions','marketCapMin', 'marketCapMax', 'processing_minutes', 'batchName', 'selectionVersion'
-	]		
-	_NAME_BASE_FILTER_SET = 1		#model names mark settings that differ from the original runs (_FS2, _MS47), not from the defaults
-	_NAME_BASE_STATE_VERSION = 4.6
-	PIT_STATE_VERSION = 4.8			#Selection 6.1: MarketStates built on the point-in-time lists (Selection.MARKET_STATE_VERSION_PIT)
-
-	def __post_init__(self):		
-		self.startDate = pd.to_datetime(self.init_startDate)	 # Trigger the setters to convert types immediately on startup
-	@property
-	def startDate(self) -> pd.Timestamp:
-		return self._startDate
-	@startDate.setter
-	def startDate(self, value):
-		self._startDate = pd.to_datetime(value)	
-		self.init_startDate = self._startDate
-	@property
-	def endDate(self) -> pd.Timestamp: return self.startDate + pd.DateOffset(years=self.durationInYears) 
-	def AddModelNameModifiers(self):
-		mn = self.modelName
-		if mn == '':
-			if self.filterOption == 99: mn = f"PM_Blended"
-			elif self.filterOption == 98: mn = f"AdaptiveConvex"
-			else: mn = f"PM_filter{self.filterOption}"
-		if self.filterOption == 99 and self.useStoredPicks: mn += "_DB" 
-		if self.filterByFundamentals and not "_FF" in mn: mn += "_FF"
-		if not "_HW" in mn:
-			if self.pickHistoryWindow > 0: mn += f"_HW{self.pickHistoryWindow}"
-			if self.pickHistoryWindow < 0: mn += f"_HWAdaptive"
-		if self.filterByFundamentals and not self.riskFilter and not "_NoRF" in mn: mn += "_NoRF"
-		if self.filterByFundamentals and self.damageFilter and not "_DMG" in mn: mn += "_DMG"
-		if self.pointInTimeUniverse and not "_PIT" in mn: mn += "_PIT"
-		if self.volAdjustedRank and not "_VA" in mn: mn += "_VA"
-		if self.filterOption == 98 and self.adaptiveFilterSet != self._NAME_BASE_FILTER_SET and not "_FS" in mn: mn += f"_FS{self.adaptiveFilterSet}"
-		if self.dmaWeight and not "_DMA" in mn: mn += "_DMA"
-		if self.filterOption == 98 and self.adaptiveStockCount > 0 and not "_S" + str(self.adaptiveStockCount) in mn: mn += f"_S{self.adaptiveStockCount}"
-		if self.filterOption == 98 and self.marketStateVersion != self._NAME_BASE_STATE_VERSION and not "_MS" in mn: mn += "_MS" + str(self.marketStateVersion).replace(".", "")
-		if self.filterOption == 98 and self.postManiaDays > 0 and not "_PMD" in mn: mn += f"_PMD{self.postManiaDays}"
-		if self.riskOffExposure < 1.0 and not "_RO" in mn: mn += f"_RO{int(round(self.riskOffExposure * 100))}" + ("L" if self.riskOffSignal == 'leaders' else "")
-		if self.volTarget > 0 and not "_VT" in mn: mn += f"_VT{int(round(self.volTarget * 100))}" + (f"L{self.volLookback}" if self.volLookback != 21 else "")
-		if self.SP500Only and not "_SP500" in mn: mn += "_SP500"
-		if self.allocateByPointValue and not "_PVA" in mn: mn += "_PVA"
-		if self.rateLimitTransactions and not "_RL" in mn:  mn += "_RL"
-		if self.trimProfitsPercent > 0 and not "_TP" in mn:  mn += f"_TP{self.trimProfitsPercent}"
-		if self.shopBuyPercent > 0 and not "_SB" in mn:  mn += f"_SB{self.shopBuyPercent}"
-		if self.shopSellPercent > 0 and not "_SS" in mn:  mn += f"_SS{self.shopSellPercent}"
-		self.modelName = mn
-
-	@classmethod
-	def Production(cls, model: str) -> 'TradeModelParams':
-		"""The live settings: what PicksAdaptiveDaily / PicksBlendedDaily are built with (StockPicker.UpdateStoredPicks)
-		and ModelPastFewYears runs. adaptive = FS2 on 4.8 states, conviction stock count, 50% invested while .INX is below
-		its 200-day average (best Sharpe, 11/18/26 tests); blended = DEFAULT_BLEND (1.3.9.9.6), 28-day window. Both on the
-		point-in-time lists (6.2)."""
-		p = cls()
-		if model == 'adaptive':
-			p.filterOption, p.riskOffExposure = 98, 0.5
-		elif model == 'blended':
-			p.filterOption = 99
-		else:
-			raise ValueError(f"TradeModelParams.Production: unknown model {model!r} (adaptive / blended)")
-		p.useStoredPicks = False
-		return p
-
-	def IsCanonicalUniverse(self) -> bool:
-		"""The universe stored states and picks are built on (top 250 by sp_GetTickerList with filter by fundamentals and
-		the risk filter, point-in-time lists, nothing narrower). Only runs on it may write PicksBlendedDaily or PicksAdaptiveDaily
-		(MarketStates: IsStateUniverse)."""
-		return self.filterByFundamentals and self.riskFilter and not self.damageFilter and self.pointInTimeUniverse and not self.SP500Only and self.marketCapMin == 0 and self.marketCapMax == 0	#6.2: _PIT adopted
-
-	def IsStateUniverse(self) -> bool:
-		"""6.1: the universe the states of marketStateVersion are built on: the canonical list, point-in-time for 4.8+.
-		Only runs on it may save or rebuild those MarketStates rows."""
-		pit = self.marketStateVersion >= self.PIT_STATE_VERSION
-		return self.filterByFundamentals and self.riskFilter and not self.damageFilter and self.pointInTimeUniverse == pit and not self.SP500Only and self.marketCapMin == 0 and self.marketCapMax == 0
-
-	def RebuildMarketStatesProblem(self) -> str:
-		"""Why rebuildMarketStates can't be honoured ('' = it can)."""
-		if not self.IsStateUniverse(): return "only a run with filter by fundamentals + risk filter on, no damage filter/SP500Only/market cap limits, and _PIT exactly when the state version is 4.8+ may rebuild the states"
-		return ''
-
-	def RebuildBlendedPicksProblem(self, customBlend: bool = False) -> str:
-		"""Why rebuildBlendedPicks can't be honoured ('' = it can): PicksBlendedDaily holds the default blend on the
-		canonical universe, computed every trading day (rolling window), and can't be rebuilt while being read."""
-		if not self.IsCanonicalUniverse() or self.volAdjustedRank: return "needs filter by fundamentals + risk filter on, no damage filter/_VA/SP500Only/market cap limits"
-		if self.useStoredPicks: return "can't rebuild the stored picks while reading them (useStoredPicks)"
-		if self.pickHistoryWindow <= 0: return "needs pickHistoryWindow > 0 (daily picks)"
-		if customBlend: return "needs the default blend"
-		return ''
-
-	def PrepareAdaptiveRun(self):
-		"""Fixed AdaptiveConvex settings (filterOption 98, its own pick window, no point-value allocation) and its name."""
-		self.filterOption, self.allocateByPointValue, self.pickHistoryWindow = 98, False, -1
-		self.modelName = "AdaptiveConvex_v4.6_BF"
-		self.AddModelNameModifiers()
-
-	def PrepareBlendedRun(self, blendName: str):
-		"""Fixed PM_Blended settings and its name; the blend is only named when picks are computed (stored picks carry
-		whatever blend they were built with)."""
-		self.filterOption, self.allocateByPointValue = 99, False
-		self.modelName = "PM_Blended" + ("" if self.useStoredPicks else f"_({blendName})")
-		self.AddModelNameModifiers()
-
-	def PreparePriceMomentumRun(self):
-		self.modelName = ''
-		self.AddModelNameModifiers()
-
-@dataclass
-class TradeModelPerformanceMetrics(SQLFriendlyMixin):
-	# --- Core ---
-	batchName: str = ''
-	startValue: int = 0
-	endValue: int  = 0
-	startDate:  pd.Timestamp = None 
-	endDate:  pd.Timestamp = None 
-	durationInYears: int = 0
-	total_gain: float = 0.0
-	cagr: float = 0.0
-	annualized_vol: float = 0.0
-	sharpe_ratio: float = 0.0
-	calmar_ratio: float = 0.0
-
-	# --- Drawdowns ---
-	max_drawdown: float = 0.0
-	max_drawdown_start: pd.Timestamp = None 
-	max_drawdown_low: pd.Timestamp = None 
-	max_drawdown_end: Optional[pd.Timestamp] = None 
-	max_drawdown_duration: int = 0
-
-	avg_drawdown: float = 0.0
-	dd_95pct: float = 0.0
-	dd_99pct: float = 0.0
-	pct_time_in_drawdown: float = 0.0
-
-	avg_drawdown_duration: float = 0.0
-	median_drawdown_duration: float = 0.0
-
-	avg_recovery_days: float = 0.0
-	median_recovery_days: float = 0.0
-	max_recovery_days: int = 0
-
-	# --- Calendar effects ---
-	worst_jan_drawdown_year: int = 0
-	worst_jan_drawdown_value: float = 0.0
-	years_negative: int = 0
-
-	# --- Convexity / tail behavior ---
-	return_concentration_10pct: float = 0.0
-	return_concentration_20pct: float = 0.0
-	best_1yr_return: float = 0.0
-	best_3yr_cagr: float = 0.0
-
-	# --- Adaptive diagnostics ---
-	avg_convex_weight: float = 0.0
-	std_convex_weight: float = 0.0
-	pct_time_convex_dominant: float = 0.0
-	export_fields = [
-		'startDate', 'endDate', 'durationInYears', 'total_gain', 'cagr', 'annualized_vol', 'sharpe_ratio', 'calmar_ratio',
-		'max_drawdown', 'max_drawdown_start', 'max_drawdown_low', 'max_drawdown_end', 'max_drawdown_duration', 'avg_drawdown','dd_95pct','dd_99pct', 'pct_time_in_drawdown', 'avg_drawdown_duration', 'median_drawdown_duration',
-		'avg_recovery_days','median_recovery_days', 'max_recovery_days', 'worst_jan_drawdown_year', 'worst_jan_drawdown_value', 'years_negative',
-		'return_concentration_10pct','return_concentration_20pct','best_1yr_return', 'best_3yr_cagr', 'avg_convex_weight','std_convex_weight', 'pct_time_convex_dominant', 'batchName'
-	]		
+from _classes.Params import SQLFriendlyMixin, TradeModelParams, TradeModelPerformanceMetrics, SwingFeatures	#11/21/26: moved to Params.py; re-exported here for existing imports
 
 @dataclass
 class BuyOrder:
@@ -260,6 +23,8 @@ class BuyOrder:
 	reserved_cash: float = 0.0
 	expireAfterDays: int = 10
 	fillPrice: float = 0.0
+	tag: str = ''	#6.15: 'Swing' = a trade-around-core buy-back, 6.17: 'Pull' = a pullback buy (TradingModel.SwingTrade)
+	unfunded: bool = False	#6.19: fills even when cash is short (a pullback limit buy, funded after it fills)
 	def is_expired(self, currentDate: datetime) -> bool: return (currentDate - self.datePlaced).days > self.expireAfterDays
 	def is_executable(self, price: float) -> bool:
 		if price <= 0: return False
@@ -418,7 +183,7 @@ class Portfolio:
 				order.adjust_units_for_cash(price, availableCash, self._commision_cost)
 				actualCost = order.cost_at_price(price, self._commision_cost)
 
-			if order.units <= 0 or actualCost > availableCash:
+			if order.units <= 0 or (actualCost > availableCash and not order.unfunded):
 				self._print(f" CheckOrders: Cannot afford any {ticker} at {price}... canceling Buy on {FormatDate(dateChecked)}")
 				self._cash_committed_to_orders -= committed_this_order
 				self._pendingBuys.remove(order)
@@ -601,7 +366,7 @@ class Portfolio:
 				pos.expireAfterDays = 0
 				pos.reasonForSale = ''
 
-	def PlaceBuy(self, ticker: str, price: float, units: int, datePlaced: datetime, marketOrder: bool = False, expireAfterDays: int = 10, verbose: bool = False):
+	def PlaceBuy(self, ticker: str, price: float, units: int, datePlaced: datetime, marketOrder: bool = False, expireAfterDays: int = 10, verbose: bool = False, tag: str = '', allowUnfunded: bool = False):
 		if price <= 0 or price is None:
 			self._print(f" PlaceBuy: Invalid price ${price} for {ticker}")
 			return False
@@ -609,10 +374,10 @@ class Portfolio:
 		if units <= 0: return False
 		cash_required = units * price + self._commision_cost
 		available = (self._total_cash - self._cash_committed_to_orders)
-		if available < cash_required:
+		if available < cash_required and not allowUnfunded:	#6.17 allowUnfunded: a pullback buy paid by sales filling at the same open
 			self._print(f" PlaceBuy: Insufficient funds available {available} to place buy for {ticker} units={units} price={price}")
 			return False
-		order = BuyOrder(position_id=self._current_position_id, ticker=ticker,	datePlaced=datePlaced, units=units, orderPrice=price, marketOrder=marketOrder, expireAfterDays=expireAfterDays, reserved_cash=cash_required)
+		order = BuyOrder(position_id=self._current_position_id, ticker=ticker,	datePlaced=datePlaced, units=units, orderPrice=price, marketOrder=marketOrder, expireAfterDays=expireAfterDays, reserved_cash=cash_required, tag=tag, unfunded=allowUnfunded and not marketOrder)
 		self._current_position_id +=1
 		self._pendingBuys.append(order)
 		self._cash_committed_to_orders += cash_required
@@ -729,6 +494,8 @@ class TradingModel(Portfolio):
 		self.customValue1 = None	#can be used to store custom values when using the model
 		self.customValue2 = None
 		self._NormalizePrices = False
+		self._swings = {}	#6.15 SwingTrade: ticker -> open trade-around-core round trip
+		self._pulls = {}	#6.17 SwingTrade: ticker -> open pullback lot
 		self.useFullStats = useFullStats
 		self.startingValue = totalFunds
 		self._dataFolderTradeModel = 'data/trademodel/'
@@ -885,7 +652,7 @@ class TradingModel(Portfolio):
 			if ticker == '' or position.ticker == ticker:
 				super(TradingModel, self).SellPosition(position=position, price=position.latestPrice, datePlaced=self.currentDate, marketOrder=True, reasonForSale='Liquidation')
 
-	def AlignPositions(self, targetPositions: pd.DataFrame, rateLimitTransactions:bool = False, shopBuyPercent:float = 0.0, shopSellPercent:float = 0.0):
+	def AlignPositions(self, targetPositions: pd.DataFrame, rateLimitTransactions:bool = False, shopBuyPercent:float = 0.0, shopSellPercent:float = 0.0, rateLimitPct: float = None):
 		assert isinstance(shopBuyPercent, float), f"Expected float, got {type(shopBuyPercent).__name__}"
 		assert isinstance(shopSellPercent, float), f"Expected float, got {type(shopSellPercent).__name__}"
 		expireAfterDays = 3
@@ -908,9 +675,16 @@ class TradingModel(Portfolio):
 				targetPositions,
 				pd.DataFrame({'TargetHoldings': 0.0}, index=missing_tickers)
 			])
+		target_by_ticker = targetPositions['TargetHoldings'].groupby(level=0).sum()	#6.16: a ticker can appear more than once (one row per lot not in the picks)
 		for order in list(self._pendingBuys):
 			if order.ticker not in targetPositions.index:
 				self._cancel_order(order)
+			elif order.tag == 'Swing' and float(target_by_ticker.loc[order.ticker]) <= 0:
+				self._cancel_order(order)	#6.15: the stock was dropped - don't buy the swing shares back
+			elif order.tag == 'Pull' and float(target_by_ticker.loc[order.ticker]) <= 0:
+				self._cancel_order(order)	#6.19: a pending pullback limit buy for a dropped stock
+		for p in self._positions:
+			if p.reasonForSale == 'Pull' and p.is_sell_pending() and not p.marketOrder and float(target_by_ticker.get(p.ticker, 0.0)) <= 0: p.marketOrder = True	#6.17: dropped - sell the pullback lot now
 
 		TotalTargets = targetPositions['TargetHoldings'].sum()
 		if TotalTargets > 0:
@@ -923,8 +697,11 @@ class TradingModel(Portfolio):
 		for p in self._positions:
 			if p.is_sell_pending(): continue	#already being sold: not part of what we hold going forward (else it is sold twice)
 			current_value_map[p.ticker] = current_value_map.get(p.ticker, 0) + (p.units * p.latestPrice)
+		latest = {p.ticker: p.latestPrice for p in self._positions if p.latestPrice > 0}
 		for o in self._pendingBuys:
-			current_value_map[o.ticker] = current_value_map.get(o.ticker, 0) + (o.units * o.orderPrice)
+			if o.tag == 'Pull': continue	#6.19: a pending pullback limit buy is an extra lot, not part of the target
+			price = latest.get(o.ticker, o.orderPrice) if o.tag == 'Swing' else o.orderPrice	#6.15: swing shares count as held at today's price (no market buy-back)
+			current_value_map[o.ticker] = current_value_map.get(o.ticker, 0) + (o.units * price)
 
 		targetPositions['CurrentValue'] = targetPositions.index.map(
 			lambda t: current_value_map.get(t, 0.0)
@@ -941,7 +718,7 @@ class TradingModel(Portfolio):
 		#day, whatever the reEvaluationInterval, until the rollover completes
 		self.rolloverPending = False
 		if rateLimitTransactions:
-			daily_budget = totalValue * CONSTANTS.RATE_LIMITING_MAX_TURNOVER_PCT
+			daily_budget = totalValue * (rateLimitPct if rateLimitPct else CONSTANTS.RATE_LIMITING_MAX_TURNOVER_PCT)	#6.13: TradeModelParams.rateLimitPct
 			sell_budget = daily_budget
 			buy_budget = daily_budget
 			sell_needed = abs(sells['DeltaValue']).sum()
@@ -1048,7 +825,168 @@ class TradingModel(Portfolio):
 				f"@ targetPrice={targetPrice} target_gain={gainPct:.2f}%"
 			)
 			super(TradingModel, self).SellPositionPartial(position=pos, units=unitsToSell, price=targetPrice, datePlaced=self.currentDate, marketOrder=False, expireAfterDays=expireAfterDays, reasonForSale='TrimProfit')
-			trimmedValue += unitsToSell * pos.latestPrice	
+			trimmedValue += unitsToSell * pos.latestPrice
+
+	#6.15 _SW: trade around the core position (docs/experiment/trade_around_core_check.py, 11/22/26: +12-20 bp of the position
+	#per trade after a spike, ~1981-2026). After a spike in a held stock - close at the top of its 40-day regression channel
+	#(z > swingTriggerZ) or a 5-day rise over swingTriggerSpike x the 20-day daily volatility x sqrt 5, both on the prior day's
+	#close - sell swingFraction of it at the open (market), then a limit buy for the same units at sale price x (1 - swingSigma
+	#x vol x sqrt swingDays). Unfilled after swingDays trading days, it turns into a market buy (next open). Realignment counts
+	#the swing shares as held, cancels the buy-back when the stock's target goes to 0, and a ticker with any order pending is
+	#left alone. 6.17: trigger levels are parameters; swingRiskOffOnly trims only while the .INX switch is risk-off.
+	#6.17 _PB: buy the pullbacks (docs/experiment/swing_tuning_grid.py, 11/22/26). After a drop in a held stock - z <
+	#-pullTriggerZ or a 5-day fall over pullTriggerDrop sigma - buy pullFraction more at the open, funded by market sales of
+	#the other held stocks pro rata (filled at the same open: ProcessDay handles the pull ticker after them), and put a limit
+	#sell on the extra lot at its fill x (1 + pullSigma x vol x sqrt pullDays); unfilled after pullDays it sells at market.
+	#Realignment doesn't count the extra lot (its sell is pending), so the next rebalance restores the other holdings from its
+	#proceeds; a stock whose target goes to 0 has its lot sold at market. Skipped while risk-off (pullSkipRiskOff), when other
+	#buy orders are pending, or past PULL_MAX_PCT of the portfolio.
+	#6.19 (docs/experiment/swing_tuning_grid2.py): pullEntrySigma > 0 = a limit buy at the prior close x (1 - k x vol), live
+	#PULL_ENTRY_DAYS days, else canceled; nothing is sold until it fills, then the funding sells at the next open (cash is
+	#short overnight). Realignment doesn't count a pending pullback buy and cancels it when the target goes to 0.
+	#pullFundStretched: the funding sells the other holdings with the highest channel z first instead of pro rata.
+	SWING_WINDOW = 40
+	PULL_MAX_PCT = 0.15		#most of the portfolio that open pullback lots may hold
+	PULL_ENTRY_DAYS = 2		#6.19: days a pullback limit buy is live
+	def _swing_signal(self, ticker: str):
+		#(20-day daily vol, 40-day channel z, 5-day move in sigma) on the closes before today, or None (Params.SwingFeatures)
+		ph = self._priceMap.get(ticker)
+		if ph is None or ph.historicalPrices is None or 'Close' not in ph.historicalPrices.columns: return None
+		hp = ph.historicalPrices
+		i = hp.index.searchsorted(self.currentDate, side='left')	#closes before today
+		if i < self.SWING_WINDOW + 1: return None
+		return SwingFeatures(hp['Close'].to_numpy(dtype=float)[i - self.SWING_WINDOW - 1:i])
+
+	def SwingTrade(self, targetPositions: pd.DataFrame, params: TradeModelParams, riskOff: bool = False):
+		trim = params.swingFraction > 0 and (riskOff or not params.swingRiskOffOnly)
+		pull = params.pullFraction > 0 and not (riskOff and params.pullSkipRiskOff)
+		if not (trim or pull) or targetPositions is None or targetPositions.empty or 'TargetHoldings' not in targetPositions.columns: return
+		if self.currentDate.weekday() >= 5: return
+		held = {}
+		for p in self._positions:
+			if not p.is_sell_pending(): held[p.ticker] = held.get(p.ticker, 0) + p.units
+		busy = {p.ticker for p in self._positions if p.is_sell_pending()} | {o.ticker for o in self._pendingBuys}
+		targets = targetPositions['TargetHoldings'].groupby(level=0).sum()
+		for ticker, units in held.items():
+			if ticker == CONSTANTS.CASH_TICKER or ticker in self._swings or ticker in self._pulls or ticker in busy: continue
+			if ticker not in targets.index or float(targets.loc[ticker]) <= 0: continue
+			sig = self._swing_signal(ticker)
+			if sig is None: continue
+			vol, z, move5 = sig
+			if trim and (z > params.swingTriggerZ or move5 > params.swingTriggerSpike):
+				n = int(units * params.swingFraction)
+				if n <= 0: continue
+				self.PlaceSell(ticker=ticker, units=n, price=0, marketOrder=True, expireAfterDays=5, reasonForSale='Swing')
+				refs = [p for p in self._positions if p.ticker == ticker and p.is_sell_pending() and p.reasonForSale == 'Swing']
+				if refs:
+					self._swings[ticker] = {'sells': refs, 'factor': max(0.5, 1 - params.swingSigma * vol * np.sqrt(params.swingDays)), 'days': params.swingDays, 'order': None, 'age': 0}
+					self._print(f" SwingTrade: {FormatDate(self.currentDate)} sell {n} {ticker} at the open, buy back below x{self._swings[ticker]['factor']:.3f}")
+				busy.add(ticker)
+			elif pull and (z < -params.pullTriggerZ or move5 < -params.pullTriggerDrop):
+				if self._place_pull(ticker, units, vol, held, busy, params): busy.add(ticker)
+
+	def _place_pull(self, ticker: str, units: int, vol: float, held: dict, busy: set, params: TradeModelParams) -> bool:
+		limit = params.pullEntrySigma > 0	#6.19
+		if any(o.tag != 'Swing' and not (limit and o.tag == 'Pull') for o in self._pendingBuys): return False	#other buys would compete for the funding
+		sn = self.GetPriceSnapshot(ticker)
+		if sn is None or not sn.Close > 0: return False
+		price = float(sn.Close) * (1 - params.pullEntrySigma * vol if limit else 1)
+		if not price > 0: return False
+		latest = {p.ticker: p.latestPrice for p in self._positions if p.latestPrice > 0}
+		totalValue = self._total_cash + sum(p.units * p.latestPrice for p in self._positions)
+		open_pull = sum(s['pos'].units * s['pos'].latestPrice if s['pos'] is not None else s['order'].units * s['order'].orderPrice for s in self._pulls.values())
+		n = min(int(units * params.pullFraction), int((totalValue * self.PULL_MAX_PCT - open_pull) / price))
+		if n <= 0: return False
+		if not limit:
+			need = n * price + self._commision_cost - max(0.0, self.GetAvailableCash())
+			if need > 0 and not self._fund_pull(ticker, need, busy, params.pullFundStretched): return False
+		if not Portfolio.PlaceBuy(self, ticker=ticker, price=price, units=n, datePlaced=self.currentDate, marketOrder=not limit, expireAfterDays=3650, tag='Pull', allowUnfunded=True): return False
+		self._pulls[ticker] = {'order': self._pendingBuys[-1], 'pos': None, 'factor': 1 + params.pullSigma * vol * np.sqrt(params.pullDays), 'days': params.pullDays, 'age': 0,
+			'limit': limit, 'eage': 0, 'stretched': params.pullFundStretched}
+		self._print(f" SwingTrade: {FormatDate(self.currentDate)} pullback buy {n} {ticker} {'limit ' + format(price, '.2f') if limit else 'at the open'}, sell above x{self._pulls[ticker]['factor']:.3f}")
+		return True
+
+	def _fund_pull(self, ticker: str, need: float, busy: set, stretched: bool) -> bool:
+		#market sales of the other holdings worth need x 1.02 (2% extra: the open differs from the last close), pro rata or
+		#6.19 stretched: highest channel z first. False (nothing sold) when they hold too little.
+		held = {}
+		for p in self._positions:
+			if not p.is_sell_pending(): held[p.ticker] = held.get(p.ticker, 0) + p.units
+		latest = {p.ticker: p.latestPrice for p in self._positions if p.latestPrice > 0}
+		funders = {t: u for t, u in held.items() if t != ticker and t != CONSTANTS.CASH_TICKER and t not in busy and t not in self._swings and t not in self._pulls and latest.get(t, 0) > 0}
+		pool = sum(u * latest[t] for t, u in funders.items())
+		if pool <= need * 1.05: return False
+		if stretched:
+			zs = {}
+			for t in funders:
+				sig = self._swing_signal(t)
+				zs[t] = sig[1] if sig is not None else -1e9
+			left = need * 1.02
+			for t in sorted(funders, key=lambda t: (-zs[t], t)):
+				k = min(funders[t], int(np.ceil(left / latest[t])))
+				if k > 0: self.PlaceSell(ticker=t, units=k, price=0, marketOrder=True, expireAfterDays=5, reasonForSale='PullFund')
+				left -= k * latest[t]
+				if left <= 0: break
+		else:
+			for t, u in funders.items():
+				k = min(u, int(np.ceil(u * need * 1.02 / pool)))
+				if k > 0: self.PlaceSell(ticker=t, units=k, price=0, marketOrder=True, expireAfterDays=5, reasonForSale='PullFund')
+		return True
+
+	def _update_swings(self):
+		#after the day's orders: place the buy-back for a filled swing sale; turn an unfilled buy-back into a market order after `days`
+		for ticker, s in list(self._swings.items()):
+			if s['order'] is None:
+				if any(p.is_sell_pending() for p in s['sells']): continue
+				filled = [p for p in s['sells'] if p.dateSellOrderFilled is not None and p.sellPrice > 0]
+				units = sum(p.units for p in filled)
+				if units <= 0:
+					del self._swings[ticker]
+					continue
+				limit = sum(p.units * p.sellPrice for p in filled) / units * s['factor']
+				units = min(units, int((self.GetAvailableCash() - self._commision_cost) / limit))
+				if units > 0 and Portfolio.PlaceBuy(self, ticker=ticker, price=limit, units=units, datePlaced=self.currentDate, marketOrder=False, expireAfterDays=3650, tag='Swing'):
+					s['order'] = self._pendingBuys[-1]
+				else:
+					del self._swings[ticker]
+			else:
+				o = s['order']
+				if not any(q is o for q in self._pendingBuys):	#filled, or canceled by realignment
+					del self._swings[ticker]
+					continue
+				s['age'] += 1
+				if s['age'] >= s['days'] - 1 and not o.marketOrder:
+					o.marketOrder = True	#limit active on days 2..days; market at the next open
+					self._print(f" SwingTrade: {FormatDate(self.currentDate)} {ticker} buy-back not filled, buying at market")
+		#6.17 pullback lots: once bought, a limit sell on the lot; market after `days`
+		for ticker, s in list(self._pulls.items()):
+			if s['pos'] is None:
+				o = s['order']
+				if any(q is o for q in self._pendingBuys):	#a market buy that didn't fill today (no price), 6.19: a limit buy past its days: give up
+					s['eage'] += 1
+					if s['limit'] and s['eage'] < self.PULL_ENTRY_DAYS: continue
+					self._cancel_order(o)
+					del self._pulls[ticker]
+					continue
+				pos = next((p for p in self._positions if p.position_id == o.position_id and p.dateSellOrderPlaced is None), None)
+				if pos is None:
+					del self._pulls[ticker]
+					continue
+				Portfolio.SellPosition(self, pos, price=pos.purchasePrice * s['factor'], datePlaced=self.currentDate, marketOrder=False, expireAfterDays=3650, reasonForSale='Pull')
+				s['pos'] = pos
+				if s['limit']:	#6.19: filled - sell the funding at the next open
+					need = self._commision_cost - self.GetAvailableCash()
+					if need > 0:
+						busy = {p.ticker for p in self._positions if p.is_sell_pending()} | {q.ticker for q in self._pendingBuys}
+						self._fund_pull(ticker, need, busy, s['stretched'])
+			else:
+				pos = s['pos']
+				if pos.dateSellOrderFilled is not None or not any(q is pos for q in self._positions):
+					del self._pulls[ticker]
+					continue
+				s['age'] += 1
+				if s['age'] >= s['days'] - 1 and not pos.marketOrder:
+					pos.marketOrder = True	#limit active on days 2..days; market at the next open
 
 	#--------------------------------------  Interface for global operations  ---------------------------------------
 	def CalculateGain(self, startDate:datetime, endDate:datetime):
@@ -1081,10 +1019,11 @@ class TradingModel(Portfolio):
 		print(f"Cash: ${c:,.0f} ' assets: ${a:,.0f} total: ${(c+a):,.0f} CAGR: {gain:,.0f}%")
 		print(f"Processing time: {params.processing_minutes} minutes.  Completion Time: {self.end_processing}")
 		print('')
-		if params.saveTradeHistory:
-			self.SaveDailyValue(self._dataFolderTradeModel)
-			self.SaveTradeHistory(self._dataFolderTradeModel)
-			self._recordResults(params)
+		if params is not None:
+			if params.saveResults:
+				self.SaveDailyValue(self._dataFolderTradeModel)	#before _recordResults: it reads the daily values back from the table
+				self._recordResults(params)
+			if params.saveTradeHistory: self.SaveTradeHistory(self._dataFolderTradeModel)
 		return self._total_cash + self._asset_value	
 				
 	def GetDailyValue(self): 
@@ -1128,7 +1067,10 @@ class TradingModel(Portfolio):
 	def ProcessDay(self, withIncrement: bool = True, allowWeekEnd: bool = False):
 		# Process current day and increment the current date, allowWeekEnd is for model closing only
 		if self.currentDate.weekday() < 5 or allowWeekEnd:
-			for ticker in self._active_tickers():
+			active = sorted(self._active_tickers())	#6.18: a fixed order - a set's order changes with Python's hash seed, and the order same-day orders fill in changes results
+			pull_buys = {o.ticker for o in self._pendingBuys if o.tag == 'Pull'}
+			if pull_buys: active = [t for t in active if t not in pull_buys] + [t for t in active if t in pull_buys]	#6.17: the funding sales fill first
+			for ticker in active:
 				ph = self._priceMap.get(ticker)
 				sn = None
 				if ph is not None: sn = ph.GetPriceSnapshot(self.currentDate)
@@ -1149,6 +1091,7 @@ class TradingModel(Portfolio):
 				for pos in self._positions:
 					if pos.ticker == ticker:
 						pos.latestPrice = sn.Close
+			if self._swings or self._pulls: self._update_swings()	#6.15, 6.17
 		self._update_daily_value()
 		if self.pbar:
 			c = self._total_cash
@@ -1288,8 +1231,25 @@ class ExtensiveTesting:
 		#marketStateVersion: always sent (6.2: the default is 4.8, so a dropped 4.6/4.7 would read as 4.8)
 		if data.get("riskOffSignal", "index") == "index": data.pop("riskOffSignal", None)	#5.9 fields: only sent when not the default
 		if not data.get("postManiaDays", 0): data.pop("postManiaDays", None)
+		if not data.get("riskOffSmooth", 0): data.pop("riskOffSmooth", None)	#6.12: only sent when on
+		if abs(data.get("rateLimitPct", 0.20) - 0.20) < 1e-9: data.pop("rateLimitPct", None)	#6.13: only sent when not the default
+		if not data.get("swingFraction", 0):	#6.15 fields: only sent when on
+			for k in ("swingFraction", "swingDays", "swingSigma", "swingTriggerZ", "swingTriggerSpike", "swingRiskOffOnly"): data.pop(k, None)
+		else:	#6.17 trigger fields: only sent when not the default
+			if abs(data.get("swingTriggerZ", 1.5) - 1.5) < 1e-9: data.pop("swingTriggerZ", None)
+			if abs(data.get("swingTriggerSpike", 1.5) - 1.5) < 1e-9: data.pop("swingTriggerSpike", None)
+			if not data.get("swingRiskOffOnly", False): data.pop("swingRiskOffOnly", None)
+		if not data.get("pullFraction", 0):	#6.17 fields: only sent when on
+			for k in ("pullFraction", "pullDays", "pullSigma", "pullTriggerZ", "pullTriggerDrop", "pullSkipRiskOff", "pullEntrySigma", "pullFundStretched"): data.pop(k, None)
+		else:	#6.19 fields: only sent when on
+			if not data.get("pullEntrySigma", 0): data.pop("pullEntrySigma", None)
+			if not data.get("pullFundStretched", False): data.pop("pullFundStretched", None)
 		if not data.get("volTarget", 0): data.pop("volTarget", None)	#6.8 fields: only sent when on
 		if data.get("volLookback", 21) == 21: data.pop("volLookback", None)
+		if not data.get("volTargetOff", ""): data.pop("volTargetOff", None)	#6.11: only sent when set
+		if not data.get("profitScreen", 0): data.pop("profitScreen", None)	#6.9: only sent when on
+		if not data.get("strictData", ""): data.pop("strictData", None)	#6.10: only sent when set
+		if not data.get("saveTradeHistory", False): data.pop("saveTradeHistory", None)	#11/21/26: only sent when on (older workers default it to True and gate everything on it)
 		#pointInTimeUniverse: always sent (6.2: the default is True, so a dropped False would read as True)
 		data.pop("selectionVersion", None)	#the worker sets its own version; never queued
 		return json.dumps(data)
@@ -1324,9 +1284,16 @@ class ExtensiveTesting:
 		self.db.ExecSQL(sql, {"params": self._serialize(params), "mv": minVersion})
 		if self._verbose: print(f"ExtensiveTesting: Enqueued {params.modelName}")
 
+	MIN_VERSION_SQL = "(ISNULL(TRY_CAST(PARSENAME(MinVersion, 2) AS int), 0) * 1000 + ISNULL(TRY_CAST(PARSENAME(MinVersion, 1) AS int), 0))"	#'6.12' -> 6012, same as version_number
+	def newer_job_waiting(self) -> int:
+		#QueueID of the first waiting job that needs newer code than this worker's (0 if none): the worker is out of date and should stop
+		sql = f"SELECT TOP (1) QueueID FROM {self.QUEUE_TABLE} WHERE Processing = 0 AND MinVersion IS NOT NULL AND {self.MIN_VERSION_SQL} > :myversion ORDER BY QueueID"
+		rows = self.db.ExecSQL(sql, {"myversion": self.version_number(self.codeVersion)})
+		return int(rows[0][0]) if rows else 0
+
 	def claim_from_queue(self) -> tuple[int, TradeModelParams | None]:
 		#Skips jobs needing newer code than this worker's (MinVersion), so a worker that wasn't restarted can't run them wrongly
-		version_ok = "(MinVersion IS NULL OR ISNULL(TRY_CAST(PARSENAME(MinVersion, 2) AS int), 0) * 1000 + ISNULL(TRY_CAST(PARSENAME(MinVersion, 1) AS int), 0) <= :myversion)"
+		version_ok = f"(MinVersion IS NULL OR {self.MIN_VERSION_SQL} <= :myversion)"
 		claim_sql = f"WITH NextJob AS (SELECT TOP (1) Processing, WorkerName, StartedProcessingAt, QueueID, ParamsJson FROM {self.QUEUE_TABLE} WITH (UPDLOCK, ROWLOCK, READPAST) WHERE Processing = 0 AND {version_ok} ORDER BY QueueID ASC) UPDATE NextJob SET Processing = 1, StartedProcessingAt = GETDATE(), WorkerName = :worker OUTPUT INSERTED.QueueID, INSERTED.ParamsJson;"
 		rows = self.db.ExecSQL(claim_sql, {"worker": self.worker_name, "myversion": self.version_number(self.codeVersion)})
 		if not rows: return 0, None
